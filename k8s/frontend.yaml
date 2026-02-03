@@ -1,0 +1,165 @@
+---
+# Dual Database Manager - Frontend Deployment
+# React/Vite application served via nginx
+#
+# Configuration:
+# - Replace <NAMESPACE> with your Kubernetes namespace (default: default)
+# - Replace <IMAGE_REGISTRY>/dual-db-frontend:<TAG> with your container image
+# - Replace <BACKEND_URL> with your backend service URL
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dual-db-frontend-nginx
+  namespace: <NAMESPACE>  # Replace with your namespace
+  labels:
+    app: dual-db-frontend
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        sendfile on;
+        tcp_nopush on;
+        keepalive_timeout 65;
+        gzip on;
+        gzip_vary on;
+        gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript;
+
+        server {
+            listen 80;
+            server_name _;
+            root /usr/share/nginx/html;
+            index index.html;
+
+            add_header X-Frame-Options "SAMEORIGIN" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+
+            location / {
+                try_files $uri $uri/ /index.html;
+            }
+
+            location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+                expires 1y;
+                add_header Cache-Control "public, immutable";
+            }
+        }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dual-db-frontend
+  namespace: <NAMESPACE>  # Replace with your namespace
+  labels:
+    app: dual-db-frontend
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: dual-db-frontend
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: dual-db-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: <IMAGE_REGISTRY>/dual-db-frontend:<TAG>  # Replace with your container image (e.g., docker.io/yourorg/dual-db-frontend:v1.0.0)
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        env:
+        - name: BACKEND_URL
+          value: "<BACKEND_URL>"  # Replace with your backend URL (e.g., http://localhost:3000 for dev, or your production URL)
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 1
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 1
+          successThreshold: 1
+          failureThreshold: 3
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: dual-db-frontend-nginx
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dual-db-frontend
+  namespace: <NAMESPACE>  # Replace with your namespace
+  labels:
+    app: dual-db-frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: dual-db-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http

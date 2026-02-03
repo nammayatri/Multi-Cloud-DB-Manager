@@ -1,0 +1,77 @@
+# Environment files with sensitive data
+.env
+.env.local
+.env.*.local
+.env.docker
+*.env.bak*
+
+# Database configuration files (exclude specific ones, keep examples)
+backend/config/databases.json
+!backend/config/databases.example.json
+!backend/config/databases.local.json
+
+
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Build outputs
+dist/
+build/
+*/dist/
+*/build/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Testing
+coverage/
+*.lcov
+.nyc_output
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Database backups
+backups/
+*.sql.backup
+*.dump
+
+
+# TypeScript
+*.tsbuildinfo
+
+# Package manager
+.pnpm-store/
+.yarn/
+.npm/
+
+# Sensitive documentation (deployment specific)
+DEPLOYMENT_*.md
+ENV_VARS_NEEDED.md
+
+# Local history
+.history/
+
+
+/prod

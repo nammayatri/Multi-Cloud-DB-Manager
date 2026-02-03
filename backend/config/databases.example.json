@@ -1,0 +1,65 @@
+{
+  "primary": {
+    "cloudName": "cloud1",
+    "db_configs": [
+      {
+        "name": "db1",
+        "label": "Database 1",
+        "host": "${CLOUD1_DB_HOST}",
+        "port": 5432,
+        "user": "${CLOUD1_DB_USER}",
+        "password": "${CLOUD1_DB_PASSWORD}",
+        "database": "${CLOUD1_DB1}",
+        "schemas": ["schema_name_1", "schema_name_2"],
+        "defaultSchema": "schema_name_1"
+      },
+      {
+        "name": "db2",
+        "label": "Database 2",
+        "host": "${CLOUD1_DB_HOST}",
+        "port": 5432,
+        "user": "${CLOUD1_DB_USER}",
+        "password": "${CLOUD1_DB_PASSWORD}",
+        "database": "${CLOUD1_DB2}",
+        "schemas": ["schema_name_3"],
+        "defaultSchema": "schema_name_3"
+      }
+    ]
+  },
+  "secondary": [
+    {
+      "cloudName": "cloud2",
+      "db_configs": [
+        {
+          "name": "db1",
+          "label": "Database 1",
+          "host": "${CLOUD2_DB_HOST}",
+          "port": 5432,
+          "user": "${CLOUD2_DB_USER}",
+          "password": "${CLOUD2_DB_PASSWORD}",
+          "database": "${CLOUD2_DB1}",
+          "schemas": ["schema_name_1"],
+          "defaultSchema": "schema_name_1"
+        },
+        {
+          "name": "db2",
+          "label": "Database 2",
+          "host": "${CLOUD2_DB_HOST}",
+          "port": 5432,
+          "user": "${CLOUD2_DB_USER}",
+          "password": "${CLOUD2_DB_PASSWORD}",
+          "database": "${CLOUD2_DB_BAP}",
+          "schemas": ["schema_name_3"],
+          "defaultSchema": "schema_name_3"
+        }
+      ]
+    }
+  ],
+  "history": {
+    "host": "${HISTORY_DB_HOST}",
+    "port": 5432,
+    "user": "${HISTORY_DB_USER}",
+    "password": "${HISTORY_DB_PASSWORD}",
+    "database": "${HISTORY_DB_NAME}"
+  }
+}

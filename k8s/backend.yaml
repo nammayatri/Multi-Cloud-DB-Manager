@@ -1,0 +1,121 @@
+---
+# Dual Database Manager - Backend Deployment
+# Node.js/Express API server with database connection pooling
+#
+# Configuration:
+# - Replace <NAMESPACE> with your Kubernetes namespace (default: default)
+# - Replace <IMAGE_REGISTRY>/dual-db-backend:<TAG> with your container image
+# - Replace <FRONTEND_URL> with your frontend service URL
+# - Replace <REDIS_HOST> with your Redis service hostname
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dual-db-backend
+  namespace: <NAMESPACE>  # Replace with your namespace (e.g., default, production)
+  labels:
+    app: dual-db-backend
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: dual-db-backend
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: dual-db-backend
+    spec:
+      containers:
+      - name: backend
+        image: <IMAGE_REGISTRY>/dual-db-backend:<TAG>  # Replace with your container image (e.g., docker.io/yourorg/dual-db-backend:v1.0.0)
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+
+        # Load all secrets as environment variables
+        envFrom:
+        - secretRef:
+            name: dual-db-secrets
+
+        # Additional configuration
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+        - name: FRONTEND_URL
+          value: "<FRONTEND_URL>"  # Replace with your frontend URL (e.g., http://localhost:5173 for dev, or your production URL)
+        - name: REDIS_HOST
+          value: "<REDIS_HOST>"  # Replace with your Redis host (e.g., redis-service.default.svc.cluster.local or localhost)
+        - name: REDIS_PORT
+          value: "6379"
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dual-db-backend
+  namespace: <NAMESPACE>  # Replace with your namespace
+  labels:
+    app: dual-db-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: dual-db-backend
+  ports:
+  - port: 3000
+    targetPort: 3000
+    protocol: TCP
+    name: http
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
