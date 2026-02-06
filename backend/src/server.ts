@@ -48,7 +48,25 @@ redisClient.on('connect', () => {
 });
 
 // Middleware
-app.use(helmet()); // Security headers
+// Use Helmet but disable CSP in production (Pomerium handles authentication redirects)
+// Disable HTTPS redirect in production (Pomerium/ALB handles SSL termination)
+app.use(helmet({
+  // Disable HSTS in production - let Pomerium/ALB handle it
+  hsts: process.env.NODE_ENV === 'production' ? false : {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true,
+  },
+  // Disable CSP in production - Pomerium auth redirects need external domains
+  contentSecurityPolicy: process.env.NODE_ENV === 'production' ? false : {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+    },
+  },
+}));
 
 // CORS configuration - allow frontend origin
 app.use(
@@ -93,7 +111,7 @@ app.use(
 );
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),

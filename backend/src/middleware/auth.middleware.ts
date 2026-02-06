@@ -70,7 +70,9 @@ export const canWrite = (req: Request, res: Response, next: NextFunction) => {
 
 /**
  * Middleware to validate query based on user role
- * READER can only execute SELECT queries
+ * READER: SELECT only
+ * USER: SELECT, INSERT, UPDATE, ALTER, CREATE TABLE only
+ * MASTER: All queries (no restrictions)
  */
 export const validateQueryPermissions = (req: Request, res: Response, next: NextFunction) => {
   const user = req.user as any;
@@ -80,30 +82,80 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
     return next();
   }
 
-  // MASTER and USER can execute any query
-  if (user.role === 'MASTER' || user.role === 'USER') {
+  const trimmedQuery = query.trim().toUpperCase();
+
+  // MASTER can do anything
+  if (user.role === 'MASTER') {
+    logger.info('MASTER executing query', {
+      username: user.username,
+      query: query.substring(0, 100),
+    });
     return next();
   }
 
-  // READER can only execute SELECT queries
-  if (user.role === 'READER') {
-    const trimmedQuery = query.trim().toUpperCase();
+  // For USER: Only allow specific operations
+  if (user.role === 'USER') {
+    // Operations that USER is allowed to do
+    const userAllowedPatterns = [
+      /^\s*SELECT/i,
+      /^\s*WITH.*SELECT/i,  // CTEs with SELECT
+      /^\s*INSERT/i,
+      /^\s*UPDATE/i,
+      /^\s*ALTER\s+TABLE/i,
+      /^\s*CREATE\s+TABLE/i,
+      /^\s*CREATE\s+INDEX/i,
+    ];
 
+    // Check if query matches any allowed pattern
+    const isAllowed = userAllowedPatterns.some(pattern => pattern.test(query));
+
+    if (!isAllowed) {
+      // Check what they tried to do
+      let attemptedOperation = 'Unknown';
+      if (trimmedQuery.includes('DELETE')) attemptedOperation = 'DELETE';
+      else if (trimmedQuery.includes('DROP')) attemptedOperation = 'DROP';
+      else if (trimmedQuery.includes('TRUNCATE')) attemptedOperation = 'TRUNCATE';
+      else if (trimmedQuery.includes('GRANT')) attemptedOperation = 'GRANT';
+      else if (trimmedQuery.includes('REVOKE')) attemptedOperation = 'REVOKE';
+      else if (trimmedQuery.includes('CREATE DATABASE')) attemptedOperation = 'CREATE DATABASE';
+      else if (trimmedQuery.includes('CREATE SCHEMA')) attemptedOperation = 'CREATE SCHEMA';
+      else if (trimmedQuery.includes('CREATE INDEX')) attemptedOperation = 'CREATE INDEX';
+
+      logger.warn('USER attempted unauthorized operation', {
+        username: user.username,
+        operation: attemptedOperation,
+        query: query.substring(0, 100),
+      });
+
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: `USER role can only execute: SELECT, INSERT, UPDATE, ALTER TABLE, CREATE TABLE, CREATE INDEX. ${attemptedOperation} requires MASTER role.`,
+        allowedOperations: ['SELECT', 'INSERT', 'UPDATE', 'ALTER TABLE', 'CREATE TABLE', 'CREATE INDEX'],
+        yourRole: 'USER',
+      });
+    }
+
+    // USER can proceed with allowed operations
+    return next();
+  }
+
+  // READER role restrictions
+  if (user.role === 'READER') {
     // Check if query starts with SELECT (allow WITH for CTEs)
     if (!trimmedQuery.startsWith('SELECT') && !trimmedQuery.startsWith('WITH')) {
-      logger.warn('READER attempted write query', {
+      logger.warn('READER attempted non-SELECT query', {
         username: user.username,
         query: query.substring(0, 100),
       });
 
       return res.status(403).json({
         error: 'Forbidden',
-        message: 'READER role can only execute SELECT queries. Write operations (INSERT, UPDATE, DELETE, etc.) are not allowed.',
+        message: 'READER role can only execute SELECT queries. Write operations (INSERT, UPDATE, DELETE) are not allowed.',
       });
     }
 
     // Additional check: ensure no write keywords in the query
-    const writeKeywords = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER', 'TRUNCATE', 'GRANT', 'REVOKE'];
+    const writeKeywords = ['INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER'];
     for (const keyword of writeKeywords) {
       if (trimmedQuery.includes(keyword)) {
         logger.warn('READER attempted query with write keyword', {
@@ -120,5 +172,6 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
     }
   }
 
+  // READER restrictions (already handled above, but keep for clarity)
   next();
 };

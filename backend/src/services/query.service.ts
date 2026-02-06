@@ -77,8 +77,15 @@ class QueryService {
     try {
       // If pgSchema is provided, we need to set search_path
       if (pgSchema) {
+        // Validate pgSchema to prevent SQL injection
+        // Only allow alphanumeric characters, underscores, and hyphens
+        if (!/^[a-zA-Z0-9_-]+$/.test(pgSchema)) {
+          throw new Error(`Invalid schema name: ${pgSchema}. Schema names can only contain letters, numbers, underscores, and hyphens.`);
+        }
+
         const client = await pool.connect();
         try {
+          // Safe to use in template literal after validation
           await client.query(`SET search_path TO "${pgSchema}", public`);
 
           logger.info(`Executing query on ${cloudName}/${databaseName}`, {

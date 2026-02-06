@@ -7,8 +7,13 @@ export interface ValidationWarning {
 
 /**
  * Detects dangerous SQL queries that could cause data loss
+ * @param query - SQL query to validate
+ * @param userRole - Current user's role (MASTER, USER, READER)
  */
-export const detectDangerousQueries = (query: string): ValidationWarning | null => {
+export const detectDangerousQueries = (
+  query: string,
+  userRole?: 'MASTER' | 'USER' | 'READER'
+): ValidationWarning | null => {
   // Normalize query: remove comments and extra whitespace
   const normalizedQuery = query
     .replace(/--.*$/gm, '') // Remove single-line comments
@@ -35,7 +40,9 @@ export const detectDangerousQueries = (query: string): ValidationWarning | null 
       dangerousStatements.push(statement);
       warningType = 'danger';
       warningTitle = 'DROP Statement Detected';
-      warningMessage = 'This will permanently delete the table/database/schema and all its data. This action cannot be undone!';
+      warningMessage = userRole && userRole !== 'MASTER'
+        ? '⛔ This operation requires MASTER role. This will permanently delete the table/database/schema and all its data!'
+        : 'This will permanently delete the table/database/schema and all its data. This action cannot be undone!';
     }
 
     // Check for TRUNCATE
@@ -43,17 +50,24 @@ export const detectDangerousQueries = (query: string): ValidationWarning | null 
       dangerousStatements.push(statement);
       warningType = 'danger';
       warningTitle = 'TRUNCATE Statement Detected';
-      warningMessage = 'This will delete ALL rows from the table(s). This action cannot be undone!';
+      warningMessage = userRole && userRole !== 'MASTER'
+        ? '⛔ This operation requires MASTER role. This will delete ALL rows from the table(s)!'
+        : 'This will delete ALL rows from the table(s). This action cannot be undone!';
     }
 
-    // Check for DELETE without WHERE
+    // Check for DELETE
     else if (upperStatement.match(/^\s*DELETE\s+FROM\s+/i)) {
-      // Check if WHERE clause exists
-      if (!upperStatement.match(/\s+WHERE\s+/i)) {
-        dangerousStatements.push(statement);
-        warningType = 'danger';
-        warningTitle = 'DELETE Without WHERE Clause';
-        warningMessage = 'This will delete ALL rows from the table! Did you forget the WHERE clause?';
+      dangerousStatements.push(statement);
+      warningType = 'danger';
+      warningTitle = 'DELETE Statement Detected';
+      const hasWhere = upperStatement.match(/\s+WHERE\s+/i);
+
+      if (userRole && userRole !== 'MASTER') {
+        warningMessage = '⛔ DELETE operations require MASTER role. You will not be able to execute this query.';
+      } else if (!hasWhere) {
+        warningMessage = 'DELETE without WHERE clause will delete ALL rows from the table! Did you forget the WHERE clause?';
+      } else {
+        warningMessage = 'This will permanently delete data from the table. Proceed with caution.';
       }
     }
 
@@ -62,7 +76,7 @@ export const detectDangerousQueries = (query: string): ValidationWarning | null 
       // Check if WHERE clause exists
       if (!upperStatement.match(/\s+WHERE\s+/i)) {
         dangerousStatements.push(statement);
-        warningType = 'danger';
+        warningType = 'warning';
         warningTitle = 'UPDATE Without WHERE Clause';
         warningMessage = 'This will update ALL rows in the table! Did you forget the WHERE clause?';
       }

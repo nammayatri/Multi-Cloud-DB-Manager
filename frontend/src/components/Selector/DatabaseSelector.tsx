@@ -45,6 +45,7 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
     isExecuting,
     setIsExecuting,
     setExecuteQuery,
+    user,
   } = useAppStore();
 
   const { clearDraftOnSuccess } = useAutoSave();
@@ -222,8 +223,8 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
       return;
     }
 
-    // Check for dangerous queries
-    const warning = detectDangerousQueries(queryToExecute);
+    // Check for dangerous queries (pass user role for role-aware warnings)
+    const warning = detectDangerousQueries(queryToExecute, user?.role);
     if (warning) {
       setCurrentWarning(warning);
       setShowWarningDialog(true);
