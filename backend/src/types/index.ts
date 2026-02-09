@@ -43,6 +43,7 @@ export interface QueryRequest {
   mode: string; // 'both' or specific cloud name
   timeout?: number;
   pgSchema?: string;
+  password?: string; // Password for sensitive operations (ALTER/DROP)
 }
 
 export interface StatementResult {
@@ -147,6 +148,7 @@ declare global {
   namespace Express {
     interface User {
       id: string;
+      username: string;
       email: string;
       name: string;
       picture?: string;

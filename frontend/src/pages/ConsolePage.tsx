@@ -29,7 +29,7 @@ import type { QueryResponse } from '../types';
 
 const ConsolePage = () => {
   const navigate = useNavigate();
-  const { user, setUser, showHistory, setShowHistory } = useAppStore();
+  const { user, setUser, showHistory, setShowHistory, setCurrentQuery } = useAppStore();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [currentResult, setCurrentResult] = useState<QueryResponse | null>(null);
   const [refreshingConfig, setRefreshingConfig] = useState(false);
@@ -53,6 +53,7 @@ const ConsolePage = () => {
     try {
       await authAPI.logout();
       setUser(null);
+      setCurrentQuery(''); // Clear the query from editor
       navigate('/login');
       toast.success('Logged out successfully');
     } catch (error) {

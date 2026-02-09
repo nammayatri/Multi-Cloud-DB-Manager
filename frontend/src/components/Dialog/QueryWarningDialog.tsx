@@ -8,27 +8,73 @@ import {
   Box,
   Alert,
   Paper,
+  TextField,
 } from '@mui/material';
 import WarningIcon from '@mui/icons-material/Warning';
 import ErrorIcon from '@mui/icons-material/Error';
 import type { ValidationWarning } from '../../services/queryValidation.service';
+import { useState } from 'react';
 
 interface QueryWarningDialogProps {
   open: boolean;
   warning: ValidationWarning | null;
-  onConfirm: () => void;
+  onConfirm: (password?: string) => void;
   onCancel: () => void;
+  requiresPassword?: boolean;
+  selectedMode?: string;
+  cloudNames?: { primary: string; secondary: string[] };
 }
 
-const QueryWarningDialog = ({ open, warning, onConfirm, onCancel }: QueryWarningDialogProps) => {
+const QueryWarningDialog = ({
+  open,
+  warning,
+  onConfirm,
+  onCancel,
+  requiresPassword = false,
+  selectedMode = 'both',
+  cloudNames = { primary: '', secondary: [] }
+}: QueryWarningDialogProps) => {
+  const [password, setPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+
   if (!warning) return null;
 
   const isDanger = warning.type === 'danger';
 
+  // Build cloud names message
+  const getCloudNamesMessage = () => {
+    if (selectedMode === 'both') {
+      const allClouds = [cloudNames.primary, ...cloudNames.secondary]
+        .filter(Boolean)
+        .map(c => c.toUpperCase())
+        .join(' and ');
+      return `This query will be executed on both ${allClouds} databases. Make sure you understand the implications.`;
+    } else {
+      return `This query will be executed on ${selectedMode.toUpperCase()} database. Make sure you understand the implications.`;
+    }
+  };
+
+  const handleConfirm = () => {
+    if (requiresPassword && !password.trim()) {
+      setPasswordError('Password is required to execute this query');
+      return;
+    }
+    const pwd = password;
+    setPassword('');
+    setPasswordError('');
+    onConfirm(requiresPassword ? pwd : undefined);
+  };
+
+  const handleCancel = () => {
+    setPassword('');
+    setPasswordError('');
+    onCancel();
+  };
+
   return (
     <Dialog
       open={open}
-      onClose={onCancel}
+      onClose={handleCancel}
       maxWidth="md"
       fullWidth
     >
@@ -38,7 +84,7 @@ const QueryWarningDialog = ({ open, warning, onConfirm, onCancel }: QueryWarning
         ) : (
           <WarningIcon color="warning" fontSize="large" />
         )}
-        <Typography variant="h6">{warning.title}</Typography>
+        {warning.title}
       </DialogTitle>
 
       <DialogContent>
@@ -70,23 +116,49 @@ const QueryWarningDialog = ({ open, warning, onConfirm, onCancel }: QueryWarning
 
         <Box sx={{ mt: 2, p: 2, bgcolor: 'background.default', borderRadius: 1 }}>
           <Typography variant="body2" color="text.secondary">
-            <strong>Note:</strong> This query will be executed on both CLOUD2 and CLOUD1 databases
-            if "Both" mode is selected. Make sure you understand the implications.
+            <strong>Note:</strong> {getCloudNamesMessage()}
           </Typography>
         </Box>
+
+        {requiresPassword && (
+          <Box sx={{ mt: 3 }}>
+            <Alert severity="error" sx={{ mb: 2 }}>
+              <strong>MASTER Authentication Required</strong><br />
+              This query requires password verification. Only MASTER users can execute ALTER/DROP queries.
+            </Alert>
+            <TextField
+              fullWidth
+              type="password"
+              label="Enter your password"
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setPasswordError('');
+              }}
+              error={!!passwordError}
+              helperText={passwordError}
+              autoFocus
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  handleConfirm();
+                }
+              }}
+            />
+          </Box>
+        )}
       </DialogContent>
 
       <DialogActions>
-        <Button onClick={onCancel} color="inherit">
+        <Button onClick={handleCancel} color="inherit">
           Cancel
         </Button>
         <Button
-          onClick={onConfirm}
+          onClick={handleConfirm}
           color={isDanger ? 'error' : 'warning'}
           variant="contained"
-          autoFocus
+          disabled={requiresPassword && !password.trim()}
         >
-          Execute Anyway
+          {requiresPassword ? 'Verify & Execute' : 'Execute Anyway'}
         </Button>
       </DialogActions>
     </Dialog>

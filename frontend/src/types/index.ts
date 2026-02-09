@@ -13,6 +13,7 @@ export interface QueryRequest {
   mode: string; // 'both' or specific cloud name
   timeout?: number;
   pgSchema?: string;
+  password?: string; // Password for sensitive operations (ALTER/DROP)
 }
 
 export interface QueryResult {

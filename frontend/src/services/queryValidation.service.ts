@@ -3,6 +3,7 @@ export interface ValidationWarning {
   title: string;
   message: string;
   affectedStatements: string[];
+  requiresPassword?: boolean;
 }
 
 /**
@@ -31,6 +32,7 @@ export const detectDangerousQueries = (
   let warningType: 'danger' | 'warning' = 'warning';
   let warningTitle = '';
   let warningMessage = '';
+  let requiresPassword = false;
 
   for (const statement of statements) {
     const upperStatement = statement.toUpperCase();
@@ -43,6 +45,7 @@ export const detectDangerousQueries = (
       warningMessage = userRole && userRole !== 'MASTER'
         ? '⛔ This operation requires MASTER role. This will permanently delete the table/database/schema and all its data!'
         : 'This will permanently delete the table/database/schema and all its data. This action cannot be undone!';
+      requiresPassword = userRole === 'MASTER'; // Only MASTER can execute, require password
     }
 
     // Check for TRUNCATE
@@ -53,6 +56,21 @@ export const detectDangerousQueries = (
       warningMessage = userRole && userRole !== 'MASTER'
         ? '⛔ This operation requires MASTER role. This will delete ALL rows from the table(s)!'
         : 'This will delete ALL rows from the table(s). This action cannot be undone!';
+      requiresPassword = userRole === 'MASTER'; // Only MASTER can execute, require password
+    }
+
+    // Check for ALTER (excluding ALTER ADD)
+    else if (upperStatement.match(/^\s*ALTER\s+/i)) {
+      // Exclude ALTER ADD (ALTER TABLE ... ADD COLUMN is safe)
+      if (!upperStatement.match(/\s+ADD\s+(COLUMN|CONSTRAINT|INDEX)/i)) {
+        dangerousStatements.push(statement);
+        warningType = 'danger';
+        warningTitle = 'ALTER Statement Detected';
+        warningMessage = userRole && userRole !== 'MASTER'
+          ? '⛔ This operation requires MASTER role. ALTER operations can modify table structure!'
+          : 'This will modify the table structure. Proceed with caution!';
+        requiresPassword = userRole === 'MASTER'; // Only MASTER can execute, require password
+      }
     }
 
     // Check for DELETE
@@ -89,6 +107,7 @@ export const detectDangerousQueries = (
       title: warningTitle,
       message: warningMessage,
       affectedStatements: dangerousStatements,
+      requiresPassword,
     };
   }
 

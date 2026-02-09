@@ -5,6 +5,7 @@ import DatabasePools from '../config/database';
 import logger from '../utils/logger';
 import { AppError } from '../middleware/error.middleware';
 import { QueryRequest } from '../types';
+import bcrypt from 'bcryptjs';
 
 /**
  * Execute a query on selected databases
@@ -22,6 +23,47 @@ export const executeQuery = async (
     const validation = queryService.validateQuery(queryRequest.query);
     if (!validation.valid) {
       throw new AppError(validation.error || 'Invalid query', 400);
+    }
+
+    // Check if query requires password verification (ALTER/DROP, excluding ALTER ADD)
+    const requiresPasswordVerification = queryService.requiresPasswordVerification(queryRequest.query);
+
+    if (requiresPasswordVerification) {
+      // Only MASTER users can execute these queries
+      if (user.role !== 'MASTER') {
+        throw new AppError('Only MASTER users can execute ALTER/DROP queries', 403);
+      }
+
+      // Verify password
+      if (!queryRequest.password) {
+        throw new AppError('Password verification required for this query', 400);
+      }
+
+      // Get user's password hash from database
+      const dbPools = DatabasePools.getInstance();
+      const historyPool = dbPools.history;
+      const userResult = await historyPool.query(
+        'SELECT password_hash FROM dual_db_manager.users WHERE username = $1',
+        [user.username]
+      );
+
+      if (userResult.rows.length === 0) {
+        throw new AppError('User not found', 404);
+      }
+
+      const passwordValid = await bcrypt.compare(queryRequest.password, userResult.rows[0].password_hash);
+      if (!passwordValid) {
+        logger.warn('Password verification failed for sensitive query', {
+          username: user.username,
+          query: queryRequest.query.substring(0, 100)
+        });
+        throw new AppError('Invalid password', 401);
+      }
+
+      logger.info('Password verification successful for sensitive query', {
+        username: user.username,
+        queryType: requiresPasswordVerification
+      });
     }
 
     // Validate database and mode against actual configuration

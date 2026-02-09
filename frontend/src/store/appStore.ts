@@ -28,8 +28,6 @@ interface AppState {
   // Execution state
   isExecuting: boolean;
   setIsExecuting: (isExecuting: boolean) => void;
-  executeQuery: (() => Promise<void>) | null;
-  setExecuteQuery: (fn: (() => Promise<void>) | null) => void;
 
   // History
   queryHistory: QueryExecution[];
@@ -86,8 +84,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Execution
   isExecuting: false,
   setIsExecuting: (isExecuting) => set({ isExecuting }),
-  executeQuery: null,
-  setExecuteQuery: (fn) => set({ executeQuery: fn }),
 
   // History
   queryHistory: [],

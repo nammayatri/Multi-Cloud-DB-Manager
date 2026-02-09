@@ -42,7 +42,7 @@ interface UserData {
 
 const UsersPage = () => {
   const navigate = useNavigate();
-  const { user, setUser } = useAppStore();
+  const { user, setUser, setCurrentQuery } = useAppStore();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [users, setUsers] = useState<UserData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -87,6 +87,7 @@ const UsersPage = () => {
     try {
       await authAPI.logout();
       setUser(null);
+      setCurrentQuery(''); // Clear the query from editor
       navigate('/login');
       toast.success('Logged out successfully');
     } catch (error) {

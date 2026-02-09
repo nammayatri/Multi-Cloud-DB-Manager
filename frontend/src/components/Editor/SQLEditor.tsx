@@ -4,30 +4,17 @@ import FormatAlignLeftIcon from '@mui/icons-material/FormatAlignLeft';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { useAppStore } from '../../store/appStore';
 import type { editor } from 'monaco-editor';
-import { KeyMod, KeyCode } from 'monaco-editor';
 import { format } from 'sql-formatter';
 import toast from 'react-hot-toast';
 import { useAutoSave } from '../../hooks/useAutoSave';
 import { formatDistanceToNow } from 'date-fns';
 
 const SQLEditor = () => {
-  const { currentQuery, setCurrentQuery, setEditorInstance, executeQuery } = useAppStore();
+  const { currentQuery, setCurrentQuery, setEditorInstance } = useAppStore();
   const { lastSaved, isSaving, clearDraft } = useAutoSave();
 
   const handleEditorDidMount = (editor: editor.IStandaloneCodeEditor) => {
     setEditorInstance(editor);
-
-    // Add Cmd+Enter / Ctrl+Enter keyboard shortcut to execute query
-    editor.addCommand(
-      KeyMod.CtrlCmd | KeyCode.Enter,
-      () => {
-        // The appStore's getQueryToExecute() will automatically handle
-        // selected text vs full query, so we just call executeQuery()
-        if (executeQuery) {
-          executeQuery();
-        }
-      }
-    );
   };
 
   const handleFormatSQL = () => {

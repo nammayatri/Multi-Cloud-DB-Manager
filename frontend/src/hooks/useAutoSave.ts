@@ -114,6 +114,7 @@ export const useAutoSave = () => {
     try {
       localStorage.removeItem(AUTOSAVE_KEY);
       setLastSaved(null);
+      // Don't clear currentQuery - let user keep working with the same query
     } catch (error) {
       console.error('Failed to clear draft:', error);
     }

@@ -437,15 +437,14 @@ class QueryService {
       return { valid: false, error: 'Query is empty' };
     }
 
-    // Block dangerous/destructive commands
-    const dangerousPatterns = [
+    // Block only system-level operations that should never be allowed
+    // Note: Table-level operations (DROP TABLE, TRUNCATE, DELETE, ALTER) are allowed
+    // but will require password verification in the controller
+    const absolutelyBlockedPatterns = [
       /^\s*DROP\s+DATABASE/i,
       /^\s*DROP\s+SCHEMA/i,
       /^\s*CREATE\s+DATABASE/i,
       /^\s*CREATE\s+SCHEMA/i,
-      /^\s*TRUNCATE/i,
-      /^\s*DROP\s+TABLE/i,
-      /^\s*DROP\s+INDEX/i,
       /^\s*GRANT/i,
       /^\s*REVOKE/i,
       /^\s*ALTER\s+ROLE/i,
@@ -456,7 +455,7 @@ class QueryService {
       /^\s*DROP\s+USER/i,
     ];
 
-    for (const pattern of dangerousPatterns) {
+    for (const pattern of absolutelyBlockedPatterns) {
       if (pattern.test(cleanQuery)) {
         return {
           valid: false,
@@ -466,6 +465,49 @@ class QueryService {
     }
 
     return { valid: true };
+  }
+
+  /**
+   * Check if query requires password verification
+   * Returns the operation type if verification is required, null otherwise
+   */
+  public requiresPasswordVerification(query: string): string | null {
+    // Remove comments and whitespace
+    const cleanQuery = query
+      .replace(/--.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .trim()
+      .toUpperCase();
+
+    // Split by semicolons to check all statements
+    const statements = cleanQuery.split(';').map(s => s.trim()).filter(s => s);
+
+    for (const statement of statements) {
+      // Check for DROP TABLE
+      if (statement.match(/^\s*DROP\s+TABLE/i)) {
+        return 'DROP TABLE';
+      }
+
+      // Check for TRUNCATE
+      if (statement.match(/^\s*TRUNCATE/i)) {
+        return 'TRUNCATE';
+      }
+
+      // Check for DELETE
+      if (statement.match(/^\s*DELETE\s+FROM/i)) {
+        return 'DELETE';
+      }
+
+      // Check for ALTER (excluding ALTER ADD)
+      if (statement.match(/^\s*ALTER\s+/i)) {
+        // Exclude ALTER ADD operations (safe)
+        if (!statement.match(/\s+ADD\s+(COLUMN|CONSTRAINT|INDEX)/i)) {
+          return 'ALTER';
+        }
+      }
+    }
+
+    return null;
   }
 
   /**

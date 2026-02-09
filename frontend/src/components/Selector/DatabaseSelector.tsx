@@ -19,7 +19,6 @@ import type { QueryResponse, DatabaseConfiguration, DatabaseInfo } from '../../t
 import QueryWarningDialog from '../Dialog/QueryWarningDialog';
 import { detectDangerousQueries } from '../../services/queryValidation.service';
 import type { ValidationWarning } from '../../services/queryValidation.service';
-import { useAutoSave } from '../../hooks/useAutoSave';
 
 interface DatabaseSelectorProps {
   onExecute: (result: QueryResponse) => void;
@@ -44,17 +43,15 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
     getQueryToExecute,
     isExecuting,
     setIsExecuting,
-    setExecuteQuery,
     user,
   } = useAppStore();
-
-  const { clearDraftOnSuccess } = useAutoSave();
 
   const [databaseOptions, setDatabaseOptions] = useState<DatabaseOption[]>([]);
   const [loadingConfig, setLoadingConfig] = useState(true);
   const [showWarningDialog, setShowWarningDialog] = useState(false);
   const [currentWarning, setCurrentWarning] = useState<ValidationWarning | null>(null);
   const [pendingExecution, setPendingExecution] = useState(false);
+  const [verificationPassword, setVerificationPassword] = useState('');
   const [executionModes, setExecutionModes] = useState<Array<{ value: string; label: string; cloudName: string }>>([]);
   const [cloudNames, setCloudNames] = useState<{ primary: string; secondary: string[] }>({ primary: '', secondary: [] });
 
@@ -177,7 +174,7 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
     }
   }, [selectedDatabase, databaseOptions, setSelectedPgSchema]);
 
-  const executeQueryInternal = async () => {
+  const executeQueryInternal = async (password?: string) => {
     const queryToExecute = getQueryToExecute();
 
     setIsExecuting(true);
@@ -197,14 +194,14 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
         database: selectedDatabase,
         mode: selectedMode,
         pgSchema: selectedPgSchema,
+        password, // Include password if provided
       });
 
       onExecute(result);
 
       if (result.success) {
         toast.success('Query executed successfully!');
-        // Clear auto-saved draft after successful execution
-        clearDraftOnSuccess();
+        // Don't clear autosave - let it persist so query is restored on refresh
       } else {
         toast.error('Query execution failed');
       }
@@ -212,6 +209,7 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
       toast.error(error.response?.data?.error || 'Failed to execute query');
     } finally {
       setIsExecuting(false);
+      setVerificationPassword(''); // Clear password after execution
     }
   };
 
@@ -236,11 +234,11 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
     await executeQueryInternal();
   };
 
-  const handleConfirmExecution = async () => {
+  const handleConfirmExecution = async (password?: string) => {
     setShowWarningDialog(false);
     setCurrentWarning(null);
     setPendingExecution(false);
-    await executeQueryInternal();
+    await executeQueryInternal(password);
   };
 
   const handleCancelExecution = () => {
@@ -249,12 +247,6 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
     setPendingExecution(false);
   };
 
-  // Store execute function in app store for keyboard shortcuts
-  useEffect(() => {
-    setExecuteQuery(handleExecute);
-    return () => setExecuteQuery(null);
-  }, [selectedDatabase, selectedMode, selectedPgSchema, setExecuteQuery]);
-
   return (
     <>
       <QueryWarningDialog
@@ -262,6 +254,9 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
         warning={currentWarning}
         onConfirm={handleConfirmExecution}
         onCancel={handleCancelExecution}
+        requiresPassword={currentWarning?.requiresPassword || false}
+        selectedMode={selectedMode}
+        cloudNames={cloudNames}
       />
 
       <Paper elevation={2} sx={{ p: 2 }}>
