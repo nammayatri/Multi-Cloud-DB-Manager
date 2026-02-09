@@ -72,13 +72,10 @@ const QueryHistory = () => {
   };
 
   const getSuccessStatus = (execution: QueryExecution) => {
-    if (execution.execution_mode === 'both') {
-      return execution.gcp_success && execution.aws_success;
-    } else if (execution.execution_mode === 'gcp') {
-      return execution.gcp_success;
-    } else {
-      return execution.aws_success;
-    }
+    const results = execution.cloud_results || {};
+    const cloudKeys = Object.keys(results);
+    if (cloudKeys.length === 0) return false;
+    return cloudKeys.every((key) => results[key]?.success === true);
   };
 
   return (
@@ -175,28 +172,25 @@ const QueryHistory = () => {
                       secondary={
                         <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
                           <Chip
-                            label={execution.database_schema.toUpperCase()}
+                            label={(execution.database_name || '').toUpperCase()}
                             size="small"
                             variant="outlined"
                           />
                           <Chip
-                            label={execution.execution_mode.toUpperCase()}
+                            label={(execution.execution_mode || '').toUpperCase()}
                             size="small"
                             variant="outlined"
                           />
                           <Typography variant="caption" color="text.secondary">
                             {format(new Date(execution.created_at), 'MMM d, HH:mm')}
                           </Typography>
-                          {execution.gcp_duration_ms && (
-                            <Typography variant="caption" color="text.secondary">
-                              CLOUD2: {execution.gcp_duration_ms}ms
-                            </Typography>
-                          )}
-                          {execution.aws_duration_ms && (
-                            <Typography variant="caption" color="text.secondary">
-                              CLOUD1: {execution.aws_duration_ms}ms
-                            </Typography>
-                          )}
+                          {execution.cloud_results && Object.entries(execution.cloud_results).map(([cloud, result]: [string, any]) => (
+                            result?.duration_ms != null && (
+                              <Typography key={cloud} variant="caption" color="text.secondary">
+                                {cloud.toUpperCase()}: {result.duration_ms}ms
+                              </Typography>
+                            )
+                          ))}
                         </Stack>
                       }
                     />

@@ -76,7 +76,7 @@ export interface WebSocketMessage {
 
 export interface QueryHistoryFilter {
   user_id?: string;
-  schema?: 'primary' | 'secondary';
+  schema?: string;
   success?: boolean;
   limit?: number;
   offset?: number;

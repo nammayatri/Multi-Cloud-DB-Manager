@@ -19,19 +19,12 @@ class HistoryService {
 
     const createQueryHistoryTable = `
       CREATE TABLE IF NOT EXISTS dual_db_manager.query_history (
-        id UUID PRIMARY KEY,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID REFERENCES dual_db_manager.users(id) ON DELETE CASCADE,
         query TEXT NOT NULL,
-        database_schema VARCHAR(10) NOT NULL CHECK (database_schema IN ('primary', 'secondary')),
-        execution_mode VARCHAR(10) NOT NULL CHECK (execution_mode IN ('both', 'gcp', 'aws')),
-        gcp_success BOOLEAN,
-        aws_success BOOLEAN,
-        gcp_result JSONB,
-        aws_result JSONB,
-        gcp_error TEXT,
-        aws_error TEXT,
-        gcp_duration_ms INTEGER,
-        aws_duration_ms INTEGER,
+        database_name VARCHAR(50) NOT NULL,
+        execution_mode VARCHAR(50) NOT NULL,
+        cloud_results JSONB NOT NULL DEFAULT '{}',
         created_at TIMESTAMP DEFAULT NOW()
       );
     `;
@@ -39,7 +32,7 @@ class HistoryService {
     const createIndexes = `
       CREATE INDEX IF NOT EXISTS idx_query_history_user_id ON dual_db_manager.query_history(user_id);
       CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON dual_db_manager.query_history(created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_query_history_schema ON dual_db_manager.query_history(database_schema);
+      CREATE INDEX IF NOT EXISTS idx_query_history_database ON dual_db_manager.query_history(database_name);
     `;
 
     try {
@@ -83,14 +76,17 @@ class HistoryService {
       return;
     }
 
+    // Build cloud_results JSONB dynamically from response
+    const cloudResults: Record<string, any> = {};
+    for (const key of Object.keys(response)) {
+      if (key === 'id' || key === 'success') continue;
+      cloudResults[key] = response[key as keyof QueryResponse];
+    }
+
     const sql = `
       INSERT INTO dual_db_manager.query_history (
-        id, user_id, query, database_schema, execution_mode,
-        gcp_success, aws_success,
-        gcp_result, aws_result,
-        gcp_error, aws_error,
-        gcp_duration_ms, aws_duration_ms
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        id, user_id, query, database_name, execution_mode, cloud_results
+      ) VALUES ($1, $2, $3, $4, $5, $6)
     `;
 
     const values = [
@@ -99,14 +95,7 @@ class HistoryService {
       query,
       database,
       mode,
-      response.gcp ? response.gcp.success : null,
-      response.aws ? response.aws.success : null,
-      response.gcp?.result ? JSON.stringify(response.gcp.result) : null,
-      response.aws?.result ? JSON.stringify(response.aws.result) : null,
-      response.gcp?.error || null,
-      response.aws?.error || null,
-      response.gcp?.duration_ms || null,
-      response.aws?.duration_ms || null,
+      JSON.stringify(cloudResults),
     ];
 
     try {
@@ -127,16 +116,9 @@ class HistoryService {
         qh.id,
         qh.user_id,
         qh.query,
-        qh.database_schema,
+        qh.database_name,
         qh.execution_mode,
-        qh.gcp_success,
-        qh.aws_success,
-        qh.gcp_result,
-        qh.aws_result,
-        qh.gcp_error,
-        qh.aws_error,
-        qh.gcp_duration_ms,
-        qh.aws_duration_ms,
+        qh.cloud_results,
         qh.created_at,
         u.email,
         u.name
@@ -154,29 +136,22 @@ class HistoryService {
     }
 
     if (filter.schema) {
-      // Map frontend schema names to database schema names
-      const schemaMapping: Record<string, string> = {
-        'primary': 'bpp',
-        'secondary': 'bap'
-      };
-      const dbSchema = schemaMapping[filter.schema] || filter.schema;
-
-      sql += ` AND qh.database_schema = $${paramCount++}`;
-      values.push(dbSchema);
+      sql += ` AND qh.database_name = $${paramCount++}`;
+      values.push(filter.schema);
     }
 
     if (filter.success !== undefined) {
       if (filter.success) {
-        // Success: At least one cloud succeeded (and none failed)
-        sql += ` AND (
-          (qh.gcp_success = true OR qh.aws_success = true)
-          AND (qh.gcp_success IS NULL OR qh.gcp_success = true)
-          AND (qh.aws_success IS NULL OR qh.aws_success = true)
+        // All cloud results have success = true
+        sql += ` AND NOT EXISTS (
+          SELECT 1 FROM jsonb_each(qh.cloud_results) AS cr
+          WHERE (cr.value->>'success')::boolean = false
         )`;
       } else {
-        // Failed: At least one cloud failed (or both failed)
-        sql += ` AND (
-          qh.gcp_success = false OR qh.aws_success = false
+        // At least one cloud result has success = false
+        sql += ` AND EXISTS (
+          SELECT 1 FROM jsonb_each(qh.cloud_results) AS cr
+          WHERE (cr.value->>'success')::boolean = false
         )`;
       }
     }
