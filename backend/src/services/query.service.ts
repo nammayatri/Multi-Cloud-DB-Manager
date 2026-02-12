@@ -482,32 +482,42 @@ class QueryService {
     // Split by semicolons to check all statements
     const statements = cleanQuery.split(';').map(s => s.trim()).filter(s => s);
 
+    const dangerousOperations: string[] = [];
+
     for (const statement of statements) {
-      // Check for DROP TABLE
-      if (statement.match(/^\s*DROP\s+TABLE/i)) {
-        return 'DROP TABLE';
+      // Check for DROP TABLE/INDEX/CONSTRAINT/VIEW
+      if (statement.match(/^\s*DROP\s+(TABLE|INDEX|CONSTRAINT|VIEW)/i)) {
+        dangerousOperations.push('DROP');
       }
 
       // Check for TRUNCATE
       if (statement.match(/^\s*TRUNCATE/i)) {
-        return 'TRUNCATE';
+        dangerousOperations.push('TRUNCATE');
       }
 
       // Check for DELETE
       if (statement.match(/^\s*DELETE\s+FROM/i)) {
-        return 'DELETE';
+        dangerousOperations.push('DELETE');
       }
 
       // Check for ALTER (excluding ALTER ADD)
       if (statement.match(/^\s*ALTER\s+/i)) {
         // Exclude ALTER ADD operations (safe)
         if (!statement.match(/\s+ADD\s+(COLUMN|CONSTRAINT|INDEX)/i)) {
-          return 'ALTER';
+          dangerousOperations.push('ALTER');
+        }
+      }
+
+      // Check for UPDATE without WHERE
+      if (statement.match(/^\s*UPDATE\s+/i)) {
+        if (!statement.match(/\s+WHERE\s+/i)) {
+          dangerousOperations.push('UPDATE without WHERE');
         }
       }
     }
 
-    return null;
+    // Return first dangerous operation found, or null if none
+    return dangerousOperations.length > 0 ? dangerousOperations.join(', ') : null;
   }
 
   /**
@@ -521,7 +531,18 @@ class QueryService {
     const upperQuery = trimmed.toUpperCase();
 
     // Only apply to SELECT queries (not INSERT, UPDATE, DELETE, etc.)
-    if (!upperQuery.startsWith('SELECT') && !upperQuery.startsWith('WITH')) {
+    // For CTE (WITH queries), check if the final statement is a SELECT
+    if (upperQuery.startsWith('WITH')) {
+      // Check if the CTE ends with UPDATE, DELETE, or INSERT
+      if (
+        /\b(UPDATE|DELETE|INSERT)\b/i.test(upperQuery) &&
+        !/\bSELECT\b.*\b(UPDATE|DELETE|INSERT)\b/i.test(upperQuery)
+      ) {
+        // CTE with UPDATE/DELETE/INSERT - don't add LIMIT
+        return query;
+      }
+    } else if (!upperQuery.startsWith('SELECT')) {
+      // Not a SELECT or WITH query
       return query;
     }
 

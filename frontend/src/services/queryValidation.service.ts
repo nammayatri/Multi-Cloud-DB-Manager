@@ -37,19 +37,19 @@ export const detectDangerousQueries = (
   for (const statement of statements) {
     const upperStatement = statement.toUpperCase();
 
-    // Check for DROP TABLE/DATABASE
-    if (upperStatement.match(/^\s*DROP\s+(TABLE|DATABASE|SCHEMA)/i)) {
+    // Check for DROP TABLE/DATABASE/INDEX/CONSTRAINT/VIEW
+    if (upperStatement.match(/^\s*DROP\s+(TABLE|DATABASE|SCHEMA|INDEX|CONSTRAINT|VIEW)/i)) {
       dangerousStatements.push(statement);
       warningType = 'danger';
       warningTitle = 'DROP Statement Detected';
       warningMessage = userRole && userRole !== 'MASTER'
-        ? '⛔ This operation requires MASTER role. This will permanently delete the table/database/schema and all its data!'
-        : 'This will permanently delete the table/database/schema and all its data. This action cannot be undone!';
+        ? '⛔ This operation requires MASTER role. This will permanently delete the table/database/schema/index/constraint/view and all its data!'
+        : 'This will permanently delete the table/database/schema/index/constraint/view and all its data. This action cannot be undone!';
       requiresPassword = userRole === 'MASTER'; // Only MASTER can execute, require password
     }
 
     // Check for TRUNCATE
-    else if (upperStatement.match(/^\s*TRUNCATE\s+/i)) {
+    if (upperStatement.match(/^\s*TRUNCATE\s+/i)) {
       dangerousStatements.push(statement);
       warningType = 'danger';
       warningTitle = 'TRUNCATE Statement Detected';
@@ -60,7 +60,7 @@ export const detectDangerousQueries = (
     }
 
     // Check for ALTER (excluding ALTER ADD)
-    else if (upperStatement.match(/^\s*ALTER\s+/i)) {
+    if (upperStatement.match(/^\s*ALTER\s+/i)) {
       // Exclude ALTER ADD (ALTER TABLE ... ADD COLUMN is safe)
       if (!upperStatement.match(/\s+ADD\s+(COLUMN|CONSTRAINT|INDEX)/i)) {
         dangerousStatements.push(statement);
@@ -74,7 +74,7 @@ export const detectDangerousQueries = (
     }
 
     // Check for DELETE
-    else if (upperStatement.match(/^\s*DELETE\s+FROM\s+/i)) {
+    if (upperStatement.match(/^\s*DELETE\s+FROM\s+/i)) {
       dangerousStatements.push(statement);
       warningType = 'danger';
       warningTitle = 'DELETE Statement Detected';
@@ -87,16 +87,20 @@ export const detectDangerousQueries = (
       } else {
         warningMessage = 'This will permanently delete data from the table. Proceed with caution.';
       }
+      requiresPassword = userRole === 'MASTER'; // Only MASTER can execute, require password
     }
 
     // Check for UPDATE without WHERE
-    else if (upperStatement.match(/^\s*UPDATE\s+/i)) {
+    if (upperStatement.match(/^\s*UPDATE\s+/i)) {
       // Check if WHERE clause exists
       if (!upperStatement.match(/\s+WHERE\s+/i)) {
         dangerousStatements.push(statement);
-        warningType = 'warning';
+        warningType = 'danger';
         warningTitle = 'UPDATE Without WHERE Clause';
-        warningMessage = 'This will update ALL rows in the table! Did you forget the WHERE clause?';
+        warningMessage = userRole && userRole !== 'MASTER'
+          ? '⛔ This operation requires MASTER role. This will update ALL rows in the table!'
+          : 'This will update ALL rows in the table! Did you forget the WHERE clause?';
+        requiresPassword = userRole === 'MASTER'; // Require password for UPDATE without WHERE
       }
     }
   }
