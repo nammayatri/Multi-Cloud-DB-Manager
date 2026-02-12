@@ -61,6 +61,51 @@ class HistoryService {
   }
 
   /**
+   * Clean up cloud result to remove verbose PostgreSQL type information
+   */
+  private cleanCloudResult(result: any): any {
+    if (!result) return result;
+
+    // If it's a single result with verbose data
+    if (result.result) {
+      return {
+        success: result.success,
+        duration_ms: result.duration_ms,
+        error: result.error,
+        rowCount: result.result?.rowCount,
+        command: result.result?.command,
+      };
+    }
+
+    // If it's multiple results (multi-statement query)
+    if (result.results) {
+      return {
+        success: result.success,
+        duration_ms: result.duration_ms,
+        statementCount: result.statementCount,
+        results: result.results.map((r: any) => ({
+          success: r.success,
+          statement: r.statement,
+          error: r.error,
+          rowsAffected: r.rowsAffected || r.result?.rowCount,
+          command: r.result?.command,
+        })),
+      };
+    }
+
+    // If it's just an error
+    if (result.error) {
+      return {
+        success: result.success,
+        duration_ms: result.duration_ms,
+        error: result.error,
+      };
+    }
+
+    return result;
+  }
+
+  /**
    * Save query execution to history (only write queries)
    */
   public async saveQueryExecution(
@@ -76,11 +121,11 @@ class HistoryService {
       return;
     }
 
-    // Build cloud_results JSONB dynamically from response
+    // Build cloud_results JSONB dynamically from response, cleaning up verbose data
     const cloudResults: Record<string, any> = {};
     for (const key of Object.keys(response)) {
       if (key === 'id' || key === 'success') continue;
-      cloudResults[key] = response[key as keyof QueryResponse];
+      cloudResults[key] = this.cleanCloudResult(response[key as keyof QueryResponse]);
     }
 
     const sql = `

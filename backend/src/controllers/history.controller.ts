@@ -15,7 +15,7 @@ export const getHistory = async (
 
     const filter: QueryHistoryFilter = {
       user_id: user.id,
-      schema: req.query.schema as 'primary' | 'secondary' | undefined,
+      schema: (req.query.database || req.query.schema) as string | undefined,
       success: req.query.success === 'true' ? true : req.query.success === 'false' ? false : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string) : 50,
       offset: req.query.offset ? parseInt(req.query.offset as string) : 0,

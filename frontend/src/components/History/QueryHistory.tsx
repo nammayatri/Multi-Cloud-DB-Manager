@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import {
   Box,
   Paper,
@@ -14,26 +14,36 @@ import {
   MenuItem,
   Divider,
   Alert,
+  Button,
+  Pagination,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { format } from 'date-fns';
-import { historyAPI } from '../../services/api';
+import { historyAPI, schemaAPI } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
-import type { QueryExecution } from '../../types';
+import type { QueryExecution, DatabaseInfo } from '../../types';
+
+const ITEMS_PER_PAGE = 20;
 
 const QueryHistory = () => {
   const { queryHistory, setQueryHistory, setCurrentQuery } = useAppStore();
   const [loading, setLoading] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'primary' | 'secondary'>('all');
+  const [filter, setFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
 
   const loadHistory = async () => {
     setLoading(true);
     try {
+      const offset = (currentPage - 1) * ITEMS_PER_PAGE;
       const history = await historyAPI.getHistory({
         database: filter === 'all' ? undefined : filter,
         success:
@@ -42,9 +52,18 @@ const QueryHistory = () => {
             : statusFilter === 'success'
             ? true
             : false,
-        limit: 50,
+        limit: ITEMS_PER_PAGE,
+        offset,
       });
       setQueryHistory(history);
+
+      // If we got exactly ITEMS_PER_PAGE items, there might be more
+      // This is a simple estimation - ideally backend should return total count
+      if (history.length === ITEMS_PER_PAGE) {
+        setTotalCount(currentPage * ITEMS_PER_PAGE + 1); // At least one more page
+      } else {
+        setTotalCount((currentPage - 1) * ITEMS_PER_PAGE + history.length);
+      }
     } catch (error) {
       toast.error('Failed to load history');
     } finally {
@@ -52,9 +71,40 @@ const QueryHistory = () => {
     }
   };
 
+  // Fetch database configuration on mount
+  useEffect(() => {
+    const fetchDatabases = async () => {
+      try {
+        const config = await schemaAPI.getConfiguration();
+        setDatabases(config.primary.databases);
+      } catch (error) {
+        console.error('Failed to fetch database configuration:', error);
+      }
+    };
+    fetchDatabases();
+  }, []);
+
+  // Single effect - load history when any dependency changes
   useEffect(() => {
     loadHistory();
-  }, [filter, statusFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, filter, statusFilter]);
+
+  // Separate effect - reset to page 1 when filters change
+  const prevFilter = useRef(filter);
+  const prevStatusFilter = useRef(statusFilter);
+
+  useEffect(() => {
+    const filterChanged = prevFilter.current !== filter;
+    const statusFilterChanged = prevStatusFilter.current !== statusFilter;
+
+    if ((filterChanged || statusFilterChanged) && currentPage !== 1) {
+      setCurrentPage(1);
+    }
+
+    prevFilter.current = filter;
+    prevStatusFilter.current = statusFilter;
+  }, [filter, statusFilter, currentPage]);
 
   const handleCopyQuery = async (query: string, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent triggering the list item click
@@ -95,14 +145,17 @@ const QueryHistory = () => {
           <TextField
             select
             size="small"
-            label="Schema"
+            label="Database"
             value={filter}
-            onChange={(e) => setFilter(e.target.value as any)}
-            sx={{ minWidth: 120 }}
+            onChange={(e) => setFilter(e.target.value)}
+            sx={{ minWidth: 150 }}
           >
-            <MenuItem value="all">All Schemas</MenuItem>
-            <MenuItem value="primary">schema_name_1</MenuItem>
-            <MenuItem value="secondary">schema_name_2</MenuItem>
+            <MenuItem value="all">All Databases</MenuItem>
+            {databases.map((db) => (
+              <MenuItem key={db.name} value={db.name}>
+                {db.label}
+              </MenuItem>
+            ))}
           </TextField>
 
           <TextField
@@ -170,27 +223,32 @@ const QueryHistory = () => {
                         </Stack>
                       }
                       secondary={
-                        <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
-                          <Chip
-                            label={(execution.database_name || '').toUpperCase()}
-                            size="small"
-                            variant="outlined"
-                          />
-                          <Chip
-                            label={(execution.execution_mode || '').toUpperCase()}
-                            size="small"
-                            variant="outlined"
-                          />
-                          <Typography variant="caption" color="text.secondary">
-                            {format(new Date(execution.created_at), 'MMM d, HH:mm')}
+                        <Stack direction="column" spacing={0.5} sx={{ mt: 0.5 }}>
+                          <Stack direction="row" spacing={1} alignItems="center">
+                            <Chip
+                              label={(execution.database_name || '').toUpperCase()}
+                              size="small"
+                              variant="outlined"
+                            />
+                            <Chip
+                              label={(execution.execution_mode || '').toUpperCase()}
+                              size="small"
+                              variant="outlined"
+                            />
+                            <Typography variant="caption" color="text.secondary">
+                              {format(new Date(execution.created_at), 'MMM d, HH:mm')}
+                            </Typography>
+                            {execution.cloud_results && Object.entries(execution.cloud_results).map(([cloud, result]: [string, any]) => (
+                              result?.duration_ms != null && (
+                                <Typography key={cloud} variant="caption" color="text.secondary">
+                                  {cloud.toUpperCase()}: {result.duration_ms}ms
+                                </Typography>
+                              )
+                            ))}
+                          </Stack>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                            Run by: {execution.name || execution.email}
                           </Typography>
-                          {execution.cloud_results && Object.entries(execution.cloud_results).map(([cloud, result]: [string, any]) => (
-                            result?.duration_ms != null && (
-                              <Typography key={cloud} variant="caption" color="text.secondary">
-                                {cloud.toUpperCase()}: {result.duration_ms}ms
-                              </Typography>
-                            )
-                          ))}
                         </Stack>
                       }
                     />
@@ -201,6 +259,35 @@ const QueryHistory = () => {
           </List>
         )}
       </Box>
+
+      {/* Pagination */}
+      {!loading && queryHistory.length > 0 && (
+        <Box sx={{ p: 2, borderTop: 1, borderColor: 'divider', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="caption" color="text.secondary">
+            Page {currentPage} • Showing {queryHistory.length} queries
+          </Typography>
+          <Stack direction="row" spacing={1}>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<ChevronLeftIcon />}
+              disabled={currentPage === 1}
+              onClick={() => setCurrentPage(currentPage - 1)}
+            >
+              Prev
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              endIcon={<ChevronRightIcon />}
+              disabled={queryHistory.length < ITEMS_PER_PAGE}
+              onClick={() => setCurrentPage(currentPage + 1)}
+            >
+              Next
+            </Button>
+          </Stack>
+        </Box>
+      )}
     </Paper>
   );
 };
