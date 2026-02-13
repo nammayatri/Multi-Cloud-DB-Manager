@@ -10,7 +10,7 @@ import historyService from '../history.service';
  * QueryService - Main service that orchestrates query execution
  * Refactored to use smaller, focused classes:
  * - QueryValidator: Validates SQL queries
- * - ExecutionManager: Manages execution state and cleanup
+ * - ExecutionManager: Manages execution state and cleanup (using Redis for cross-pod visibility)
  * - QueryExecutor: Handles actual database execution
  */
 class QueryService {
@@ -18,11 +18,7 @@ class QueryService {
   private executor: QueryExecutor;
 
   constructor() {
-    this.executionManager = new ExecutionManager(
-      1000, // maxResultsSize
-      30 * 60 * 1000, // maxResultsAge: 30 minutes
-      30 * 60 * 1000 // maxActiveAge: 30 minutes
-    );
+    this.executionManager = new ExecutionManager();
     this.executor = new QueryExecutor(this.executionManager);
   }
 
@@ -30,13 +26,13 @@ class QueryService {
    * Stop the query service and cleanup resources
    */
   public stop(): void {
-    this.executionManager.stop();
+    // No cleanup needed - Redis handles TTL automatically
   }
 
   /**
    * Get execution status and result
    */
-  public getExecutionStatus(executionId: string): ExecutionResult | null {
+  public async getExecutionStatus(executionId: string): Promise<ExecutionResult | null> {
     return this.executionManager.getExecutionStatus(executionId);
   }
 
@@ -44,7 +40,7 @@ class QueryService {
    * Cancel an active query execution with proper logging
    */
   public async cancelExecution(executionId: string): Promise<boolean> {
-    const marked = this.executionManager.markAsCancelled(executionId);
+    const marked = await this.executionManager.markAsCancelled(executionId);
     if (!marked) {
       return false;
     }
@@ -102,12 +98,12 @@ class QueryService {
   /**
    * Start async query execution (returns immediately with executionId)
    */
-  public startExecution(request: QueryRequest, userId?: string): string {
+  public async startExecution(request: QueryRequest, userId?: string): Promise<string> {
     const { v4: uuidv4 } = require('uuid');
     const executionId = uuidv4();
     
     // Initialize result storage with userId for authorization
-    this.executionManager.initializeExecution(executionId, userId);
+    await this.executionManager.initializeExecution(executionId, userId);
     
     // Start execution in background with proper error handling
     this.executeAsync(executionId, request, userId).catch((error) => {
@@ -190,18 +186,18 @@ class QueryService {
           
           // Save partial results immediately after each cloud completes
           // This ensures partial results are available even if cancelled mid-execution
-          this.executionManager.completeExecution(executionId, {...response}, false);
+          await this.executionManager.completeExecution(executionId, {...response}, false);
           
           // Update progress
           if (result.statementCount) {
-            this.executionManager.updateProgress(
+            await this.executionManager.updateProgress(
               executionId,
               result.results?.length || (result.success ? 1 : 0),
               result.statementCount
             );
           } else if (result.success) {
             // Single statement - update progress
-            this.executionManager.updateProgress(executionId, 1, 1);
+            await this.executionManager.updateProgress(executionId, 1, 1);
           }
         } catch (error: any) {
           logger.error(`Execution failed on ${cloudName}/${databaseName}`, {
@@ -222,7 +218,7 @@ class QueryService {
       response.success = successes.length > 0 && successes.every(s => s);
       
       // Update result (respects cancellation status, saves partial results)
-      this.executionManager.completeExecution(executionId, response, response.success);
+      await this.executionManager.completeExecution(executionId, response, response.success);
 
       logger.info('Async query execution complete', {
         executionId,
@@ -246,7 +242,7 @@ class QueryService {
           });
       }
     } catch (error: any) {
-      this.executionManager.failExecution(executionId, error.message);
+      await this.executionManager.failExecution(executionId, error.message);
       
       logger.error('Async query execution failed', {
         executionId,

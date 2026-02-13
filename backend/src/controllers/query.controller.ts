@@ -89,7 +89,7 @@ export const executeQuery = async (
     });
 
     // Start async execution - returns immediately with executionId
-    const executionId = queryService.startExecution(queryRequest, user.id);
+    const executionId = await queryService.startExecution(queryRequest, user.id);
 
     res.json({
       executionId,
@@ -116,7 +116,7 @@ export const getExecutionStatus = async (
       throw new AppError('Execution ID is required', 400);
     }
 
-    const status = queryService.getExecutionStatus(executionId);
+    const status = await queryService.getExecutionStatus(executionId);
 
     if (!status) {
       throw new AppError('Execution not found', 404);
@@ -145,7 +145,7 @@ export const cancelQuery = async (
     }
 
     // Check if execution exists in results
-    const status = queryService.getExecutionStatus(executionId);
+    const status = await queryService.getExecutionStatus(executionId);
     
     if (!status) {
       throw new AppError('Execution not found', 404);
