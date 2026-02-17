@@ -186,7 +186,8 @@ class QueryService {
           
           // Save partial results immediately after each cloud completes
           // This ensures partial results are available even if cancelled mid-execution
-          await this.executionManager.completeExecution(executionId, {...response}, false);
+          // Don't mark as complete yet - still running other clouds
+          await this.executionManager.savePartialResults(executionId, {...response});
           
           // Update progress
           if (result.statementCount) {

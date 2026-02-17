@@ -286,6 +286,40 @@ export class ExecutionManager {
   }
 
   /**
+   * Save partial results without changing status (used during multi-cloud execution)
+   */
+  public async savePartialResults(
+    executionId: string,
+    response: QueryResponse
+  ): Promise<void> {
+    // Try Redis first
+    if (await this.isRedisAvailable()) {
+      try {
+        const data = await redisClient.get(this.getRedisKey(executionId));
+        if (data) {
+          const result: ExecutionResult = JSON.parse(data);
+          // Only save results, keep status as 'running'
+          result.result = response;
+          await redisClient.setEx(
+            this.getRedisKey(executionId),
+            this.REDIS_TTL_SECONDS,
+            JSON.stringify(result)
+          );
+          return;
+        }
+      } catch (error) {
+        logger.warn('Redis save partial failed, using in-memory', { executionId, error });
+      }
+    }
+
+    // Fallback to in-memory
+    const inMemoryResult = this.inMemoryFallback.get(executionId);
+    if (inMemoryResult) {
+      inMemoryResult.result = response;
+    }
+  }
+
+  /**
    * Complete execution with result in Redis or in-memory
    */
   public async completeExecution(

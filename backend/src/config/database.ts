@@ -7,31 +7,35 @@ import { DatabaseConfig, DatabaseInfo, CloudConfiguration, SchemaInfo } from '..
 import { loadDatabaseConfig, convertEnvToJson } from './config-loader';
 
 // Connection pool configuration with reliability settings
-const createPoolConfig = (dbConfig: DatabaseConfig | DatabaseInfo): PgPoolConfig => ({
-  host: dbConfig.host,
-  port: dbConfig.port,
-  user: dbConfig.user,
-  password: dbConfig.password,
-  database: dbConfig.database,
+const createPoolConfig = (dbConfig: DatabaseConfig | DatabaseInfo): PgPoolConfig => {
+  const isLocalhost = dbConfig.host === 'localhost' || dbConfig.host === '127.0.0.1';
+  
+  return {
+    host: dbConfig.host,
+    port: dbConfig.port,
+    user: dbConfig.user,
+    password: dbConfig.password,
+    database: dbConfig.database,
 
-  // SSL for databases that require encrypted connections (e.g., GCP pg_hba.conf)
-  ssl: { rejectUnauthorized: false },
+    // SSL for remote databases only (not localhost)
+    ...(isLocalhost ? {} : { ssl: { rejectUnauthorized: false } }),
 
-  // Connection pool settings for high reliability
-  max: 20, // Maximum connections
-  min: 2, // Minimum idle connections
-  idleTimeoutMillis: 30000, // Close idle connections after 30s
-  connectionTimeoutMillis: 10000, // Timeout for acquiring connection
+    // Connection pool settings for high reliability
+    max: 20, // Maximum connections
+    min: 2, // Minimum idle connections
+    idleTimeoutMillis: 30000, // Close idle connections after 30s
+    connectionTimeoutMillis: 10000, // Timeout for acquiring connection
 
-  // Statement timeout (prevent long-running queries from blocking)
-  statement_timeout: 300000, // 5 minutes max per query
+    // Statement timeout (prevent long-running queries from blocking)
+    statement_timeout: 300000, // 5 minutes max per query
 
-  // Connection lifecycle
-  allowExitOnIdle: false, // Keep pool alive
+    // Connection lifecycle
+    allowExitOnIdle: false, // Keep pool alive
 
-  // Application name for monitoring
-  application_name: 'dual-db-manager',
-});
+    // Application name for monitoring
+    application_name: 'dual-db-manager',
+  };
+};
 
 class DatabasePools {
   private static instance: DatabasePools;
