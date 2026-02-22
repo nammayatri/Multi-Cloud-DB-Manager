@@ -182,6 +182,28 @@ export const deleteUser = async (req: Request, res: Response) => {
   }
 };
 
+export const searchUsers = async (req: Request, res: Response) => {
+  try {
+    const q = (req.query.q as string || '').trim();
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+    if (!q) {
+      return res.json({ users: [] });
+    }
+    const dbPools = DatabasePools.getInstance();
+    const historyPool = dbPools.history;
+    const result = await historyPool.query(
+      `SELECT id, username, email, name FROM dual_db_manager.users
+       WHERE username ILIKE $1 OR name ILIKE $1 OR email ILIKE $1
+       ORDER BY name ASC LIMIT $2`,
+      [`%${q}%`, limit]
+    );
+    res.json({ users: result.rows });
+  } catch (error) {
+    logger.error('Search users error:', error);
+    return res.status(500).json({ error: 'Failed to search users' });
+  }
+};
+
 export const login = async (req: Request, res: Response) => {
   try {
     const { username, password } = req.body;

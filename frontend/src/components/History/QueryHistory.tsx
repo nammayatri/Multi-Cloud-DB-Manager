@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
   Box,
   Paper,
@@ -15,7 +15,7 @@ import {
   Divider,
   Alert,
   Button,
-  Pagination,
+  Autocomplete,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
@@ -23,22 +23,87 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import PersonIcon from '@mui/icons-material/Person';
 import { format } from 'date-fns';
-import { historyAPI, schemaAPI } from '../../services/api';
+import { historyAPI, authAPI, schemaAPI } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
 import type { QueryExecution, DatabaseInfo } from '../../types';
 
 const ITEMS_PER_PAGE = 20;
 
+interface UserOption {
+  id: string;
+  username: string;
+  name: string;
+}
+
 const QueryHistory = () => {
-  const { queryHistory, setQueryHistory, setCurrentQuery } = useAppStore();
+  const { user, queryHistory, setQueryHistory, setCurrentQuery } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [userFilter, setUserFilter] = useState<string>('all');
+  const [selectedUser, setSelectedUser] = useState<UserOption | null>(null);
+  const [searchResults, setSearchResults] = useState<UserOption[]>([]);
+  const [userSearchInput, setUserSearchInput] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const isMaster = user?.role === 'MASTER';
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  // Derive unique users from current history page
+  const historyUsers = useMemo(() => {
+    const seen = new Map<string, UserOption>();
+    for (const exec of queryHistory) {
+      if (exec.user_id && !seen.has(exec.user_id)) {
+        seen.set(exec.user_id, {
+          id: exec.user_id,
+          username: exec.username || '',
+          name: exec.name || exec.username || '',
+        });
+      }
+    }
+    return Array.from(seen.values());
+  }, [queryHistory]);
+
+  // Merge history users + search results, deduplicated
+  const userOptions = useMemo(() => {
+    const map = new Map<string, UserOption>();
+    for (const u of historyUsers) map.set(u.id, u);
+    for (const u of searchResults) map.set(u.id, u);
+    return Array.from(map.values()).sort((a, b) =>
+      (a.name || a.username).localeCompare(b.name || b.username)
+    );
+  }, [historyUsers, searchResults]);
+
+  // Debounced search
+  const handleSearchInput = useCallback((input: string) => {
+    setUserSearchInput(input);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    if (!input.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const response = await authAPI.searchUsers(input.trim());
+        setSearchResults(
+          response.users.map((u) => ({ id: u.id, username: u.username, name: u.name || u.username }))
+        );
+      } catch {
+        // Silently fail search
+      }
+    }, 300);
+  }, []);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, []);
 
   const loadHistory = async () => {
     setLoading(true);
@@ -46,6 +111,7 @@ const QueryHistory = () => {
       const offset = (currentPage - 1) * ITEMS_PER_PAGE;
       const history = await historyAPI.getHistory({
         database: filter === 'all' ? undefined : filter,
+        user_id: isMaster && userFilter !== 'all' ? userFilter : undefined,
         success:
           statusFilter === 'all'
             ? undefined
@@ -57,10 +123,8 @@ const QueryHistory = () => {
       });
       setQueryHistory(history);
 
-      // If we got exactly ITEMS_PER_PAGE items, there might be more
-      // This is a simple estimation - ideally backend should return total count
       if (history.length === ITEMS_PER_PAGE) {
-        setTotalCount(currentPage * ITEMS_PER_PAGE + 1); // At least one more page
+        setTotalCount(currentPage * ITEMS_PER_PAGE + 1);
       } else {
         setTotalCount((currentPage - 1) * ITEMS_PER_PAGE + history.length);
       }
@@ -88,26 +152,29 @@ const QueryHistory = () => {
   useEffect(() => {
     loadHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, filter, statusFilter]);
+  }, [currentPage, filter, statusFilter, userFilter]);
 
   // Separate effect - reset to page 1 when filters change
   const prevFilter = useRef(filter);
   const prevStatusFilter = useRef(statusFilter);
+  const prevUserFilter = useRef(userFilter);
 
   useEffect(() => {
     const filterChanged = prevFilter.current !== filter;
     const statusFilterChanged = prevStatusFilter.current !== statusFilter;
+    const userFilterChanged = prevUserFilter.current !== userFilter;
 
-    if ((filterChanged || statusFilterChanged) && currentPage !== 1) {
+    if ((filterChanged || statusFilterChanged || userFilterChanged) && currentPage !== 1) {
       setCurrentPage(1);
     }
 
     prevFilter.current = filter;
     prevStatusFilter.current = statusFilter;
-  }, [filter, statusFilter, currentPage]);
+    prevUserFilter.current = userFilter;
+  }, [filter, statusFilter, userFilter, currentPage]);
 
   const handleCopyQuery = async (query: string, e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent triggering the list item click
+    e.stopPropagation();
     try {
       await navigator.clipboard.writeText(query);
       toast.success('Query copied to clipboard');
@@ -170,6 +237,42 @@ const QueryHistory = () => {
             <MenuItem value="success">Success</MenuItem>
             <MenuItem value="failed">Failed</MenuItem>
           </TextField>
+
+          {isMaster && (
+            <Autocomplete
+              size="small"
+              sx={{ minWidth: 200 }}
+              options={userOptions}
+              getOptionLabel={(option) => option.name || option.username}
+              isOptionEqualToValue={(option, value) => option.id === value.id}
+              value={selectedUser}
+              inputValue={userSearchInput}
+              onInputChange={(_e, value, reason) => {
+                if (reason === 'input') handleSearchInput(value);
+                else setUserSearchInput(value);
+              }}
+              onChange={(_e, value) => {
+                setSelectedUser(value);
+                setUserFilter(value ? value.id : 'all');
+                setSearchResults([]);
+              }}
+              renderInput={(params) => <TextField {...params} label="User" placeholder="Search users..." />}
+              renderOption={(props, option) => (
+                <li {...props} key={option.id}>
+                  <Stack>
+                    <Typography variant="body2">{option.name || option.username}</Typography>
+                    {option.name && option.username && (
+                      <Typography variant="caption" color="text.secondary">
+                        @{option.username}
+                      </Typography>
+                    )}
+                  </Stack>
+                </li>
+              )}
+              filterOptions={(x) => x}
+              noOptionsText={userSearchInput ? 'No users found' : 'Type to search'}
+            />
+          )}
         </Stack>
       </Box>
 
@@ -246,9 +349,24 @@ const QueryHistory = () => {
                               )
                             ))}
                           </Stack>
-                          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
-                            Run by: {execution.name || execution.email}
-                          </Typography>
+                          {isMaster && (
+                            <Stack direction="row" spacing={0.5} alignItems="center">
+                              <PersonIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                              <Typography variant="caption" color="primary.light" sx={{ fontWeight: 500 }}>
+                                {execution.username || execution.name || execution.email}
+                              </Typography>
+                              {execution.name && execution.username && (
+                                <Typography variant="caption" color="text.secondary">
+                                  ({execution.name})
+                                </Typography>
+                              )}
+                            </Stack>
+                          )}
+                          {!isMaster && (
+                            <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                              Run by: {execution.name || execution.email}
+                            </Typography>
+                          )}
                         </Stack>
                       }
                     />

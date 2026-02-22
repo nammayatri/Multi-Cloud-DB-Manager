@@ -165,6 +165,7 @@ class HistoryService {
         qh.execution_mode,
         qh.cloud_results,
         qh.created_at,
+        u.username,
         u.email,
         u.name
       FROM dual_db_manager.query_history qh

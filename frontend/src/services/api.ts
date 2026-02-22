@@ -79,6 +79,11 @@ export const authAPI = {
   deleteUser: async (username: string): Promise<void> => {
     await api.post('/api/auth/delete', { username });
   },
+
+  searchUsers: async (q: string): Promise<{ users: { id: string; username: string; name: string; email: string }[] }> => {
+    const response = await api.get('/api/auth/users/search', { params: { q, limit: 10 } });
+    return response.data;
+  },
 };
 
 // Query API

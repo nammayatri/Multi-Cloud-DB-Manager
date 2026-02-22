@@ -13,8 +13,18 @@ export const getHistory = async (
   try {
     const user = req.user as Express.User;
 
+    // MASTER sees all users' history by default, can filter by specific user
+    // Non-MASTER users always see only their own history
+    let userId: string | undefined;
+    if ((user as any).role === 'MASTER') {
+      // MASTER can optionally filter by a specific user_id
+      userId = req.query.user_id as string | undefined;
+    } else {
+      userId = user.id;
+    }
+
     const filter: QueryHistoryFilter = {
-      user_id: user.id,
+      user_id: userId,
       schema: (req.query.database || req.query.schema) as string | undefined,
       success: req.query.success === 'true' ? true : req.query.success === 'false' ? false : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string) : 50,

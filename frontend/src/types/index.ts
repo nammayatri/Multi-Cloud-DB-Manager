@@ -55,12 +55,14 @@ export interface QueryExecution {
   execution_mode: string; // 'both' or specific cloud name
   [key: string]: any; // Dynamic cloud result fields
   created_at: string;
+  username?: string;
   email?: string;
   name?: string;
 }
 
 export interface HistoryFilter {
   database?: string; // Database name filter
+  user_id?: string; // Filter by specific user (MASTER only)
   success?: boolean;
   limit?: number;
   offset?: number;
