@@ -1,1258 +1,306 @@
-# Dual Database Manager - Backend
+# Multi-Cloud DB Manager — Backend
 
-High-performance Node.js backend service for executing SQL queries across unlimited PostgreSQL database instances and cloud providers simultaneously with complete audit trails.
-
-## Features
-
-### Core Capabilities
-- **Dynamic Multi-Cloud Execution**: Execute queries across unlimited cloud providers (AWS, GCP, Azure, etc.)
-- **JSON-Based Configuration**: Zero-hardcoded databases/clouds, everything configured in `config/databases.json`
-- **Connection Pooling**: Optimized PostgreSQL connection pools per database with automatic retry
-- **Multi-Statement Support**: Execute multiple SQL statements with transaction handling
-- **Query Timeout Protection**: Configurable timeouts prevent runaway queries
-- **Query Validation**: Pre-execution syntax validation with detailed error reporting
-- **Complete Audit Trail**: All write queries logged to database with full metadata
-
-### User Management
-- **Role-Based Access Control (RBAC)**:
-  - `MASTER`: Full access including user management and dangerous operations
-  - `USER`: Execute write queries (INSERT, UPDATE, DELETE)
-  - `READER`: Read-only access (SELECT only)
-- **Session Management**: Redis-backed secure sessions with HTTP-only cookies
-- **User Activation**: Enable/disable user accounts without deletion
-- **Password Security**: bcrypt hashing with salt rounds
-
-### Safety & Reliability
-- **Dangerous Query Detection**: Warns on DROP, TRUNCATE, ALTER operations
-- **Transaction Management**: Automatic BEGIN/COMMIT/ROLLBACK for multi-statement queries
-- **Error Recovery**: Graceful error handling with detailed error messages
-- **Graceful Shutdown**: Proper cleanup of database pools and Redis connections
-- **Structured Logging**: Winston logger with rotating log files
+Express + TypeScript backend for executing SQL queries across multiple PostgreSQL instances and cloud providers simultaneously.
 
 ## Tech Stack
 
-- **Runtime**: Node.js 18+ (LTS)
-- **Language**: TypeScript 5
-- **Framework**: Express.js 4
-- **Database Driver**: node-postgres (pg) with native bindings
-- **Session Store**: Redis 6+ via connect-redis
-- **Validation**: Zod for request/response validation
-- **Logging**: Winston with file rotation
-- **Security**: Helmet, CORS, bcrypt
-- **Development**: Nodemon with TypeScript compilation
-
-## Architecture
-
-### Service Layer
-
-```
-┌─────────────────────────────────────────┐
-│         Express Application             │
-│  (Routes, Middleware, Controllers)      │
-└──────────────┬──────────────────────────┘
-               │
-    ┌──────────┴──────────┬───────────────┐
-    │                     │               │
-┌───▼─────┐      ┌────────▼────┐   ┌─────▼────────┐
-│  Query  │      │   History   │   │     Auth     │
-│ Service │      │   Service   │   │   Service    │
-└───┬─────┘      └─────────────┘   └──────────────┘
-    │
-┌───▼──────────┐
-│ DatabasePools│ (Singleton)
-│  - Cloud1 DB1│
-│  - Cloud1 DB2│
-│  - Cloud2 DB1│
-│  - Cloud2 DB2│
-│  - ...       │
-│  - History   │
-└──────────────┘
-```
-
-### Configuration Flow
-
-```
-1. Startup → Load config/databases.json
-2. Substitute ${ENV_VARS} with values from .env
-3. Parse JSON and validate structure
-4. Create connection pools for each database
-5. Initialize history schema (if RUN_MIGRATIONS=true)
-6. Start Express server
-```
+| Technology | Purpose |
+|-----------|---------|
+| Node.js 18+ | Runtime |
+| TypeScript 5 | Type safety |
+| Express 4 | HTTP framework |
+| node-postgres (pg) | Database driver with connection pooling |
+| Redis 6+ | Session storage + async execution state |
+| Zod | Request validation |
+| Winston | Structured logging with rotation |
+| Helmet | Security headers |
+| bcryptjs | Password hashing |
 
 ## Project Structure
 
 ```
 backend/
+├── config/
+│   ├── databases.json              # Database connections (gitignored)
+│   └── databases.example.json      # Template
+├── migrations/
+│   └── 001_prod_schema.sql         # Schema migrations
 ├── src/
 │   ├── config/
-│   │   ├── database.ts              # DatabasePools singleton
-│   │   └── config-loader.ts         # JSON config loader with env substitution
+│   │   ├── database.ts             # DatabasePools singleton, connection pooling
+│   │   └── config-loader.ts        # JSON config loader with ${ENV_VAR} substitution
 │   ├── controllers/
-│   │   ├── auth.controller.ts       # Authentication endpoints
-│   │   ├── query.controller.ts      # Query execution endpoints
-│   │   ├── history.controller.ts    # Query history endpoints
-│   │   └── schema.controller.ts     # Database configuration endpoints
-│   ├── services/
-│   │   ├── query.service.ts         # Multi-cloud query execution logic
-│   │   ├── history.service.ts       # Query history logging and retrieval
-│   │   └── validation.service.ts    # Query syntax validation
+│   │   ├── auth.controller.ts      # Login, register, user management, search
+│   │   ├── query.controller.ts     # Async query execution, cancellation, status
+│   │   ├── history.controller.ts   # Query history retrieval with filters
+│   │   └── schema.controller.ts    # Database configuration endpoint
 │   ├── middleware/
-│   │   ├── auth.middleware.ts       # Authentication and authorization
-│   │   ├── validation.middleware.ts # Zod request validation
-│   │   ├── role.middleware.ts       # Role-based access control
-│   │   └── error.middleware.ts      # Global error handling
+│   │   ├── auth.middleware.ts      # isAuthenticated, requireMaster, validateQueryPermissions
+│   │   ├── validation.middleware.ts # Zod request schemas
+│   │   └── error.middleware.ts     # Global error handler, 404 handler
 │   ├── routes/
-│   │   ├── auth.routes.ts           # /api/auth/* routes
-│   │   ├── query.routes.ts          # /api/query/* routes
-│   │   ├── history.routes.ts        # /api/history/* routes
-│   │   └── schema.routes.ts         # /api/schemas/* routes
+│   │   ├── auth.routes.ts          # /api/auth/*
+│   │   ├── query.routes.ts         # /api/query/*
+│   │   ├── history.routes.ts       # /api/history/*
+│   │   └── schema.routes.ts        # /api/schemas/*
+│   ├── services/
+│   │   ├── query/
+│   │   │   ├── QueryExecutor.ts    # Multi-cloud parallel execution
+│   │   │   └── QueryValidator.ts   # Dangerous query detection, blocked operations
+│   │   └── history.service.ts      # Query logging and retrieval
 │   ├── types/
-│   │   └── index.ts                 # TypeScript type definitions
+│   │   └── index.ts                # TypeScript interfaces
 │   ├── utils/
-│   │   └── logger.ts                # Winston logger configuration
-│   ├── migrations/
-│   │   └── init-schema.sql          # Initial database schema
-│   └── server.ts                    # Express app entry point
-├── config/
-│   ├── databases.json               # Main configuration (not in git)
-│   └── databases.example.json       # Configuration template
-├── logs/
-│   ├── error.log                    # Error-level logs
-│   └── combined.log                 # All logs
-├── .env                             # Environment variables (not in git)
-├── .env.example                     # Environment template
-├── tsconfig.json                    # TypeScript configuration
-├── package.json                     # Dependencies
-├── Dockerfile                       # Multi-stage production build
-└── README.md
+│   │   └── logger.ts               # Winston config (console + file transports)
+│   └── server.ts                   # Entry point: Express app, Redis, middleware
+├── Dockerfile                      # Multi-stage production build
+├── CONFIG.md                       # Database configuration guide
+├── .env                            # Environment variables (gitignored)
+└── package.json
 ```
 
 ## Setup
 
-### Prerequisites
-
-- **Node.js 18+** and npm
-- **PostgreSQL 12+** - At least one database to manage
-- **Redis 6+** - For session storage
-
-### 1. Install Dependencies
+### 1. Install
 
 ```bash
 cd backend
 npm install
 ```
 
-### 2. Configure Databases
-
-Create `config/databases.json` from the example:
+### 2. Configure databases
 
 ```bash
 cp config/databases.example.json config/databases.json
 ```
 
-Edit `config/databases.json` with your database configurations. See [CONFIG.md](CONFIG.md) for detailed configuration options.
+Edit `config/databases.json` with your database connections. Use `${ENV_VAR}` for secrets. See [CONFIG.md](CONFIG.md) for full reference.
 
-**Example Configuration**:
-```json
-{
-  "primary": {
-    "cloudName": "aws",
-    "db_configs": [
-      {
-        "name": "db1",
-        "label": "Production Database",
-        "host": "${AWS_DB_HOST}",
-        "port": 5432,
-        "user": "${AWS_DB_USER}",
-        "password": "${AWS_DB_PASSWORD}",
-        "database": "myapp",
-        "schemas": ["public", "app_schema"],
-        "defaultSchema": "public"
-      }
-    ]
-  },
-  "secondary": [
-    {
-      "cloudName": "gcp",
-      "db_configs": [
-        {
-          "name": "db1",
-          "label": "Replica Database",
-          "host": "${GCP_DB_HOST}",
-          "port": 5432,
-          "user": "${GCP_DB_USER}",
-          "password": "${GCP_DB_PASSWORD}",
-          "database": "myapp",
-          "schemas": ["public"],
-          "defaultSchema": "public"
-        }
-      ]
-    }
-  ],
-  "history": {
-    "host": "${AWS_DB_HOST}",
-    "port": 5432,
-    "user": "${AWS_DB_USER}",
-    "password": "${AWS_DB_PASSWORD}",
-    "database": "myapp"
-  }
-}
-```
+### 3. Environment
 
-### 3. Configure Environment
-
-Create `.env` file:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` with your configuration:
+Create `.env`:
 
 ```env
-# Server
 PORT=3000
 NODE_ENV=development
-
-# Redis (Session Storage)
 REDIS_HOST=localhost
 REDIS_PORT=6379
-REDIS_PASSWORD=
-
-# Session Secret (CHANGE THIS!)
-SESSION_SECRET=your-secret-key-change-this-in-production
-
-# Frontend URL (for CORS)
+SESSION_SECRET=change-this-to-a-random-string
 FRONTEND_URL=http://localhost:5173
-
-# Query Settings
-MAX_QUERY_TIMEOUT_MS=300000
-
-# Database Migrations
 RUN_MIGRATIONS=true
 
-# Database Credentials (referenced in databases.json)
-AWS_DB_HOST=localhost
-AWS_DB_USER=postgres
-AWS_DB_PASSWORD=postgres
-AWS_DB_NAME=myapp
-
-GCP_DB_HOST=localhost
-GCP_DB_USER=postgres
-GCP_DB_PASSWORD=postgres
-GCP_DB_NAME=myapp
+# Referenced by databases.json
+DB_PASSWORD=your-password
 ```
 
-### 4. Initialize Database Schema
-
-Run migrations to create the `dual_db_manager` schema:
+### 4. Run
 
 ```bash
-npm run migrate
+# Development (hot reload via nodemon + tsx)
+npm run dev
+
+# Production
+npm run build && npm start
 ```
 
-This creates:
-- `dual_db_manager.users` - User accounts
-- `dual_db_manager.query_history` - Query execution history
+Server starts on **http://localhost:3000**
 
-### 5. Create Admin User
+### 5. First admin user
 
-Connect to your history database and create an admin user:
+Register via the frontend UI, then promote:
 
 ```sql
--- Generate password hash (use bcrypt with 10 rounds)
--- Example: bcryptjs.hashSync('your-password', 10)
-
-INSERT INTO dual_db_manager.users (
-  username, email, name, password_hash, role, is_active
-) VALUES (
-  'admin',
-  'admin@example.com',
-  'Administrator',
-  '$2a$10$YourBcryptHashHere',  -- Replace with actual hash
-  'MASTER',
-  true
-);
+UPDATE dual_db_manager.users
+SET role = 'MASTER', is_active = true
+WHERE username = 'your-username';
 ```
 
-**Generate Password Hash**:
-```bash
-node -e "console.log(require('bcryptjs').hashSync('your-password', 10))"
-```
+## API Endpoints
 
-### 6. Start Development Server
+### Health
 
-```bash
-npm run dev
-```
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/health` | — | `{ status: "ok", timestamp, uptime }` |
 
-Backend will run on **http://localhost:3000**
+### Authentication (`/api/auth`)
 
-### 7. Verify Setup
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/register` | — | Register (inactive by default, needs MASTER activation) |
+| `POST` | `/login` | — | Login, returns user + sets session cookie |
+| `GET` | `/me` | User | Current authenticated user |
+| `POST` | `/logout` | User | Destroy session |
+| `GET` | `/users` | Master | List all users |
+| `GET` | `/users/search?q=term&limit=10` | Master | Search by username, name, or email (ILIKE) |
+| `POST` | `/activate` | Master | Activate users: `{ usernames: ["user1"] }` |
+| `POST` | `/deactivate` | Master | Deactivate users: `{ usernames: ["user1"] }` |
+| `POST` | `/change-role` | Master | `{ username, role: "MASTER"|"USER"|"READER" }` |
+| `POST` | `/delete` | Master | Delete user: `{ username }` |
 
-```bash
-# Health check
-curl http://localhost:3000/health
+### Query Execution (`/api/query`)
 
-# Configuration endpoint
-curl http://localhost:3000/api/schemas/configuration
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/execute` | User | Async execute — returns `{ executionId }` |
+| `GET` | `/status/:id` | User | Poll status: running/completed/failed + results |
+| `POST` | `/cancel/:id` | User | Cancel (own queries, or any as MASTER) |
+| `GET` | `/active` | User | List active executions |
+| `POST` | `/validate` | User | Syntax check without executing |
 
-# Login (replace with your credentials)
-curl -X POST http://localhost:3000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"your-password"}'
-```
-
-## API Documentation
-
-### Health Check
-
-```
-GET /health
-```
-
-**Response**:
+**Execute request body:**
 ```json
 {
-  "status": "ok",
-  "timestamp": "2024-01-30T12:00:00.000Z",
-  "uptime": 3600
-}
-```
-
-### Authentication
-
-#### Login
-```
-POST /api/auth/login
-```
-
-**Request Body**:
-```json
-{
-  "username": "admin",
-  "password": "password"
-}
-```
-
-**Response**:
-```json
-{
-  "message": "Login successful",
-  "user": {
-    "id": 1,
-    "username": "admin",
-    "email": "admin@example.com",
-    "name": "Administrator",
-    "role": "MASTER",
-    "is_active": true
-  }
-}
-```
-
-#### Get Current User
-```
-GET /api/auth/me
-```
-
-**Response**:
-```json
-{
-  "user": {
-    "id": 1,
-    "username": "admin",
-    "role": "MASTER",
-    ...
-  }
-}
-```
-
-#### Logout
-```
-POST /api/auth/logout
-```
-
-#### List Users (MASTER only)
-```
-GET /api/auth/users
-```
-
-**Response**:
-```json
-{
-  "users": [
-    {
-      "id": 1,
-      "username": "admin",
-      "email": "admin@example.com",
-      "role": "MASTER",
-      "is_active": true,
-      "created_at": "2024-01-01T00:00:00.000Z"
-    }
-  ]
-}
-```
-
-#### Activate User (MASTER only)
-```
-POST /api/auth/activate
-```
-
-**Request Body**:
-```json
-{
-  "usernames": ["user1", "user2"]
-}
-```
-
-#### Deactivate User (MASTER only)
-```
-POST /api/auth/deactivate
-```
-
-**Request Body**:
-```json
-{
-  "usernames": ["user1"]
-}
-```
-
-#### Change Role (MASTER only)
-```
-POST /api/auth/change-role
-```
-
-**Request Body**:
-```json
-{
-  "username": "user1",
-  "role": "USER"
-}
-```
-
-**Roles**: `MASTER`, `USER`, `READER`
-
-### Query Execution
-
-#### Execute Query
-```
-POST /api/query/execute
-```
-
-**Request Body**:
-```json
-{
-  "query": "SELECT * FROM users LIMIT 10;",
-  "database": "db1",
+  "query": "SELECT * FROM users LIMIT 10",
+  "database": "mydb",
   "mode": "both",
   "pgSchema": "public",
-  "timeout": 30000
+  "timeout": 30000,
+  "continueOnError": false
 }
 ```
 
-**Parameters**:
-- `query` (string, required): SQL query to execute
-- `database` (string, required): Database name from configuration (e.g., "db1", "db2")
-- `mode` (string, required): Execution mode - "both" for all clouds, or specific cloud name (e.g., "aws", "gcp")
-- `pgSchema` (string, optional): PostgreSQL schema (default: from database config)
-- `timeout` (number, optional): Query timeout in milliseconds (default: 30000, max: 300000)
+### History (`/api/history`)
 
-**Response** (Success):
-```json
-{
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "success": true,
-  "aws": {
-    "success": true,
-    "result": {
-      "rows": [
-        {"id": 1, "name": "John"},
-        {"id": 2, "name": "Jane"}
-      ],
-      "rowCount": 2,
-      "command": "SELECT",
-      "fields": [
-        {"name": "id", "dataTypeID": 23},
-        {"name": "name", "dataTypeID": 1043}
-      ]
-    },
-    "duration_ms": 45,
-    "statementCount": 1
-  },
-  "gcp": {
-    "success": true,
-    "result": {
-      "rows": [
-        {"id": 1, "name": "John"},
-        {"id": 2, "name": "Jane"}
-      ],
-      "rowCount": 2,
-      "command": "SELECT",
-      "fields": [
-        {"name": "id", "dataTypeID": 23},
-        {"name": "name", "dataTypeID": 1043}
-      ]
-    },
-    "duration_ms": 52,
-    "statementCount": 1
-  }
-}
-```
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/` | User | Paginated history. Params: `database`, `user_id`, `success`, `limit`, `offset` |
+| `GET` | `/:id` | User | Single execution details |
 
-**Response** (Partial Failure):
-```json
-{
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "success": false,
-  "aws": {
-    "success": true,
-    "result": {...},
-    "duration_ms": 45
-  },
-  "gcp": {
-    "success": false,
-    "error": "relation \"users\" does not exist",
-    "duration_ms": 12
-  }
-}
-```
+### Schema (`/api/schemas`)
 
-**Multi-Statement Response**:
-```json
-{
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "success": true,
-  "aws": {
-    "success": true,
-    "results": [
-      {
-        "rows": [...],
-        "rowCount": 1,
-        "command": "UPDATE"
-      },
-      {
-        "rows": [...],
-        "rowCount": 5,
-        "command": "SELECT"
-      }
-    ],
-    "duration_ms": 78,
-    "statementCount": 2
-  }
-}
-```
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/configuration` | User | Full database + cloud config for frontend |
+| `GET` | `/:database?cloud=` | User | Schemas for a specific database |
 
-#### Validate Query
-```
-POST /api/query/validate
-```
+## Role-Based Access Control
 
-**Request Body**:
-```json
-{
-  "query": "SELECT * FROM users WHERE id = $1"
-}
-```
+Permission checks happen in `auth.middleware.ts` → `validateQueryPermissions`:
 
-**Response**:
-```json
-{
-  "valid": true
-}
-```
+| Operation | MASTER | USER | READER |
+|-----------|:------:|:----:|:------:|
+| SELECT | Yes | Yes | Yes |
+| INSERT / UPDATE | Yes | Yes | — |
+| CREATE TABLE / INDEX | Yes | Yes | — |
+| ALTER TABLE ADD | Yes | Yes | — |
+| DELETE | Yes (password) | — | — |
+| DROP / TRUNCATE | Yes (password) | — | — |
+| ALTER DROP | Yes (password) | — | — |
 
-Or if invalid:
-```json
-{
-  "valid": false,
-  "error": "syntax error at or near \"SELEC\""
-}
-```
+**Blocked for all roles:** DROP/CREATE DATABASE/SCHEMA, GRANT/REVOKE, ALTER/CREATE/DROP ROLE/USER
 
-### Configuration
-
-#### Get Database Configuration
-```
-GET /api/schemas/configuration
-```
-
-**Response**:
-```json
-{
-  "primary": {
-    "cloudName": "aws",
-    "databases": [
-      {
-        "name": "db1",
-        "label": "Production Database",
-        "cloudType": "aws",
-        "schemas": ["public", "app_schema"],
-        "defaultSchema": "public"
-      },
-      {
-        "name": "db2",
-        "label": "Analytics Database",
-        "cloudType": "aws",
-        "schemas": ["public", "analytics"],
-        "defaultSchema": "analytics"
-      }
-    ]
-  },
-  "secondary": [
-    {
-      "cloudName": "gcp",
-      "databases": [
-        {
-          "name": "db1",
-          "label": "Replica Database",
-          "cloudType": "gcp",
-          "schemas": ["public"],
-          "defaultSchema": "public"
-        }
-      ]
-    }
-  ]
-}
-```
-
-#### Get Schemas for Database (Legacy)
-```
-GET /api/schemas/:database?cloud=cloudname
-```
-
-**Example**: `GET /api/schemas/db1?cloud=aws`
-
-**Response**:
-```json
-{
-  "schemas": ["public", "app_schema"],
-  "default": "public"
-}
-```
-
-### Query History
-
-#### Get History
-```
-GET /api/history?database=db1&success=true&limit=50&offset=0
-```
-
-**Query Parameters**:
-- `database` (string, optional): Filter by database name
-- `success` (boolean, optional): Filter by success status
-- `limit` (number, optional): Max results (default: 50, max: 100)
-- `offset` (number, optional): Pagination offset
-- `start_date` (string, optional): ISO 8601 start date
-- `end_date` (string, optional): ISO 8601 end date
-
-**Response**:
-```json
-{
-  "data": [
-    {
-      "id": "123e4567-e89b-12d3-a456-426614174000",
-      "user_id": 1,
-      "query": "UPDATE users SET active = true WHERE id = 1;",
-      "database_name": "db1",
-      "execution_mode": "both",
-      "cloud_results": {
-        "aws": {
-          "success": true,
-          "result": {...},
-          "duration_ms": 45
-        },
-        "gcp": {
-          "success": true,
-          "result": {...},
-          "duration_ms": 52
-        }
-      },
-      "overall_success": true,
-      "created_at": "2024-01-30T12:00:00.000Z",
-      "user": {
-        "username": "admin",
-        "name": "Administrator"
-      }
-    }
-  ],
-  "total": 150,
-  "limit": 50,
-  "offset": 0
-}
-```
-
-#### Get Single Execution
-```
-GET /api/history/:id
-```
-
-**Response**: Same structure as single history item above.
+**Password verification:** MASTER must re-enter password for destructive operations (DELETE, DROP, TRUNCATE, ALTER DROP). Validated via bcrypt in `query.controller.ts`.
 
 ## Database Schema
 
-### Users Table
+Created by `migrations/001_prod_schema.sql` (runs when `RUN_MIGRATIONS=true`):
 
 ```sql
-CREATE SCHEMA IF NOT EXISTS dual_db_manager;
+-- dual_db_manager.users
+id              UUID PRIMARY KEY DEFAULT gen_random_uuid()
+username        VARCHAR(255) UNIQUE NOT NULL
+password_hash   TEXT NOT NULL
+email           VARCHAR(255) UNIQUE NOT NULL
+name            VARCHAR(255) NOT NULL
+role            VARCHAR(50) CHECK (role IN ('MASTER', 'USER', 'READER'))
+is_active       BOOLEAN DEFAULT false
+picture         TEXT
+created_at      TIMESTAMP DEFAULT NOW()
 
-CREATE TABLE dual_db_manager.users (
-  id SERIAL PRIMARY KEY,
-  username VARCHAR(50) UNIQUE NOT NULL,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  name VARCHAR(255),
-  password_hash VARCHAR(255) NOT NULL,
-  role VARCHAR(10) NOT NULL DEFAULT 'USER',
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMP DEFAULT NOW(),
-  last_login TIMESTAMP,
-  CONSTRAINT check_role CHECK (role IN ('MASTER', 'USER', 'READER'))
-);
-
-CREATE INDEX idx_users_username ON dual_db_manager.users(username);
-CREATE INDEX idx_users_email ON dual_db_manager.users(email);
-CREATE INDEX idx_users_is_active ON dual_db_manager.users(is_active);
+-- dual_db_manager.query_history
+id              UUID PRIMARY KEY DEFAULT gen_random_uuid()
+user_id         UUID REFERENCES users(id) ON DELETE CASCADE
+query           TEXT NOT NULL
+database_name   VARCHAR(50) NOT NULL
+execution_mode  VARCHAR(50) NOT NULL
+cloud_results   JSONB NOT NULL DEFAULT '{}'
+created_at      TIMESTAMP DEFAULT NOW()
 ```
 
-### Query History Table
+## Connection Pooling
 
-```sql
-CREATE TABLE dual_db_manager.query_history (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id INTEGER REFERENCES dual_db_manager.users(id),
-  query TEXT NOT NULL,
-  database_name VARCHAR(100) NOT NULL,
-  execution_mode VARCHAR(50) NOT NULL,
-  cloud_results JSONB NOT NULL,
-  overall_success BOOLEAN NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW()
-);
+Configured in `src/config/database.ts`:
 
-CREATE INDEX idx_query_history_user_id ON dual_db_manager.query_history(user_id);
-CREATE INDEX idx_query_history_database ON dual_db_manager.query_history(database_name);
-CREATE INDEX idx_query_history_success ON dual_db_manager.query_history(overall_success);
-CREATE INDEX idx_query_history_created_at ON dual_db_manager.query_history(created_at DESC);
-CREATE INDEX idx_query_history_cloud_results ON dual_db_manager.query_history USING gin(cloud_results);
-```
+| Setting | Value |
+|---------|-------|
+| Min connections | 2 per database |
+| Max connections | 20 per database |
+| Idle timeout | 30s |
+| Connection timeout | 10s |
+| Statement timeout | 300s (configurable) |
 
-**cloud_results JSONB Structure**:
-```json
-{
-  "aws": {
-    "success": true,
-    "result": {...},
-    "duration_ms": 45
-  },
-  "gcp": {
-    "success": false,
-    "error": "connection timeout",
-    "duration_ms": 5000
-  }
-}
-```
+## Async Query Execution
 
-## Configuration
+Queries execute asynchronously via Redis-backed state:
 
-See [CONFIG.md](CONFIG.md) for comprehensive configuration documentation including:
-- JSON configuration structure
-- Environment variable substitution
-- Adding/removing clouds
-- Schema configuration
-- Security best practices
-- Troubleshooting
-
-## Services
-
-### Query Service (`src/services/query.service.ts`)
-
-Handles multi-cloud query execution:
-
-**Key Methods**:
-- `executeDual(request)`: Execute query on selected clouds
-- `executeOnDatabase(cloud, database, query, timeout, schema)`: Execute on single database
-- `executeStatements(client, statements, timeout)`: Execute multiple SQL statements
-- `splitQuery(query)`: Split multi-statement query into individual statements
-
-**Features**:
-- Automatic transaction handling for multiple statements
-- Per-cloud error handling
-- Query timeout enforcement
-- Connection pool management
-- Duration tracking
-
-### History Service (`src/services/history.service.ts`)
-
-Manages query history logging and retrieval:
-
-**Key Methods**:
-- `logExecution(userId, query, database, mode, cloudResults, success)`: Log query execution
-- `getHistory(filter)`: Get paginated history with filters
-- `getExecutionById(id)`: Get single execution
-- `initializeSchema()`: Create database schema on startup
-
-**Features**:
-- JSONB storage for flexible cloud results
-- User join for username/name display
-- Efficient indexing for fast queries
-- Pagination support
-
-### Validation Service (`src/services/validation.service.ts`)
-
-Validates SQL query syntax:
-
-**Key Methods**:
-- `validateQuery(query)`: Check query syntax without execution
-
-**Features**:
-- PostgreSQL-specific validation
-- Error message extraction
-- No side effects (doesn't execute query)
-
-## Middleware
-
-### Authentication Middleware (`src/middleware/auth.middleware.ts`)
-
-**`isAuthenticated`**: Ensures user is logged in
-- Checks session for user_id
-- Loads user from database
-- Attaches user to `req.user`
-- Returns 401 if not authenticated
-
-**`requireAuth`**: Alias for isAuthenticated
-
-### Role Middleware (`src/middleware/role.middleware.ts`)
-
-**`requireRole(role)`**: Ensures user has specific role or higher
-- Role hierarchy: MASTER > USER > READER
-- MASTER can do everything
-- USER can execute write queries
-- READER can only execute SELECT queries
-
-### Validation Middleware (`src/middleware/validation.middleware.ts`)
-
-**Zod Schemas**:
-- `queryExecutionSchema`: Validates query execution requests
-- `validateRequest(schema)`: Generic validation middleware
-
-**Features**:
-- Automatic type coercion
-- Detailed error messages
-- 400 Bad Request on validation failure
-
-### Error Middleware (`src/middleware/error.middleware.ts`)
-
-**`errorHandler`**: Global error handler
-- Catches all errors
-- Logs to Winston logger
-- Returns appropriate HTTP status codes
-- Sanitizes error messages in production
-
-**`notFoundHandler`**: 404 handler for undefined routes
+1. `POST /execute` → stores execution in Redis, returns `executionId`
+2. Backend runs query in background across selected clouds
+3. Client polls `GET /status/:id` for progress and results
+4. Results include per-cloud success/failure, duration, row data
+5. Execution state expires after `REDIS_EXECUTION_TTL_SECONDS` (default 300s)
 
 ## Logging
 
-### Winston Configuration (`src/utils/logger.ts`)
+Winston with two file transports + console (dev only):
 
-**Log Levels**:
-- `error`: Error conditions
-- `warn`: Warning conditions
-- `info`: Informational messages
-- `http`: HTTP request logs
-- `debug`: Debug information
+- `logs/error.log` — error level only
+- `logs/combined.log` — all levels
+- Daily rotation, 14-day retention
+- Structured JSON format with timestamps
 
-**Transports**:
-- **File (error.log)**: Error-level logs only
-- **File (combined.log)**: All logs
-- **Console**: Development only, colored output
+## Environment Variables
 
-**Log Format**:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | Server port |
+| `NODE_ENV` | `development` | `development` or `production` |
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REDIS_PASSWORD` | — | Redis password (optional) |
+| `SESSION_SECRET` | — | **Required.** Session encryption key |
+| `FRONTEND_URL` | `http://localhost:5173` | CORS allowed origin |
+| `MAX_QUERY_TIMEOUT_MS` | `300000` | Max query timeout (5 min) |
+| `STATEMENT_TIMEOUT_MS` | `300000` | Per-statement PostgreSQL timeout |
+| `REDIS_EXECUTION_TTL_SECONDS` | `300` | Async execution state TTL in Redis |
+| `RUN_MIGRATIONS` | `false` | Auto-create schema on startup |
+
+## Docker
+
+```bash
+# Build (use --platform linux/amd64 for x86 servers from ARM machines)
+docker build --platform linux/amd64 -t multi-cloud-db-backend .
+
+# Run
+docker run -p 3000:3000 --env-file .env multi-cloud-db-backend
 ```
-2024-01-30 12:00:00 [info]: Server started on port 3000
-2024-01-30 12:00:05 [error]: Database connection failed: connection timeout
-```
 
-**Log Rotation**: Logs are rotated daily, kept for 14 days.
+Multi-stage build: compiles TypeScript in builder stage, runs `node dist/server.js` in production stage with only production dependencies.
+
+Built-in health check: `GET /health` every 30s.
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Development with hot reload (nodemon + tsx) |
+| `npm run build` | Compile TypeScript to `dist/` |
+| `npm start` | Run production build |
+| `npm run lint` | ESLint |
+| `npm test` | Vitest |
 
 ## Security
 
-### SQL Injection Prevention
-- Parameterized queries throughout
-- No string concatenation for SQL
-- Query validation before execution
-
-### Password Security
-- bcrypt hashing with 10 salt rounds
-- Passwords never logged or returned in responses
-- Session-based authentication (no JWTs to leak)
-
-### Session Security
-- HTTP-only cookies prevent XSS
-- Secure flag in production (HTTPS only)
-- SameSite attribute prevents CSRF
-- Session expiry: 7 days
-- Redis-backed session storage
-
-### CORS Configuration
-- Whitelist allowed origins
-- Credentials allowed for session cookies
-- Specific HTTP methods only
-
-### Rate Limiting
-- TODO: Implement rate limiting per user/IP
-- Recommended: 100 requests/minute
-
-### Helmet Security Headers
-- Content Security Policy
-- X-Frame-Options
-- X-Content-Type-Options
-- Referrer-Policy
-
-## Error Handling
-
-### Database Errors
-```json
-{
-  "error": "relation \"users\" does not exist",
-  "details": "Query failed on aws: relation \"users\" does not exist"
-}
-```
-
-### Authentication Errors
-```json
-{
-  "error": "Invalid credentials"
-}
-```
-
-### Validation Errors
-```json
-{
-  "error": "Validation failed",
-  "details": [
-    {
-      "field": "query",
-      "message": "Query cannot be empty"
-    }
-  ]
-}
-```
-
-### Authorization Errors
-```json
-{
-  "error": "Insufficient permissions"
-}
-```
-
-## Development
-
-### Available Scripts
-
-```bash
-# Install dependencies
-npm install
-
-# Start development server (hot reload)
-npm run dev
-
-# Build for production
-npm run build
-
-# Start production server
-npm start
-
-# Run migrations
-npm run migrate
-
-# Lint TypeScript
-npm run lint
-
-# Type check
-npx tsc --noEmit
-```
-
-### Development Workflow
-
-1. Make changes to TypeScript files in `src/`
-2. Nodemon automatically recompiles and restarts server
-3. Check logs in console for errors
-4. Test API endpoints with curl or Postman
-5. Commit changes when tests pass
-
-### Adding a New Cloud
-
-1. Update `config/databases.json`:
-   ```json
-   {
-     "secondary": [
-       ...,
-       {
-         "cloudName": "azure",
-         "db_configs": [...]
-       }
-     ]
-   }
-   ```
-
-2. Add environment variables to `.env`:
-   ```env
-   AZURE_DB_HOST=azure-host
-   AZURE_DB_USER=user
-   AZURE_DB_PASSWORD=password
-   ```
-
-3. Restart backend: `npm run dev`
-4. Verify configuration: `curl http://localhost:3000/api/schemas/configuration`
-
-### Adding a New Database
-
-1. Update `config/databases.json`:
-   ```json
-   {
-     "primary": {
-       "db_configs": [
-         ...,
-         {
-           "name": "new_db",
-           "label": "New Database",
-           ...
-         }
-       ]
-     }
-   }
-   ```
-
-2. Restart backend
-3. New database appears in frontend dropdown automatically
-
-## Production Deployment
-
-### Environment Variables
-
-**Critical Production Settings**:
-```env
-NODE_ENV=production
-SESSION_SECRET=<strong-random-string>
-FRONTEND_URL=https://your-frontend-domain.com
-REDIS_PASSWORD=<strong-password>
-```
-
-### Docker Deployment
-
-**Build Image**:
-```bash
-cd backend
-docker build -t dual-db-manager-backend .
-```
-
-**Run Container**:
-```bash
-docker run -d \
-  --name backend \
-  -p 3000:3000 \
-  -e NODE_ENV=production \
-  -e REDIS_HOST=redis \
-  -e SESSION_SECRET=your-secret \
-  --link redis:redis \
-  dual-db-manager-backend
-```
-
-### Kubernetes Deployment
-
-See `../k8s/backend.yaml` for Kubernetes manifests.
-
-**Key Resources**:
-- Deployment: backend pods with health checks
-- Service: Internal ClusterIP service
-- ConfigMap: databases.json configuration
-- Secret: Environment variables with credentials
-
-**Health Checks**:
-```yaml
-livenessProbe:
-  httpGet:
-    path: /health
-    port: 3000
-  initialDelaySeconds: 30
-  periodSeconds: 10
-
-readinessProbe:
-  httpGet:
-    path: /health
-    port: 3000
-  initialDelaySeconds: 5
-  periodSeconds: 5
-```
-
-### Database Migrations
-
-**Automatic** (on startup):
-```env
-RUN_MIGRATIONS=true
-```
-
-**Manual**:
-```bash
-npm run migrate
-```
-
-**Rollback**: Manually execute SQL to drop schema:
-```sql
-DROP SCHEMA IF EXISTS dual_db_manager CASCADE;
-```
-
-## Monitoring
-
-### Health Check
-
-```bash
-curl http://localhost:3000/health
-```
-
-**Response**:
-```json
-{
-  "status": "ok",
-  "timestamp": "2024-01-30T12:00:00.000Z",
-  "uptime": 3600
-}
-```
-
-### Metrics to Monitor
-
-1. **Database Connection Pool**:
-   - Idle connections
-   - Active connections
-   - Waiting clients
-
-2. **Query Performance**:
-   - Average query duration
-   - Query timeout rate
-   - Error rate per cloud
-
-3. **Session Storage**:
-   - Redis memory usage
-   - Session count
-   - Session expiry rate
-
-4. **API Performance**:
-   - Request rate
-   - Response time
-   - Error rate
-
-### Log Monitoring
-
-**Log Locations**:
-- `logs/error.log` - Error-level logs
-- `logs/combined.log` - All logs
-- Console (development)
-
-**Log Aggregation**:
-- Recommended: ELK Stack (Elasticsearch, Logstash, Kibana)
-- Or: Datadog, New Relic, CloudWatch
-
-## Troubleshooting
-
-### Issue: "Pool not found: cloud_db"
-
-**Cause**: Database configuration doesn't match request
-
-**Solution**:
-1. Check `config/databases.json` has correct cloud and database names
-2. Verify frontend is sending correct database name
-3. Restart backend: `npm run dev`
-
-### Issue: "Redis connection failed"
-
-**Cause**: Redis not running or wrong host/port
-
-**Solution**:
-1. Start Redis: `redis-server`
-2. Check Redis is running: `redis-cli ping` (should return "PONG")
-3. Verify `REDIS_HOST` and `REDIS_PORT` in `.env`
-
-### Issue: "relation \"dual_db_manager.users\" does not exist"
-
-**Cause**: Database schema not initialized
-
-**Solution**:
-1. Run migrations: `npm run migrate`
-2. Or set `RUN_MIGRATIONS=true` in `.env` and restart
-
-### Issue: Query timeout
-
-**Cause**: Query taking too long or database unreachable
-
-**Solution**:
-1. Check query is optimized (add indexes, limit results)
-2. Increase timeout: `MAX_QUERY_TIMEOUT_MS=600000` (10 minutes)
-3. Verify database is reachable: `psql -h host -U user -d database`
-
-### Issue: "Insufficient permissions"
-
-**Cause**: User role doesn't allow operation
-
-**Solution**:
-1. Check user role in database: `SELECT role FROM dual_db_manager.users WHERE username = 'user'`
-2. Change role if needed (MASTER only):
-   ```sql
-   UPDATE dual_db_manager.users SET role = 'USER' WHERE username = 'user';
-   ```
-
-## Performance Optimization
-
-### Connection Pooling
-
-**Current Settings** (`src/config/database.ts`):
-```typescript
-{
-  min: 2,          // Minimum idle connections
-  max: 20,         // Maximum connections
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-  statement_timeout: 300000  // 5 minutes
-}
-```
-
-**Tuning**:
-- Increase `max` if you have many concurrent users
-- Decrease `statement_timeout` to prevent long-running queries
-- Monitor pool stats to find optimal settings
-
-### Query Caching
-
-**Current**: No query caching (always fresh data)
-
-**Future**: Implement Redis caching for:
-- READ queries (SELECT)
-- Configuration API responses
-- Schema information
-
-### Database Indexes
-
-Ensure target databases have proper indexes:
-```sql
--- Example: Index for common WHERE clauses
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_created_at ON users(created_at DESC);
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make changes with proper TypeScript types
-4. Add tests if applicable
-5. Run linter: `npm run lint`
-6. Test all API endpoints manually
-7. Commit changes: `git commit -m 'Add feature'`
-8. Push to branch: `git push origin feature/my-feature`
-9. Open Pull Request
+- Parameterized queries (no SQL injection)
+- bcrypt password hashing (10 salt rounds)
+- HTTP-only secure session cookies (7-day expiry, SameSite: lax)
+- Helmet security headers
+- CORS whitelist
+- Server-side query validation + dangerous operation detection
+- Blocked system operations (DROP DATABASE, GRANT, etc.) for all roles
+- Redis-backed sessions (no JWT tokens)
+- Trust proxy enabled for load balancers
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](../LICENSE) file for details.
-
----
-
-Built with ❤️ using Node.js, TypeScript, and PostgreSQL for database administrators managing multi-cloud deployments.
+MIT — see [LICENSE](../LICENSE)
