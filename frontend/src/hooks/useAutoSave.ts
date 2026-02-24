@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 
 const AUTOSAVE_KEY = 'dual_db_manager_autosave_query';
 const AUTOSAVE_INTERVAL = 5000; // 5 seconds
+const AUTOSAVE_TTL_HOURS = 2; // Clear draft after 2 hours
 
 interface AutoSaveData {
   query: string;
@@ -39,6 +40,13 @@ export const useAutoSave = () => {
       const saved = localStorage.getItem(AUTOSAVE_KEY);
       if (saved) {
         const data: AutoSaveData = JSON.parse(saved);
+
+        // Check if draft is within TTL
+        const maxAge = AUTOSAVE_TTL_HOURS * 60 * 60 * 1000;
+        if (Date.now() - data.timestamp > maxAge) {
+          localStorage.removeItem(AUTOSAVE_KEY);
+          return;
+        }
 
         // Only restore if there's actually a query
         if (data.query && data.query.trim()) {

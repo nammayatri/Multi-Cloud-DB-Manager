@@ -7,14 +7,11 @@ console.log('[STARTUP] Environment loaded, importing express...');
 import express from 'express';
 import session from 'express-session';
 import RedisStore from 'connect-redis';
-import { createClient } from 'redis';
 import cors from 'cors';
 import helmet from 'helmet';
-console.log('[STARTUP] Loading database pools...');
 import DatabasePools from './config/database';
-console.log('[STARTUP] Loading history service...');
+import redisClient from './config/redis';
 import historyService from './services/history.service';
-console.log('[STARTUP] Loading logger...');
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
@@ -30,23 +27,6 @@ const PORT = process.env.PORT || 3000;
 
 // Trust proxy (for sessions behind load balancer)
 app.set('trust proxy', 1);
-
-// Redis client for sessions
-const redisClient = createClient({
-  socket: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379'),
-  },
-  password: process.env.REDIS_PASSWORD || undefined,
-});
-
-redisClient.on('error', (err) => {
-  logger.error('Redis client error:', err);
-});
-
-redisClient.on('connect', () => {
-  logger.info('Redis client connected');
-});
 
 // Middleware
 // Use Helmet but disable CSP in production (Pomerium handles authentication redirects)
@@ -105,7 +85,7 @@ app.use(
     cookie: {
       secure: process.env.NODE_ENV === 'production', // HTTPS only in production
       httpOnly: true,
-      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+      maxAge: parseInt(process.env.SESSION_TTL_SECONDS || '43200', 10) * 1000, // Default 12 hours
       sameSite: 'lax',
     },
   })
