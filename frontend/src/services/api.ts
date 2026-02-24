@@ -222,4 +222,32 @@ export const historyAPI = {
   },
 };
 
+// Redis API
+export const redisAPI = {
+  executeCommand: async (request: any): Promise<any> => {
+    const response = await api.post('/api/redis/execute', request);
+    return response.data;
+  },
+
+  startScan: async (request: any): Promise<{ executionId: string; status: string; message: string }> => {
+    const response = await api.post('/api/redis/scan', request);
+    return response.data;
+  },
+
+  getScanStatus: async (id: string): Promise<any> => {
+    const response = await api.get(`/api/redis/scan/${id}`);
+    return response.data;
+  },
+
+  cancelScan: async (id: string): Promise<any> => {
+    const response = await api.post(`/api/redis/scan/${id}/cancel`);
+    return response.data;
+  },
+
+  getHistory: async (filter?: { limit?: number; offset?: number; user_id?: string }): Promise<any[]> => {
+    const response = await api.get('/api/redis/history', { params: filter });
+    return response.data.data;
+  },
+};
+
 export default api;

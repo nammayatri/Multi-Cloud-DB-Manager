@@ -13,11 +13,15 @@ import {
   Drawer,
   Button,
   Stack,
+  ToggleButtonGroup,
+  ToggleButton,
 } from '@mui/material';
 import HistoryIcon from '@mui/icons-material/History';
 import LogoutIcon from '@mui/icons-material/Logout';
 import PeopleIcon from '@mui/icons-material/People';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import StorageIcon from '@mui/icons-material/Storage';
+import MemoryIcon from '@mui/icons-material/Memory';
 import { authAPI, schemaAPI } from '../services/api';
 import { useAppStore } from '../store/appStore';
 import toast from 'react-hot-toast';
@@ -25,15 +29,21 @@ import SQLEditor from '../components/Editor/SQLEditor';
 import DatabaseSelector from '../components/Selector/DatabaseSelector';
 import ResultsPanel from '../components/Results/ResultsPanel';
 import QueryHistory from '../components/History/QueryHistory';
-import type { QueryResponse } from '../types';
+import RedisCommandForm from '../components/Redis/RedisCommandForm';
+import RedisResultsPanel from '../components/Redis/RedisResultsPanel';
+import RedisCacheClearer from '../components/Redis/RedisCacheClearer';
+import RedisHistory from '../components/Redis/RedisHistory';
+import type { QueryResponse, RedisCommandResponse } from '../types';
 
 const ConsolePage = () => {
   const navigate = useNavigate();
-  const { user, setUser, showHistory, setShowHistory, setCurrentQuery } = useAppStore();
+  const { user, setUser, showHistory, setShowHistory, setCurrentQuery, managerMode, setManagerMode } = useAppStore();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [currentResult, setCurrentResult] = useState<QueryResponse | null>(null);
+  const [redisResult, setRedisResult] = useState<RedisCommandResponse | null>(null);
   const [refreshingConfig, setRefreshingConfig] = useState(false);
   const resultsPanelRef = useRef<HTMLDivElement>(null);
+  const redisResultsPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Check authentication
@@ -91,6 +101,20 @@ const ConsolePage = () => {
     }, 200);
   };
 
+  const handleRedisResult = (result: RedisCommandResponse) => {
+    setRedisResult(result);
+
+    setTimeout(() => {
+      if (redisResultsPanelRef.current) {
+        redisResultsPanelRef.current.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+          inline: 'nearest'
+        });
+      }
+    }, 200);
+  };
+
   if (!user) {
     return <Box>Loading...</Box>;
   }
@@ -100,9 +124,40 @@ const ConsolePage = () => {
       {/* Top Bar */}
       <AppBar position="static" elevation={2}>
         <Toolbar>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            Dual DB Manager
+          <Typography variant="h6" component="div" noWrap>
+            {managerMode === 'db' ? 'Dual DB Manager' : 'Redis Manager'}
           </Typography>
+
+          <Box sx={{ flexGrow: 1 }} />
+
+          <ToggleButtonGroup
+            value={managerMode}
+            exclusive
+            onChange={(_, value) => value && setManagerMode(value)}
+            size="small"
+            sx={{
+              bgcolor: 'rgba(255,255,255,0.1)',
+              '& .MuiToggleButton-root': {
+                color: 'rgba(255,255,255,0.7)',
+                borderColor: 'rgba(255,255,255,0.3)',
+                '&.Mui-selected': {
+                  color: '#fff',
+                  bgcolor: 'rgba(255,255,255,0.2)',
+                },
+              },
+            }}
+          >
+            <ToggleButton value="db">
+              <StorageIcon sx={{ mr: 0.5, fontSize: 18 }} />
+              DB Manager
+            </ToggleButton>
+            <ToggleButton value="redis">
+              <MemoryIcon sx={{ mr: 0.5, fontSize: 18 }} />
+              Redis Manager
+            </ToggleButton>
+          </ToggleButtonGroup>
+
+          <Box sx={{ flexGrow: 1 }} />
 
           <Stack direction="row" spacing={2} alignItems="center">
             {user.role === 'MASTER' && (
@@ -170,36 +225,68 @@ const ConsolePage = () => {
         {/* Main Area */}
         <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <Box sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <Grid container spacing={2} sx={{ flexGrow: 1, overflow: 'hidden' }}>
-              {/* Left Column - Editor */}
-              <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                <Box sx={{ overflowY: 'auto', flex: 1 }}>
-                  <Stack spacing={2} sx={{ p: 1 }}>
-                    {/* Database Selector */}
-                    <DatabaseSelector onExecute={handleQueryExecute} />
+            {managerMode === 'db' ? (
+              /* DB Manager View */
+              <Grid container spacing={2} sx={{ flexGrow: 1, overflow: 'hidden' }}>
+                {/* Left Column - Editor */}
+                <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                    <Stack spacing={2} sx={{ p: 1 }}>
+                      {/* Database Selector */}
+                      <DatabaseSelector onExecute={handleQueryExecute} />
 
-                    {/* SQL Editor */}
-                    <Box sx={{ height: '400px' }}>
-                      <SQLEditor />
-                    </Box>
-
-                    {/* Results - Only show after first execution */}
-                    {currentResult && (
-                      <Box ref={resultsPanelRef}>
-                        <ResultsPanel result={currentResult} />
+                      {/* SQL Editor */}
+                      <Box sx={{ height: '400px' }}>
+                        <SQLEditor />
                       </Box>
-                    )}
-                  </Stack>
-                </Box>
-              </Grid>
 
-              {/* Right Column - History (conditional) */}
-              {showHistory && (
-                <Grid item xs={12} md={4} sx={{ height: '100%' }}>
-                  <QueryHistory />
+                      {/* Results - Only show after first execution */}
+                      {currentResult && (
+                        <Box ref={resultsPanelRef}>
+                          <ResultsPanel result={currentResult} />
+                        </Box>
+                      )}
+                    </Stack>
+                  </Box>
                 </Grid>
-              )}
-            </Grid>
+
+                {/* Right Column - History (conditional) */}
+                {showHistory && (
+                  <Grid item xs={12} md={4} sx={{ height: '100%' }}>
+                    <QueryHistory />
+                  </Grid>
+                )}
+              </Grid>
+            ) : (
+              /* Redis Manager View */
+              <Grid container spacing={2} sx={{ flexGrow: 1, overflow: 'hidden' }}>
+                <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                    <Stack spacing={2} sx={{ p: 1 }}>
+                      {/* Redis Command Form */}
+                      <RedisCommandForm onResult={handleRedisResult} />
+
+                      {/* Redis Results */}
+                      {redisResult && (
+                        <Box ref={redisResultsPanelRef}>
+                          <RedisResultsPanel result={redisResult} />
+                        </Box>
+                      )}
+
+                      {/* Cache Clearer */}
+                      <RedisCacheClearer />
+                    </Stack>
+                  </Box>
+                </Grid>
+
+                {/* Right Column - Redis History (conditional) */}
+                {showHistory && (
+                  <Grid item xs={12} md={4} sx={{ height: '100%' }}>
+                    <RedisHistory />
+                  </Grid>
+                )}
+              </Grid>
+            )}
           </Box>
         </Box>
       </Box>

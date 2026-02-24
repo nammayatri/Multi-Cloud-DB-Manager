@@ -21,7 +21,30 @@ const savePersistedSetting = (key: string, value: boolean) => {
   }
 };
 
+// Load persisted string setting from localStorage
+const loadPersistedStringSetting = (key: string, defaultValue: string): string => {
+  try {
+    const stored = localStorage.getItem(key);
+    return stored !== null ? stored : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+};
+
+// Save string setting to localStorage
+const savePersistedStringSetting = (key: string, value: string) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage errors
+  }
+};
+
 interface AppState {
+  // Manager mode
+  managerMode: 'db' | 'redis';
+  setManagerMode: (mode: 'db' | 'redis') => void;
+
   // User state
   user: User | null;
   setUser: (user: User | null) => void;
@@ -63,6 +86,13 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
+  // Manager mode
+  managerMode: loadPersistedStringSetting('managerMode', 'db') as 'db' | 'redis',
+  setManagerMode: (mode) => {
+    savePersistedStringSetting('managerMode', mode);
+    set({ managerMode: mode });
+  },
+
   // User
   user: null,
   setUser: (user) => set({ user }),

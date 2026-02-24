@@ -7,6 +7,7 @@
 
 # Database configuration files (exclude specific ones, keep examples)
 backend/config/databases.json
+backend/config/redis.json
 !backend/config/databases.example.json
 !backend/config/databases.local.json
 

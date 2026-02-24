@@ -21,6 +21,8 @@ import queryRoutes from './routes/query.routes';
 import historyRoutes from './routes/history.routes';
 import schemaRoutes from './routes/schema.routes';
 import replicationRoutes from './routes/replication.routes';
+import redisRoutes from './routes/redis.routes';
+import RedisManagerPools from './config/redis-pools';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -112,6 +114,8 @@ app.use('/api/schemas', schemaRoutes);
 console.log('[STARTUP] ✓ /api/schemas routes mounted');
 app.use('/api/replication', replicationRoutes);
 console.log('[STARTUP] ✓ /api/replication routes mounted');
+app.use('/api/redis', redisRoutes);
+console.log('[STARTUP] ✓ /api/redis routes mounted');
 
 // 404 handler
 app.use(notFoundHandler);
@@ -127,6 +131,14 @@ const shutdown = async () => {
     // Close database pools
     const dbPools = DatabasePools.getInstance();
     await dbPools.shutdown();
+
+    // Close Redis Manager pools
+    try {
+      const redisPools = RedisManagerPools.getInstance();
+      await redisPools.shutdown();
+    } catch (e) {
+      // Redis Manager may not be configured
+    }
 
     // Close Redis connection
     await redisClient.quit();
@@ -161,6 +173,18 @@ const startServer = async () => {
     console.log('[STARTUP] Initializing database pools...');
     DatabasePools.getInstance();
     console.log('[STARTUP] Database pools initialized');
+
+    // Initialize Redis Manager pools (optional)
+    try {
+      const redisPools = RedisManagerPools.getInstance();
+      if (redisPools.isConfigured()) {
+        console.log('[STARTUP] Redis Manager configured with clouds:', redisPools.getAllCloudNames().join(', '));
+      } else {
+        console.log('[STARTUP] Redis Manager not configured (no redis.json found)');
+      }
+    } catch (error) {
+      console.warn('[STARTUP] Redis Manager initialization warning:', error);
+    }
 
     // Initialize history database schema (if enabled)
     if (process.env.RUN_MIGRATIONS === 'true') {

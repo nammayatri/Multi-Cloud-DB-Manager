@@ -29,16 +29,31 @@ class HistoryService {
       );
     `;
 
+    const createRedisHistoryTable = `
+      CREATE TABLE IF NOT EXISTS dual_db_manager.redis_history (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES dual_db_manager.users(id) ON DELETE CASCADE,
+        operation VARCHAR(50) NOT NULL,
+        cloud VARCHAR(50) NOT NULL,
+        details JSONB NOT NULL DEFAULT '{}',
+        cloud_results JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `;
+
     const createIndexes = `
       CREATE INDEX IF NOT EXISTS idx_query_history_user_id ON dual_db_manager.query_history(user_id);
       CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON dual_db_manager.query_history(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_query_history_database ON dual_db_manager.query_history(database_name);
+      CREATE INDEX IF NOT EXISTS idx_redis_history_user_id ON dual_db_manager.redis_history(user_id);
+      CREATE INDEX IF NOT EXISTS idx_redis_history_created_at ON dual_db_manager.redis_history(created_at DESC);
     `;
 
     try {
       await this.dbPools.history.query(createSchema);
       await this.dbPools.history.query(setSearchPath);
       await this.dbPools.history.query(createQueryHistoryTable);
+      await this.dbPools.history.query(createRedisHistoryTable);
       await this.dbPools.history.query(createIndexes);
       logger.info('History database schema initialized');
     } catch (error) {
@@ -246,6 +261,91 @@ class HistoryService {
       return result.rows[0] || null;
     } catch (error) {
       logger.error('Failed to fetch execution by ID:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Save a Redis write operation to history
+   */
+  public async saveRedisOperation(
+    userId: string,
+    operation: string,
+    cloud: string,
+    details: Record<string, any>,
+    cloudResults: Record<string, any>
+  ): Promise<void> {
+    const sql = `
+      INSERT INTO dual_db_manager.redis_history (
+        user_id, operation, cloud, details, cloud_results
+      ) VALUES ($1, $2, $3, $4, $5)
+    `;
+
+    try {
+      await this.dbPools.history.query(sql, [
+        userId,
+        operation,
+        cloud,
+        JSON.stringify(details),
+        JSON.stringify(cloudResults),
+      ]);
+      logger.debug('Redis operation saved to history', { operation, cloud });
+    } catch (error) {
+      logger.error('Failed to save Redis operation to history:', error);
+      // Don't throw - history failure shouldn't fail the operation
+    }
+  }
+
+  /**
+   * Get Redis operation history
+   */
+  public async getRedisHistory(filter: {
+    user_id?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<any[]> {
+    let sql = `
+      SELECT
+        rh.id,
+        rh.user_id,
+        rh.operation,
+        rh.cloud,
+        rh.details,
+        rh.cloud_results,
+        rh.created_at,
+        u.username,
+        u.email,
+        u.name
+      FROM dual_db_manager.redis_history rh
+      JOIN dual_db_manager.users u ON rh.user_id = u.id
+      WHERE 1=1
+    `;
+
+    const values: any[] = [];
+    let paramCount = 1;
+
+    if (filter.user_id) {
+      sql += ` AND rh.user_id = $${paramCount++}`;
+      values.push(filter.user_id);
+    }
+
+    sql += ` ORDER BY rh.created_at DESC`;
+
+    if (filter.limit) {
+      sql += ` LIMIT $${paramCount++}`;
+      values.push(filter.limit);
+    }
+
+    if (filter.offset) {
+      sql += ` OFFSET $${paramCount++}`;
+      values.push(filter.offset);
+    }
+
+    try {
+      const result = await this.dbPools.history.query(sql, values);
+      return result.rows;
+    } catch (error) {
+      logger.error('Failed to fetch Redis history:', error);
       throw error;
     }
   }

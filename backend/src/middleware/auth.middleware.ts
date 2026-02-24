@@ -69,6 +69,64 @@ export const canWrite = (req: Request, res: Response, next: NextFunction) => {
 };
 
 /**
+ * Middleware to validate Redis permissions based on user role
+ * READER cannot execute write commands or delete via SCAN
+ */
+export const validateRedisPermissions = (req: Request, res: Response, next: NextFunction) => {
+  const user = req.user as any;
+
+  if (!user) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { command } = req.body;
+  const upperCmd = command ? String(command).toUpperCase() : '';
+
+  // RAW commands — only MASTER
+  if (upperCmd === 'RAW' && user.role !== 'MASTER') {
+    logger.warn('Non-MASTER attempted Redis RAW command', {
+      username: user.username,
+      role: user.role,
+    });
+    return res.status(403).json({
+      error: 'Forbidden',
+      message: 'Only MASTER role can execute raw Redis commands',
+    });
+  }
+
+  if (user.role === 'READER') {
+    // Check for write commands
+    if (upperCmd) {
+      const writeCommands = ['SET', 'DEL', 'HSET', 'EXPIRE', 'LPUSH', 'RPUSH', 'RAW'];
+      if (writeCommands.includes(upperCmd)) {
+        logger.warn('READER attempted Redis write command', {
+          username: user.username,
+          command: upperCmd,
+        });
+        return res.status(403).json({
+          error: 'Forbidden',
+          message: 'READER role cannot execute write commands',
+        });
+      }
+    }
+
+    // Check for SCAN delete action
+    const { action } = req.body;
+    if (action === 'delete') {
+      logger.warn('READER attempted Redis SCAN delete', {
+        username: user.username,
+      });
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'READER role cannot delete keys',
+      });
+    }
+  }
+
+  next();
+};
+
+/**
  * Middleware to validate query based on user role
  * READER: SELECT only
  * USER: SELECT, INSERT, UPDATE, ALTER, CREATE TABLE only

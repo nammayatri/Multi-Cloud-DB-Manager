@@ -90,3 +90,64 @@ export interface DatabaseConfiguration {
   primary: CloudInfo;
   secondary: CloudInfo[];
 }
+
+// Redis Manager Types
+export interface RedisCommandField {
+  name: string;
+  label: string;
+  required: boolean;
+  default?: string;
+}
+
+export interface RedisCommandDefinition {
+  command: string;
+  label: string;
+  isWrite: boolean;
+  fields: RedisCommandField[];
+}
+
+export interface RedisCommandRequest {
+  command: string;
+  args: Record<string, any>;
+  cloud: string;
+}
+
+export interface RedisScanRequest {
+  pattern: string;
+  cloud: string;
+  action: 'preview' | 'delete';
+  scanCount?: number;
+}
+
+export interface RedisCloudResult {
+  success: boolean;
+  data?: any;
+  error?: string;
+  duration_ms: number;
+}
+
+export interface RedisCommandResponse {
+  id: string;
+  success: boolean;
+  command: string;
+  [cloudName: string]: any;
+}
+
+export interface RedisScanProgress {
+  cloudName: string;
+  nodesTotal: number;
+  nodesScanned: number;
+  keysFound: number;
+  keysDeleted: number;
+  keys?: string[];
+  status: 'scanning' | 'deleting' | 'completed' | 'cancelled' | 'error';
+  error?: string;
+}
+
+export interface RedisScanResponse {
+  id: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  action: 'preview' | 'delete';
+  pattern: string;
+  clouds: Record<string, RedisScanProgress>;
+}

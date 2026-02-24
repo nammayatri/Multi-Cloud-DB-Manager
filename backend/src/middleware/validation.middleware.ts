@@ -37,6 +37,21 @@ export const queryExecutionSchema = z.object({
   pgSchema: z.string().optional(),
 });
 
+// Redis command execution schema
+export const redisCommandSchema = z.object({
+  command: z.string().min(1, 'Command is required'),
+  args: z.record(z.any()).default({}),
+  cloud: z.string().min(1, 'Cloud is required'),
+});
+
+// Redis SCAN schema
+export const redisScanSchema = z.object({
+  pattern: z.string().min(1, 'Pattern is required'),
+  cloud: z.string().min(1, 'Cloud is required'),
+  action: z.enum(['preview', 'delete']),
+  scanCount: z.number().int().positive().max(10000).optional(),
+});
+
 // Query history filter schema
 export const queryHistorySchema = z.object({
   database: z.string().optional(), // Filter by database name

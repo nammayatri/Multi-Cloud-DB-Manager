@@ -92,7 +92,7 @@ const LoginPage = () => {
               Dual DB Manager
             </Typography>
             <Typography variant="subtitle1" color="text.secondary">
-              Execute queries across AWS and GCP databases
+              Execute queries across multiple databases
             </Typography>
           </Box>
 
@@ -222,7 +222,7 @@ const LoginPage = () => {
                 Role-based access: MASTER, USER, READER
               </Typography>
               <Typography component="li" variant="body2" color="text.secondary">
-                Execute queries on AWS and GCP simultaneously
+                Execute queries on Multiplle Clouds simultaneously
               </Typography>
               <Typography component="li" variant="body2" color="text.secondary">
                 Complete query history and audit trail

@@ -147,6 +147,66 @@ export interface SchemaInfo {
   defaultSchema: string;
 }
 
+// Redis Manager Config
+export interface RedisCloudConfig {
+  cloudName: string;
+  host: string;
+  port: number;
+}
+
+export interface RedisConfigJson {
+  primary: RedisCloudConfig;
+  secondary: RedisCloudConfig[];
+}
+
+// Redis Command Execution
+export interface RedisCommandRequest {
+  command: string;
+  args: Record<string, any>;
+  cloud: string;
+}
+
+export interface RedisCloudResult {
+  success: boolean;
+  data?: any;
+  error?: string;
+  duration_ms: number;
+}
+
+export interface RedisCommandResponse {
+  id: string;
+  success: boolean;
+  command: string;
+  [cloudName: string]: any;
+}
+
+// Redis SCAN
+export interface RedisScanRequest {
+  pattern: string;
+  cloud: string;
+  action: 'preview' | 'delete';
+  scanCount?: number;
+}
+
+export interface RedisScanProgress {
+  cloudName: string;
+  nodesTotal: number;
+  nodesScanned: number;
+  keysFound: number;
+  keysDeleted: number;
+  keys?: string[];
+  status: 'scanning' | 'deleting' | 'completed' | 'cancelled' | 'error';
+  error?: string;
+}
+
+export interface RedisScanResponse {
+  id: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  action: 'preview' | 'delete';
+  pattern: string;
+  clouds: Record<string, RedisScanProgress>;
+}
+
 declare global {
   namespace Express {
     interface User {
