@@ -8,6 +8,29 @@ interface CommandDefinition {
 }
 
 const COMMAND_MAP: Record<string, CommandDefinition> = {
+  // ── Key ──────────────────────────────────────────────────────
+  DEL: {
+    isWrite: true,
+    execute: (client, args) => client.del(args.key),
+  },
+  EXISTS: {
+    isWrite: false,
+    execute: (client, args) => client.exists(args.key),
+  },
+  EXPIRE: {
+    isWrite: true,
+    execute: (client, args) => client.expire(args.key, parseInt(args.seconds)),
+  },
+  TTL: {
+    isWrite: false,
+    execute: (client, args) => client.ttl(args.key),
+  },
+  TYPE: {
+    isWrite: false,
+    execute: (client, args) => client.type(args.key),
+  },
+
+  // ── String ───────────────────────────────────────────────────
   GET: {
     isWrite: false,
     execute: (client, args) => client.get(args.key),
@@ -19,6 +42,56 @@ const COMMAND_MAP: Record<string, CommandDefinition> = {
       return client.mGet(keys);
     },
   },
+  SET: {
+    isWrite: true,
+    execute: (client, args) => {
+      if (args.ex) {
+        return client.setEx(args.key, parseInt(args.ex), args.value);
+      }
+      return client.set(args.key, args.value);
+    },
+  },
+  SETNX: {
+    isWrite: true,
+    execute: (client, args) => client.setNX(args.key, args.value),
+  },
+  SETEX: {
+    isWrite: true,
+    execute: (client, args) => client.setEx(args.key, parseInt(args.seconds), args.value),
+  },
+  MSET: {
+    isWrite: true,
+    execute: (client, args) => {
+      const pairs = JSON.parse(args.pairs);
+      const arr: string[] = [];
+      for (const [k, v] of Object.entries(pairs)) {
+        arr.push(k, String(v));
+      }
+      return client.mSet(arr);
+    },
+  },
+  INCR: {
+    isWrite: true,
+    execute: (client, args) => client.incr(args.key),
+  },
+  INCRBY: {
+    isWrite: true,
+    execute: (client, args) => client.incrBy(args.key, parseInt(args.increment)),
+  },
+  DECR: {
+    isWrite: true,
+    execute: (client, args) => client.decr(args.key),
+  },
+  DECRBY: {
+    isWrite: true,
+    execute: (client, args) => client.decrBy(args.key, parseInt(args.decrement)),
+  },
+  INCRBYFLOAT: {
+    isWrite: true,
+    execute: (client, args) => client.incrByFloat(args.key, parseFloat(args.increment)),
+  },
+
+  // ── Hash ─────────────────────────────────────────────────────
   HGET: {
     isWrite: false,
     execute: (client, args) => client.hGet(args.key, args.field),
@@ -31,30 +104,137 @@ const COMMAND_MAP: Record<string, CommandDefinition> = {
     isWrite: false,
     execute: (client, args) => client.hKeys(args.key),
   },
+  HMGET: {
+    isWrite: false,
+    execute: (client, args) => {
+      const fields = String(args.fields).split(',').map((f: string) => f.trim()).filter(Boolean);
+      return client.hmGet(args.key, fields);
+    },
+  },
+  HSET: {
+    isWrite: true,
+    execute: (client, args) => client.hSet(args.key, args.field, args.value),
+  },
+  HDEL: {
+    isWrite: true,
+    execute: (client, args) => client.hDel(args.key, args.field),
+  },
+
+  // ── List ─────────────────────────────────────────────────────
   LRANGE: {
     isWrite: false,
     execute: (client, args) => client.lRange(args.key, parseInt(args.start || '0'), parseInt(args.stop || '-1')),
   },
+  LLEN: {
+    isWrite: false,
+    execute: (client, args) => client.lLen(args.key),
+  },
+  LPUSH: {
+    isWrite: true,
+    execute: (client, args) => client.lPush(args.key, args.value),
+  },
+  RPUSH: {
+    isWrite: true,
+    execute: (client, args) => client.rPush(args.key, args.value),
+  },
+  RPOP: {
+    isWrite: true,
+    execute: (client, args) => client.rPop(args.key),
+  },
+  LTRIM: {
+    isWrite: true,
+    execute: (client, args) => client.lTrim(args.key, parseInt(args.start), parseInt(args.stop)),
+  },
+  LREM: {
+    isWrite: true,
+    execute: (client, args) => client.lRem(args.key, parseInt(args.count), args.element),
+  },
+
+  // ── Set ──────────────────────────────────────────────────────
   SMEMBERS: {
     isWrite: false,
     execute: (client, args) => client.sMembers(args.key),
   },
+  SISMEMBER: {
+    isWrite: false,
+    execute: (client, args) => client.sIsMember(args.key, args.member),
+  },
+  SADD: {
+    isWrite: true,
+    execute: (client, args) => client.sAdd(args.key, args.member),
+  },
+  SREM: {
+    isWrite: true,
+    execute: (client, args) => client.sRem(args.key, args.member),
+  },
+  SMOVE: {
+    isWrite: true,
+    execute: (client, args) => client.sMove(args.source, args.destination, args.member),
+  },
+
+  // ── Sorted Set ───────────────────────────────────────────────
   ZRANGE: {
     isWrite: false,
     execute: (client, args) => client.zRange(args.key, parseInt(args.start || '0'), parseInt(args.stop || '-1')),
   },
-  TTL: {
+  ZREVRANGE: {
     isWrite: false,
-    execute: (client, args) => client.ttl(args.key),
+    execute: (client, args) => client.zRange(args.key, parseInt(args.start || '0'), parseInt(args.stop || '-1'), { REV: true }),
   },
-  TYPE: {
+  ZRANGEBYSCORE: {
     isWrite: false,
-    execute: (client, args) => client.type(args.key),
+    execute: (client, args) => {
+      const options: any = {};
+      if (args.offset !== undefined && args.count !== undefined) {
+        options.LIMIT = { offset: parseInt(args.offset), count: parseInt(args.count) };
+      }
+      return Object.keys(options).length > 0
+        ? client.zRangeByScore(args.key, args.min, args.max, options)
+        : client.zRangeByScore(args.key, args.min, args.max);
+    },
   },
-  EXISTS: {
+  ZRANGEWITHSCORES: {
     isWrite: false,
-    execute: (client, args) => client.exists(args.key),
+    execute: (client, args) => client.zRangeWithScores(args.key, parseInt(args.start || '0'), parseInt(args.stop || '-1')),
   },
+  ZREVRANGEWITHSCORES: {
+    isWrite: false,
+    execute: (client, args) => client.zRangeWithScores(args.key, parseInt(args.start || '0'), parseInt(args.stop || '-1'), { REV: true }),
+  },
+  ZCARD: {
+    isWrite: false,
+    execute: (client, args) => client.zCard(args.key),
+  },
+  ZCOUNT: {
+    isWrite: false,
+    execute: (client, args) => client.zCount(args.key, args.min, args.max),
+  },
+  ZSCORE: {
+    isWrite: false,
+    execute: (client, args) => client.zScore(args.key, args.member),
+  },
+  ZREVRANK: {
+    isWrite: false,
+    execute: (client, args) => client.zRevRank(args.key, args.member),
+  },
+  ZADD: {
+    isWrite: true,
+    execute: (client, args) => client.zAdd(args.key, [{ score: parseFloat(args.score), value: args.member }]),
+  },
+  ZREM: {
+    isWrite: true,
+    execute: (client, args) => client.zRem(args.key, args.member),
+  },
+  ZINCRBY: {
+    isWrite: true,
+    execute: (client, args) => client.zIncrBy(args.key, parseFloat(args.increment), args.member),
+  },
+  ZREMRANGEBYSCORE: {
+    isWrite: true,
+    execute: (client, args) => client.zRemRangeByScore(args.key, args.min, args.max),
+  },
+
+  // ── Stream ───────────────────────────────────────────────────
   XREAD: {
     isWrite: false,
     execute: (client, args) => {
@@ -73,34 +253,70 @@ const COMMAND_MAP: Record<string, CommandDefinition> = {
       return client.xReadGroup(args.group, args.consumer, streams, options);
     },
   },
-  SET: {
-    isWrite: true,
+  XLEN: {
+    isWrite: false,
+    execute: (client, args) => client.xLen(args.key),
+  },
+  XREVRANGE: {
+    isWrite: false,
     execute: (client, args) => {
-      if (args.ex) {
-        return client.setEx(args.key, parseInt(args.ex), args.value);
-      }
-      return client.set(args.key, args.value);
+      const options: any = {};
+      if (args.count) options.COUNT = parseInt(args.count);
+      return Object.keys(options).length > 0
+        ? client.xRevRange(args.key, args.start || '+', args.end || '-', options)
+        : client.xRevRange(args.key, args.start || '+', args.end || '-');
     },
   },
-  DEL: {
-    isWrite: true,
-    execute: (client, args) => client.del(args.key),
+  XINFO_GROUPS: {
+    isWrite: false,
+    execute: (client, args) => client.xInfoGroups(args.key),
   },
-  HSET: {
+  XADD: {
     isWrite: true,
-    execute: (client, args) => client.hSet(args.key, args.field, args.value),
+    execute: (client, args) => {
+      const fields = JSON.parse(args.fields);
+      return client.xAdd(args.key, args.id || '*', fields);
+    },
   },
-  EXPIRE: {
+  XDEL: {
     isWrite: true,
-    execute: (client, args) => client.expire(args.key, parseInt(args.seconds)),
+    execute: (client, args) => client.xDel(args.key, args.id),
   },
-  LPUSH: {
+  XACK: {
     isWrite: true,
-    execute: (client, args) => client.lPush(args.key, args.value),
+    execute: (client, args) => client.xAck(args.key, args.group, args.id),
   },
-  RPUSH: {
+  XGROUP_CREATE: {
     isWrite: true,
-    execute: (client, args) => client.rPush(args.key, args.value),
+    execute: (client, args) => client.xGroupCreate(args.key, args.group, args.id || '$', { MKSTREAM: true }),
+  },
+
+  // ── Geo ──────────────────────────────────────────────────────
+  GEOADD: {
+    isWrite: true,
+    execute: (client, args) => client.geoAdd(args.key, {
+      longitude: parseFloat(args.longitude),
+      latitude: parseFloat(args.latitude),
+      member: args.member,
+    }),
+  },
+  GEOSEARCH: {
+    isWrite: false,
+    execute: (client, args) => client.geoSearch(
+      args.key,
+      { longitude: parseFloat(args.longitude), latitude: parseFloat(args.latitude) },
+      { radius: parseFloat(args.radius), unit: args.unit || 'km' },
+    ),
+  },
+
+  // ── Utility ──────────────────────────────────────────────────
+  PING: {
+    isWrite: false,
+    execute: (client) => client.ping(),
+  },
+  PUBLISH: {
+    isWrite: true,
+    execute: (client, args) => client.publish(args.channel, args.message),
   },
 };
 
@@ -144,9 +360,7 @@ export async function executeRawCommand(
     // firstKey is used for slot routing, tokens[1] is typically the key
     const firstKey = tokens.length > 1 ? tokens[1] : undefined;
     const cmd = tokens[0].toUpperCase();
-    const isReadonly = !['SET', 'DEL', 'HSET', 'HDEL', 'EXPIRE', 'LPUSH', 'RPUSH',
-      'SADD', 'SREM', 'ZADD', 'ZREM', 'UNLINK', 'INCR', 'DECR', 'APPEND',
-      'SETEX', 'PSETEX', 'MSET', 'XADD', 'XTRIM'].includes(cmd);
+    const isReadonly = !WRITE_COMMAND_SET.has(cmd);
 
     const result = await (client as any).sendCommand(firstKey, isReadonly, tokens);
 
@@ -172,6 +386,23 @@ export async function executeRawCommand(
     return { success: false, error: error.message, duration_ms };
   }
 }
+
+// Set of all known write commands for RAW mode isReadonly routing
+const WRITE_COMMAND_SET = new Set([
+  'SET', 'SETNX', 'SETEX', 'PSETEX', 'MSET', 'MSETNX', 'APPEND',
+  'INCR', 'INCRBY', 'INCRBYFLOAT', 'DECR', 'DECRBY',
+  'DEL', 'UNLINK', 'EXPIRE', 'EXPIREAT', 'PEXPIRE', 'PEXPIREAT', 'PERSIST', 'RENAME', 'RENAMENX',
+  'HSET', 'HSETNX', 'HMSET', 'HDEL', 'HINCRBY', 'HINCRBYFLOAT',
+  'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LSET', 'LINSERT', 'LTRIM', 'LREM',
+  'RPOPLPUSH', 'LMOVE', 'LPOS',
+  'SADD', 'SREM', 'SPOP', 'SMOVE', 'SDIFFSTORE', 'SINTERSTORE', 'SUNIONSTORE',
+  'ZADD', 'ZREM', 'ZINCRBY', 'ZREMRANGEBYRANK', 'ZREMRANGEBYSCORE', 'ZREMRANGEBYLEX',
+  'ZPOPMIN', 'ZPOPMAX', 'ZRANGESTORE', 'ZDIFFSTORE', 'ZINTERSTORE', 'ZUNIONSTORE',
+  'XADD', 'XDEL', 'XACK', 'XTRIM', 'XGROUP',
+  'GEOADD',
+  'PUBLISH',
+  'COPY', 'MOVE', 'SORT',
+]);
 
 /**
  * Parse a raw command string into tokens, respecting double-quoted strings.

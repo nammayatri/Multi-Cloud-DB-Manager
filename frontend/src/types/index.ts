@@ -102,6 +102,7 @@ export interface RedisCommandField {
 export interface RedisCommandDefinition {
   command: string;
   label: string;
+  category: string;
   isWrite: boolean;
   fields: RedisCommandField[];
 }

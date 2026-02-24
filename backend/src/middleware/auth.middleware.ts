@@ -97,7 +97,17 @@ export const validateRedisPermissions = (req: Request, res: Response, next: Next
   if (user.role === 'READER') {
     // Check for write commands
     if (upperCmd) {
-      const writeCommands = ['SET', 'DEL', 'HSET', 'EXPIRE', 'LPUSH', 'RPUSH', 'RAW'];
+      const writeCommands = [
+        'SET', 'SETNX', 'SETEX', 'MSET', 'DEL', 'EXPIRE',
+        'INCR', 'INCRBY', 'DECR', 'DECRBY', 'INCRBYFLOAT',
+        'HSET', 'HDEL',
+        'LPUSH', 'RPUSH', 'RPOP', 'LTRIM', 'LREM',
+        'SADD', 'SREM', 'SMOVE',
+        'ZADD', 'ZREM', 'ZINCRBY', 'ZREMRANGEBYSCORE',
+        'XADD', 'XDEL', 'XACK', 'XGROUP_CREATE',
+        'GEOADD', 'PUBLISH',
+        'RAW',
+      ];
       if (writeCommands.includes(upperCmd)) {
         logger.warn('READER attempted Redis write command', {
           username: user.username,

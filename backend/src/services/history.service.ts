@@ -29,31 +29,16 @@ class HistoryService {
       );
     `;
 
-    const createRedisHistoryTable = `
-      CREATE TABLE IF NOT EXISTS dual_db_manager.redis_history (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID REFERENCES dual_db_manager.users(id) ON DELETE CASCADE,
-        operation VARCHAR(50) NOT NULL,
-        cloud VARCHAR(50) NOT NULL,
-        details JSONB NOT NULL DEFAULT '{}',
-        cloud_results JSONB NOT NULL DEFAULT '{}',
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `;
-
     const createIndexes = `
       CREATE INDEX IF NOT EXISTS idx_query_history_user_id ON dual_db_manager.query_history(user_id);
       CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON dual_db_manager.query_history(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_query_history_database ON dual_db_manager.query_history(database_name);
-      CREATE INDEX IF NOT EXISTS idx_redis_history_user_id ON dual_db_manager.redis_history(user_id);
-      CREATE INDEX IF NOT EXISTS idx_redis_history_created_at ON dual_db_manager.redis_history(created_at DESC);
     `;
 
     try {
       await this.dbPools.history.query(createSchema);
       await this.dbPools.history.query(setSearchPath);
       await this.dbPools.history.query(createQueryHistoryTable);
-      await this.dbPools.history.query(createRedisHistoryTable);
       await this.dbPools.history.query(createIndexes);
       logger.info('History database schema initialized');
     } catch (error) {
@@ -185,7 +170,7 @@ class HistoryService {
         u.name
       FROM dual_db_manager.query_history qh
       JOIN dual_db_manager.users u ON qh.user_id = u.id
-      WHERE 1=1
+      WHERE qh.database_name != 'redis'
     `;
 
     const values: any[] = [];
@@ -266,7 +251,7 @@ class HistoryService {
   }
 
   /**
-   * Save a Redis write operation to history
+   * Save a Redis write operation to history (stored in query_history table)
    */
   public async saveRedisOperation(
     userId: string,
@@ -275,29 +260,44 @@ class HistoryService {
     details: Record<string, any>,
     cloudResults: Record<string, any>
   ): Promise<void> {
+    // Build a human-readable command string for the query column
+    let queryStr: string;
+    if (operation === 'SCAN_DELETE') {
+      queryStr = `SCAN_DELETE pattern="${details.pattern}"`;
+    } else if (operation === 'RAW') {
+      queryStr = `RAW: ${String(details.args?.rawCommand || '').substring(0, 500)}`;
+    } else {
+      const args = details.args || {};
+      const parts = [operation];
+      if (args.key) parts.push(args.key);
+      if (args.field) parts.push(args.field);
+      if (args.value) parts.push(JSON.stringify(args.value));
+      if (args.member) parts.push(args.member);
+      queryStr = parts.join(' ');
+    }
+
     const sql = `
-      INSERT INTO dual_db_manager.redis_history (
-        user_id, operation, cloud, details, cloud_results
+      INSERT INTO dual_db_manager.query_history (
+        user_id, query, database_name, execution_mode, cloud_results
       ) VALUES ($1, $2, $3, $4, $5)
     `;
 
     try {
       await this.dbPools.history.query(sql, [
         userId,
-        operation,
+        queryStr,
+        'redis',
         cloud,
-        JSON.stringify(details),
         JSON.stringify(cloudResults),
       ]);
       logger.debug('Redis operation saved to history', { operation, cloud });
     } catch (error) {
       logger.error('Failed to save Redis operation to history:', error);
-      // Don't throw - history failure shouldn't fail the operation
     }
   }
 
   /**
-   * Get Redis operation history
+   * Get Redis operation history (reads from query_history where database_name = 'redis')
    */
   public async getRedisHistory(filter: {
     user_id?: string;
@@ -306,30 +306,29 @@ class HistoryService {
   }): Promise<any[]> {
     let sql = `
       SELECT
-        rh.id,
-        rh.user_id,
-        rh.operation,
-        rh.cloud,
-        rh.details,
-        rh.cloud_results,
-        rh.created_at,
+        qh.id,
+        qh.user_id,
+        qh.query,
+        qh.execution_mode AS cloud,
+        qh.cloud_results,
+        qh.created_at,
         u.username,
         u.email,
         u.name
-      FROM dual_db_manager.redis_history rh
-      JOIN dual_db_manager.users u ON rh.user_id = u.id
-      WHERE 1=1
+      FROM dual_db_manager.query_history qh
+      JOIN dual_db_manager.users u ON qh.user_id = u.id
+      WHERE qh.database_name = 'redis'
     `;
 
     const values: any[] = [];
     let paramCount = 1;
 
     if (filter.user_id) {
-      sql += ` AND rh.user_id = $${paramCount++}`;
+      sql += ` AND qh.user_id = $${paramCount++}`;
       values.push(filter.user_id);
     }
 
-    sql += ` ORDER BY rh.created_at DESC`;
+    sql += ` ORDER BY qh.created_at DESC`;
 
     if (filter.limit) {
       sql += ` LIMIT $${paramCount++}`;

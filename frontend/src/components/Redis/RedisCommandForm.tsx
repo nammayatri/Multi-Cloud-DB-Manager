@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -10,15 +10,16 @@ import {
   Button,
   Stack,
   Typography,
-  ListSubheader,
   CircularProgress,
+  Autocomplete,
+  Chip,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { useAppStore } from '../../store/appStore';
 import { redisAPI, schemaAPI } from '../../services/api';
-import { READ_COMMANDS, WRITE_COMMANDS, RAW_COMMAND, getCommandDefinition } from './RedisCommandDefinitions';
+import { ALL_STRUCTURED_COMMANDS, RAW_COMMAND, getCommandDefinition } from './RedisCommandDefinitions';
 import toast from 'react-hot-toast';
-import type { RedisCommandResponse, DatabaseConfiguration } from '../../types';
+import type { RedisCommandResponse, RedisCommandDefinition, DatabaseConfiguration } from '../../types';
 
 interface RedisCommandFormProps {
   onResult: (result: RedisCommandResponse) => void;
@@ -41,6 +42,20 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
   const commandDef = getCommandDefinition(selectedCommand);
   const isWriteCommand = commandDef?.isWrite ?? false;
   const isRawCommand = selectedCommand === 'RAW';
+
+  // Build available commands based on role
+  const availableCommands = useMemo(() => {
+    const cmds: RedisCommandDefinition[] = [...ALL_STRUCTURED_COMMANDS];
+    if (isMaster) {
+      cmds.push(RAW_COMMAND);
+    }
+    return cmds;
+  }, [isMaster]);
+
+  // Find the currently selected definition for Autocomplete value
+  const selectedDef = useMemo(() => {
+    return availableCommands.find((c) => c.command === selectedCommand) || availableCommands[0];
+  }, [selectedCommand, availableCommands]);
 
   // Fetch cloud names from configuration
   useEffect(() => {
@@ -114,42 +129,54 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
     <Paper elevation={2} sx={{ p: 2 }}>
       <Stack spacing={2}>
         <Stack direction="row" spacing={2} alignItems="center">
-          {/* Command Selector */}
-          <FormControl sx={{ minWidth: 200 }}>
-            <InputLabel>Command</InputLabel>
-            <Select
-              value={selectedCommand}
-              label="Command"
-              onChange={(e) => setSelectedCommand(e.target.value)}
-              disabled={isExecuting}
-            >
-              <ListSubheader>Read Commands</ListSubheader>
-              {READ_COMMANDS.map((cmd) => (
-                <MenuItem key={cmd.command} value={cmd.command}>
-                  {cmd.label}
-                </MenuItem>
-              ))}
-              <ListSubheader>Write Commands</ListSubheader>
-              {WRITE_COMMANDS.map((cmd) => (
-                <MenuItem
-                  key={cmd.command}
-                  value={cmd.command}
-                  disabled={isReader}
-                >
-                  {cmd.label}
-                </MenuItem>
-              ))}
-              {isMaster && <ListSubheader>Master Only</ListSubheader>}
-              {isMaster && (
-                <MenuItem value={RAW_COMMAND.command}>
-                  {RAW_COMMAND.label}
-                </MenuItem>
-              )}
-            </Select>
-          </FormControl>
+          {/* Searchable Command Selector */}
+          <Autocomplete
+            value={selectedDef}
+            onChange={(_, newValue) => {
+              if (newValue) {
+                setSelectedCommand(newValue.command);
+              }
+            }}
+            options={availableCommands}
+            groupBy={(option) => {
+              if (option.isWrite) return `${option.category} (Write)`;
+              return `${option.category} (Read)`;
+            }}
+            getOptionLabel={(option) => option.label}
+            renderOption={(props, option) => (
+              <li {...props} key={option.command}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ width: '100%' }}>
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600 }}>
+                    {option.label}
+                  </Typography>
+                  {option.isWrite && (
+                    <Chip label="W" size="small" color="warning" sx={{ height: 18, fontSize: 10 }} />
+                  )}
+                  {isReader && option.isWrite && (
+                    <Typography variant="caption" color="error" sx={{ ml: 'auto' }}>
+                      No access
+                    </Typography>
+                  )}
+                </Stack>
+              </li>
+            )}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Command"
+                size="small"
+                placeholder="Search commands..."
+              />
+            )}
+            disableClearable
+            isOptionEqualToValue={(option, value) => option.command === value.command}
+            getOptionDisabled={(option) => isReader && option.isWrite}
+            sx={{ minWidth: 280 }}
+            disabled={isExecuting}
+          />
 
           {/* Cloud Selector */}
-          <FormControl sx={{ minWidth: 180 }}>
+          <FormControl sx={{ minWidth: 180 }} size="small">
             <InputLabel>Cloud</InputLabel>
             <Select
               value={selectedCloud}
@@ -185,7 +212,7 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
         </Stack>
 
         {/* Dynamic form fields */}
-        {commandDef && (
+        {commandDef && commandDef.fields.length > 0 && (
           <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
             {commandDef.fields.map((field) => (
               <TextField
@@ -198,7 +225,7 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
                 size="small"
                 sx={{ minWidth: isRawCommand ? 400 : 200, flex: 1 }}
                 placeholder={field.default ? `Default: ${field.default}` : undefined}
-                multiline={isRawCommand}
+                multiline={isRawCommand || field.name === 'pairs' || field.name === 'fields'}
                 maxRows={3}
               />
             ))}
