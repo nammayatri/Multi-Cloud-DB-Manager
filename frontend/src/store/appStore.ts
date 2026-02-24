@@ -83,6 +83,9 @@ interface AppState {
   // UI state
   showHistory: boolean;
   setShowHistory: (show: boolean) => void;
+
+  // Ref slot for execute shortcut bridge
+  executeRef: { current: (() => void) | null };
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -156,4 +159,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // UI
   showHistory: false,
   setShowHistory: (show) => set({ showHistory: show }),
+
+  // Ref slot
+  executeRef: { current: null },
 }));

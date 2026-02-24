@@ -397,6 +397,13 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
     await executeQueryInternal(password);
   };
 
+  // Register execute handler on store ref so Monaco keybinding can call it
+  const { executeRef } = useAppStore();
+  useEffect(() => {
+    executeRef.current = handleExecute;
+    return () => { executeRef.current = null; };
+  }, [handleExecute, executeRef]);
+
   const handleCancelWarning = () => {
     setShowWarningDialog(false);
     setCurrentWarning(null);
