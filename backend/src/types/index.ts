@@ -106,6 +106,11 @@ export interface CloudConfigJson {
   db_configs: DatabaseConfigJson[];
 }
 
+export interface SlackConfigJson {
+  botToken: string;
+  channels: string[];  // Channel IDs or names (e.g., "#replication-alerts")
+}
+
 export interface DatabasesConfigJson {
   primary: CloudConfigJson;
   secondary: CloudConfigJson[];
@@ -116,6 +121,7 @@ export interface DatabasesConfigJson {
     password: string;
     database: string;
   };
+  slack?: SlackConfigJson;
 }
 
 // Internal Configuration Types (used by DatabasePools)

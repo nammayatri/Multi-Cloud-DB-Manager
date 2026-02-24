@@ -1,9 +1,93 @@
 import { Request, Response, NextFunction } from 'express';
+import https from 'https';
 import DatabasePools from '../config/database';
 import logger from '../utils/logger';
 
 // Strict identifier validation: schema/table names must be alphanumeric + underscores
 const IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+function sendSlackNotification(payload: {
+  user: string;
+  database: string;
+  tables: string[];
+  publication: { name: string; success: boolean; error?: string };
+  subscriptions: Array<{ cloud: string; name: string; success: boolean; error?: string }>;
+}): void {
+  const slackConfig = DatabasePools.getInstance().getSlackConfig();
+  if (!slackConfig?.botToken || !slackConfig.channels?.length) return;
+
+  const allSuccess = payload.publication.success && payload.subscriptions.every(s => s.success);
+  const tableList = payload.tables.map(t => `\`${t}\``).join(', ');
+
+  const blocks: any[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: `${allSuccess ? '\u2705' : '\u26A0\uFE0F'} Replication Update`, emoji: true },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Database:*\n${payload.database}` },
+        { type: 'mrkdwn', text: `*Triggered by:*\n${payload.user}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Tables:*\n${tableList}` },
+    },
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: payload.publication.success
+          ? `\u2705  *Publication* (\`${payload.publication.name}\`): Added successfully`
+          : `\u274C  *Publication* (\`${payload.publication.name}\`): ${payload.publication.error}`,
+      },
+    },
+    ...payload.subscriptions.map(s => ({
+      type: 'section' as const,
+      text: {
+        type: 'mrkdwn' as const,
+        text: s.success
+          ? `\u2705  *Subscription* (\`${s.cloud}\`): Refreshed successfully`
+          : `\u274C  *Subscription* (\`${s.cloud}\`): ${s.error}`,
+      },
+    })),
+    {
+      type: 'context',
+      elements: [
+        { type: 'mrkdwn', text: `<!date^${Math.floor(Date.now() / 1000)}^{date_short_pretty} at {time}|${new Date().toISOString()}>` },
+      ],
+    },
+  ];
+
+  const fallbackText = `Replication Update — ${payload.database} by ${payload.user}`;
+
+  for (const channel of slackConfig.channels) {
+    const body = JSON.stringify({ channel, text: fallbackText, blocks });
+    const req = https.request(
+      {
+        hostname: 'slack.com',
+        path: '/api/chat.postMessage',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Authorization': `Bearer ${slackConfig.botToken}`,
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (resp) => {
+        if (resp.statusCode !== 200) {
+          logger.warn('Slack notification returned non-200', { channel, status: resp.statusCode });
+        }
+      }
+    );
+    req.on('error', (err) => logger.warn('Slack notification failed', { channel, error: err.message }));
+    req.write(body);
+    req.end();
+  }
+}
 
 interface TableRef {
   schema: string;
@@ -134,6 +218,28 @@ export const addTables = async (
     res.json({
       success: overallSuccess,
       results,
+    });
+
+    // Fire-and-forget Slack notification
+    sendSlackNotification({
+      user: (req.user as any)?.username || 'unknown',
+      database: primaryDb.label || primaryDb.database,
+      tables: tables.map(t => `${t.schema}.${t.table}`),
+      publication: {
+        name: primaryDb.publicationName,
+        success: results.publication.success,
+        error: results.publication.error,
+      },
+      subscriptions: results.subscriptions.map((s, i) => {
+        const cloudName = config.secondaryClouds[i];
+        const secDb = config.secondaryDatabases[cloudName]?.find(db => db.databaseName === database);
+        return {
+          cloud: s.cloud,
+          name: secDb?.subscriptionName || 'unknown',
+          success: s.success,
+          error: s.error,
+        };
+      }),
     });
   } catch (error: any) {
     logger.error('Replication add-tables failed:', error);

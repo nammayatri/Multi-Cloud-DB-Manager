@@ -65,5 +65,9 @@
     "user": "${HISTORY_DB_USER}",
     "password": "${HISTORY_DB_PASSWORD}",
     "database": "${HISTORY_DB_NAME}"
+  },
+  "slack": {
+    "botToken": "${SLACK_BOT_TOKEN}",
+    "channels": ["#replication-alerts"]
   }
 }

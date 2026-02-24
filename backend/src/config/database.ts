@@ -3,7 +3,7 @@ dotenv.config();
 
 import { Pool, PoolConfig as PgPoolConfig } from 'pg';
 import logger from '../utils/logger';
-import { DatabaseConfig, DatabaseInfo, CloudConfiguration, SchemaInfo } from '../types';
+import { DatabaseConfig, DatabaseInfo, CloudConfiguration, SchemaInfo, SlackConfigJson } from '../types';
 import { loadDatabaseConfig, convertEnvToJson } from './config-loader';
 
 // Connection pool configuration with reliability settings
@@ -51,6 +51,7 @@ class DatabasePools {
   private pools: Map<string, Pool> = new Map();
   private schemaCache: Map<string, SchemaInfo> = new Map();
   private cloudConfig: CloudConfiguration;
+  private slackConfig: SlackConfigJson | null = null;
 
   private constructor() {
     // Load configuration from JSON or environment variables
@@ -59,6 +60,7 @@ class DatabasePools {
     if (jsonConfig) {
       // Use JSON configuration
       this.cloudConfig = this.convertJsonToCloudConfig(jsonConfig);
+      this.slackConfig = jsonConfig.slack || null;
       this.initializeFromJson(jsonConfig);
     } else {
       // Fall back to environment variables
@@ -195,6 +197,13 @@ class DatabasePools {
    */
   public getCloudConfig(): CloudConfiguration {
     return this.cloudConfig;
+  }
+
+  /**
+   * Get Slack configuration (null if not configured)
+   */
+  public getSlackConfig(): SlackConfigJson | null {
+    return this.slackConfig;
   }
 
   /**
