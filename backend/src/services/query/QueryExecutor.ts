@@ -1,8 +1,6 @@
-import { Pool, QueryResult } from 'pg';
-import { v4 as uuidv4 } from 'uuid';
+import { QueryResult } from 'pg';
 import DatabasePools from '../../config/database';
 import logger from '../../utils/logger';
-import { QueryRequest, QueryResponse } from '../../types';
 import QueryValidator from './QueryValidator';
 import ExecutionManager from './ExecutionManager';
 
@@ -44,49 +42,11 @@ export class QueryExecutor {
       command: result.command,
       rowCount: result.rowCount,
       rows: result.rows,
-      fields: result.fields.map(f => ({
+      fields: (result.fields || []).map(f => ({
         name: f.name,
         dataTypeID: f.dataTypeID
       }))
     };
-  }
-
-  /**
-   * Execute query with timeout protection
-   */
-  public async executeWithTimeout(
-    pool: Pool,
-    query: string,
-    timeout: number,
-    executionId?: string
-  ): Promise<{ result: QueryResult; duration: number }> {
-    const startTime = Date.now();
-
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        if (executionId) {
-          // Trigger cancellation
-          this.executionManager.markAsCancelled(executionId);
-        }
-        reject(new Error(`Query timeout after ${timeout}ms`));
-      }, timeout);
-
-      // Execute query and handle both sync and async errors
-      Promise.resolve().then(async () => {
-        try {
-          const result = await pool.query(query);
-          clearTimeout(timeoutId);
-          const duration = Date.now() - startTime;
-          resolve({ result, duration });
-        } catch (error) {
-          clearTimeout(timeoutId);
-          reject(error);
-        }
-      }).catch((error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      });
-    });
   }
 
   /**
@@ -128,10 +88,8 @@ export class QueryExecutor {
       .map(s => QueryValidator.addDefaultLimit(s));
 
     try {
-      // If pgSchema is provided, we need to set search_path
-      if (pgSchema) {
       const client = await pool.connect();
-      
+
       // Register this execution if we have an executionId
       if (executionId) {
         const cloudKey = `${cloudName}_${databaseName}`;
@@ -142,7 +100,7 @@ export class QueryExecutor {
 
       try {
         // Check for cancellation
-        if (executionId && this.executionManager.isCancelled(executionId)) {
+        if (executionId && await this.executionManager.isCancelled(executionId)) {
           return {
             success: false,
             error: 'Query was cancelled by user',
@@ -151,15 +109,14 @@ export class QueryExecutor {
           };
         }
 
-        // Validate pgSchema to prevent SQL injection
-        const validation = QueryValidator.validateSchemaName(pgSchema);
-        if (!validation.valid) {
-          throw new Error(validation.error);
+        // If pgSchema is provided, validate and set search_path
+        if (pgSchema) {
+          const validation = QueryValidator.validateSchemaName(pgSchema);
+          if (!validation.valid) {
+            throw new Error(validation.error);
+          }
+          await client.query(`SET search_path TO ${pgSchema}, public`);
         }
-
-        // Safe to use without quotes after strict validation
-        // Note: pg identifiers can't use parameterized queries, but validation ensures safety
-        await client.query(`SET search_path TO ${pgSchema}, public`);
 
         logger.info(`Executing query on ${cloudName}/${databaseName}`, {
           cloudName,
@@ -169,98 +126,39 @@ export class QueryExecutor {
           continueOnError
         });
 
-          if (statements.length === 1) {
-            // Single statement
-            try {
-              const result = await client.query(statements[0]);
-              const duration = Date.now() - startTime;
+        if (statements.length === 1) {
+          // Single statement
+          try {
+            const result = await Promise.race([
+              client.query(statements[0]),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(`Query timeout after ${timeout}ms`)), timeout)
+              )
+            ]) as QueryResult;
+            const duration = Date.now() - startTime;
 
-              logger.info(`Query successful on ${cloudName}/${databaseName}`, {
-                cloudName,
-                databaseName,
-                duration_ms: duration,
-                rows: result.rowCount,
-              });
-
-              return {
-                success: true,
-                result: this.cleanResult(result),
-                duration_ms: duration,
-              };
-            } catch (error: any) {
-              const duration = Date.now() - startTime;
-              return {
-                success: false,
-                error: error?.message || 'Unknown error',
-                duration_ms: duration,
-              };
-            }
-          } else {
-            // Multiple statements with pgSchema - execute all and collect results
-            return await this.executeMultipleStatements(
-              client,
-              statements,
+            logger.info(`Query successful on ${cloudName}/${databaseName}`, {
               cloudName,
               databaseName,
-              startTime,
-              continueOnError,
-              executionId
-            );
+              duration_ms: duration,
+              rows: result.rowCount,
+            });
+
+            return {
+              success: true,
+              result: this.cleanResult(result),
+              duration_ms: duration,
+            };
+          } catch (error: any) {
+            const duration = Date.now() - startTime;
+            return {
+              success: false,
+              error: error?.message || 'Unknown error',
+              duration_ms: duration,
+            };
           }
-        } finally {
-          client.release();
-          if (executionId) {
-            this.executionManager.releaseClient(executionId, `${cloudName}_${databaseName}`);
-          }
-        }
-      }
-
-      // No pgSchema - use original logic
-      logger.info(`Executing query on ${cloudName}/${databaseName}`, {
-        cloudName,
-        databaseName,
-        query: query.substring(0, 100),
-        statementCount: statements.length,
-        continueOnError
-      });
-
-      if (statements.length === 1) {
-        // Single statement - original behavior
-        try {
-          const { result, duration } = await this.executeWithTimeout(pool, query, timeout, executionId);
-
-          logger.info(`Query successful on ${cloudName}/${databaseName}`, {
-            cloudName,
-            databaseName,
-            duration_ms: duration,
-            rows: result.rowCount,
-          });
-
-          return {
-            success: true,
-            result: this.cleanResult(result),
-            duration_ms: duration,
-          };
-        } catch (error: any) {
-          return {
-            success: false,
-            error: error?.message || 'Unknown error',
-            duration_ms: Date.now() - startTime,
-          };
-        }
-      } else {
-        // Multiple statements without pgSchema - execute each and collect results
-        const client = await pool.connect();
-        
-        // Register this execution if we have an executionId
-        if (executionId) {
-          const cloudKey = `${cloudName}_${databaseName}`;
-          const pidResult = await client.query('SELECT pg_backend_pid() as pid');
-          const backendPid = pidResult.rows[0]?.pid;
-          this.executionManager.registerActiveExecution(executionId, cloudKey, client, backendPid);
-        }
-
-        try {
+        } else {
+          // Multiple statements - execute all and collect results
           return await this.executeMultipleStatements(
             client,
             statements,
@@ -270,11 +168,11 @@ export class QueryExecutor {
             continueOnError,
             executionId
           );
-        } finally {
-          client.release();
-          if (executionId) {
-            this.executionManager.releaseClient(executionId, `${cloudName}_${databaseName}`);
-          }
+        }
+      } finally {
+        client.release();
+        if (executionId) {
+          this.executionManager.releaseClient(executionId, `${cloudName}_${databaseName}`);
         }
       }
     } catch (error: any) {
@@ -346,7 +244,7 @@ export class QueryExecutor {
       const statement = statements[i];
 
       // Check for cancellation before each statement
-      if (executionId && this.executionManager.isCancelled(executionId)) {
+      if (executionId && await this.executionManager.isCancelled(executionId)) {
         results.push({
           statement: statement,
           success: false,

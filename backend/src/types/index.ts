@@ -29,14 +29,6 @@ export interface DatabaseConfig {
   database: string;
 }
 
-export interface PoolConfig {
-  cloud1_db1: DatabaseConfig;
-  cloud1_db2: DatabaseConfig;
-  cloud2_db1: DatabaseConfig;
-  cloud2_db2: DatabaseConfig;
-  history: DatabaseConfig;
-}
-
 export interface QueryRequest {
   query: string;
   database: string; // Database name (e.g., 'bpp', 'bap')

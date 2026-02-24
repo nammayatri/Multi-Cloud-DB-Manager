@@ -111,9 +111,10 @@ class QueryService {
         executionId,
         error: error.message,
       });
-      
+
       // Update result record on error - ensure endTime is always set
       this.executionManager.failExecution(executionId, error.message);
+      this.executionManager.completeActiveExecution(executionId);
     });
     
     logger.info('Started async query execution', {
@@ -159,7 +160,7 @@ class QueryService {
       
       for (const cloudName of cloudsToExecute) {
         // Check if cancelled before starting this cloud
-        if (this.executionManager.isCancelled(executionId)) {
+        if (await this.executionManager.isCancelled(executionId)) {
           wasCancelled = true;
           // Add a placeholder result for clouds that weren't executed due to cancellation
           response[cloudName] = {
@@ -220,6 +221,7 @@ class QueryService {
       
       // Update result (respects cancellation status, saves partial results)
       await this.executionManager.completeExecution(executionId, response, response.success);
+      this.executionManager.completeActiveExecution(executionId);
 
       logger.info('Async query execution complete', {
         executionId,
@@ -244,7 +246,8 @@ class QueryService {
       }
     } catch (error: any) {
       await this.executionManager.failExecution(executionId, error.message);
-      
+      this.executionManager.completeActiveExecution(executionId);
+
       logger.error('Async query execution failed', {
         executionId,
         error: error.message,

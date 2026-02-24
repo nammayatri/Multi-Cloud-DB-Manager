@@ -1,6 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import { Pool, PoolConfig as PgPoolConfig } from 'pg';
 import logger from '../utils/logger';
 import { DatabaseConfig, DatabaseInfo, CloudConfiguration, SchemaInfo, SlackConfigJson } from '../types';
@@ -40,11 +37,6 @@ const createPoolConfig = (dbConfig: DatabaseConfig | DatabaseInfo): PgPoolConfig
 class DatabasePools {
   private static instance: DatabasePools;
 
-  // Legacy public pools (for backward compatibility)
-  public cloud1_db1!: Pool;
-  public cloud1_db2!: Pool;
-  public cloud2_db1!: Pool;
-  public cloud2_db2!: Pool;
   public history!: Pool;
 
   // New internal structures
@@ -178,11 +170,6 @@ class DatabasePools {
       database: jsonConfig.history.database
     });
 
-    // Set legacy public pools for backward compatibility
-    this.cloud1_db1 = this.pools.get('cloud1_db1') || this.history;
-    this.cloud1_db2 = this.pools.get('cloud1_db2') || this.history;
-    this.cloud2_db1 = this.pools.get('cloud2_db1') || this.history;
-    this.cloud2_db2 = this.pools.get('cloud2_db2') || this.history;
   }
 
   public static getInstance(): DatabasePools {
@@ -273,25 +260,6 @@ class DatabasePools {
     } catch (error) {
       logger.error('✗ history pool connection failed:', error);
     }
-  }
-
-  /**
-   * Get pool by legacy schema naming (for backward compatibility)
-   * @param cloud 'aws' or 'gcp'
-   * @param schema 'primary' or 'secondary'
-   */
-  public getPool(cloud: 'aws' | 'gcp', schema: 'primary' | 'secondary'): Pool {
-    // Map primary/secondary to internal pool names (bpp/bap)
-    const internalSchema = schema === 'primary' ? 'bpp' : 'bap';
-    const key = `${cloud}_${internalSchema}`;
-    const pool = this.pools.get(key);
-
-    if (!pool) {
-      logger.error(`Pool not found: ${key}`);
-      throw new Error(`Database pool not found: ${key}`);
-    }
-
-    return pool;
   }
 
   public async shutdown() {

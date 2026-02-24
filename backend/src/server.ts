@@ -148,11 +148,13 @@ const startServer = async () => {
     console.log('[STARTUP] Starting server initialization...');
     console.log(`[STARTUP] PORT: ${PORT}`);
     console.log(`[STARTUP] NODE_ENV: ${process.env.NODE_ENV}`);
-    console.log(`[STARTUP] REDIS_HOST: ${process.env.REDIS_HOST}`);
+    console.log(`[STARTUP] REDIS_CLUSTER_MODE: ${process.env.REDIS_CLUSTER_MODE || 'false'}`);
 
-    // Connect to Redis
+    // Connect to Redis (skip if already connected from module import)
     console.log('[STARTUP] Connecting to Redis...');
-    await redisClient.connect();
+    if (!redisClient.isOpen) {
+      await redisClient.connect();
+    }
     console.log('[STARTUP] Redis connected successfully');
 
     // Initialize database pools

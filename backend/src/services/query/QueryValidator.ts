@@ -213,7 +213,8 @@ export class QueryValidator {
       if (!trimmedLine) continue;
 
       // Check for block start (PL/pgSQL blocks, DO statements, etc.)
-      if (/^\s*(BEGIN|DO\s+\$)/i.test(trimmedLine)) {
+      // Match DO $$ blocks and standalone BEGIN (PL/pgSQL), but NOT transaction BEGIN; (ends with semicolon)
+      if (/^\s*DO\s+\$/i.test(trimmedLine) || (/^\s*BEGIN\s*$/i.test(trimmedLine))) {
         inBlock = true;
       }
 

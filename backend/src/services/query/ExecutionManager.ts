@@ -39,13 +39,18 @@ export class ExecutionManager {
   private readonly REDIS_KEY_PREFIX = 'execution:';
   private readonly REDIS_TTL_SECONDS: number;
   private redisAvailable: boolean = true;
+  private readonly isLocalRedis: boolean;
 
   private inMemoryFallback: Map<string, ExecutionResult> = new Map();
 
   constructor() {
     // Read TTL from env or default to 5 minutes (300 seconds)
     this.REDIS_TTL_SECONDS = parseInt(process.env.REDIS_EXECUTION_TTL_SECONDS || '300', 10);
-    
+
+    // Determine if Redis is local (single-pod, no cross-pod cancellation needed)
+    const redisHost = process.env.REDIS_HOST || 'localhost';
+    this.isLocalRedis = redisHost === 'localhost' || redisHost === '127.0.0.1';
+
     // No cleanup needed - Redis handles TTL automatically
     // In-memory fallback has its own cleanup
     setInterval(() => this.cleanupFallback(), 5 * 60 * 1000); // Cleanup every 5 minutes
@@ -68,24 +73,22 @@ export class ExecutionManager {
   /**
    * Check if Redis is available
    */
-  private async isRedisAvailable(): Promise<boolean> {
-    if (!this.redisAvailable) return false;
-    
-    try {
-      await redisClient.ping();
-      return true;
-    } catch {
-      this.redisAvailable = false;
-      logger.warn('Redis unavailable, falling back to in-memory storage');
-      
-      // Try to reconnect after 30 seconds
-      setTimeout(() => {
-        this.redisAvailable = true;
-        logger.info('Attempting to reconnect to Redis');
-      }, 30000);
-      
+  private isRedisAvailable(): boolean {
+    if (!redisClient.isOpen) {
+      if (this.redisAvailable) {
+        this.redisAvailable = false;
+        logger.warn('Redis unavailable, falling back to in-memory storage');
+
+        // Try to re-check after 30 seconds
+        setTimeout(() => {
+          this.redisAvailable = true;
+          logger.info('Attempting to reconnect to Redis');
+        }, 30000);
+      }
       return false;
     }
+    this.redisAvailable = true;
+    return true;
   }
 
   /**
@@ -111,7 +114,7 @@ export class ExecutionManager {
     };
 
     // Check if Redis is available
-    if (await this.isRedisAvailable()) {
+    if (this.isRedisAvailable()) {
       try {
         await redisClient.setEx(
           this.getRedisKey(executionId),
@@ -135,7 +138,7 @@ export class ExecutionManager {
    */
   public async getExecutionStatus(executionId: string): Promise<ExecutionResult | null> {
     // Try Redis first
-    if (await this.isRedisAvailable()) {
+    if (this.isRedisAvailable()) {
       try {
         const data = await redisClient.get(this.getRedisKey(executionId));
         if (data) {
@@ -188,34 +191,39 @@ export class ExecutionManager {
    * Mark execution as cancelled
    */
   public async markAsCancelled(executionId: string): Promise<boolean> {
-    // Check in-memory first (pod-specific cancellation tracking)
+    // Set in-memory flag (pod-specific cancellation tracking)
     const execution = this.activeExecutions.get(executionId);
     if (execution) {
       execution.cancelled = true;
     }
 
-    // Update Redis status
-    try {
-      const data = await redisClient.get(this.getRedisKey(executionId));
-      if (!data) {
-        return false;
+    // Update Redis status (for cross-pod visibility)
+    if (this.isRedisAvailable()) {
+      try {
+        const data = await redisClient.get(this.getRedisKey(executionId));
+        if (!data) {
+          // Not in Redis — return true if we at least set in-memory
+          return !!execution;
+        }
+
+        const result: ExecutionResult = JSON.parse(data);
+        result.status = 'cancelled';
+        result.endTime = Date.now();
+
+        await redisClient.setEx(
+          this.getRedisKey(executionId),
+          this.REDIS_TTL_SECONDS,
+          JSON.stringify(result)
+        );
+
+        return true;
+      } catch (error) {
+        logger.error('Failed to mark execution as cancelled in Redis', { executionId, error });
       }
-      
-      const result: ExecutionResult = JSON.parse(data);
-      result.status = 'cancelled';
-      result.endTime = Date.now();
-      
-      await redisClient.setEx(
-        this.getRedisKey(executionId),
-        this.REDIS_TTL_SECONDS,
-        JSON.stringify(result)
-      );
-      
-      return true;
-    } catch (error) {
-      logger.error('Failed to mark execution as cancelled in Redis', { executionId, error });
-      return false;
     }
+
+    // Redis unavailable — return true if we at least set in-memory
+    return !!execution;
   }
 
   /**
@@ -260,7 +268,7 @@ export class ExecutionManager {
     const progress = { currentStatement, totalStatements, currentStatementText };
 
     // Try Redis first
-    if (await this.isRedisAvailable()) {
+    if (this.isRedisAvailable()) {
       try {
         const data = await redisClient.get(this.getRedisKey(executionId));
         if (data) {
@@ -293,7 +301,7 @@ export class ExecutionManager {
     response: QueryResponse
   ): Promise<void> {
     // Try Redis first
-    if (await this.isRedisAvailable()) {
+    if (this.isRedisAvailable()) {
       try {
         const data = await redisClient.get(this.getRedisKey(executionId));
         if (data) {
@@ -328,7 +336,7 @@ export class ExecutionManager {
     success: boolean
   ): Promise<void> {
     // Try Redis first
-    if (await this.isRedisAvailable()) {
+    if (this.isRedisAvailable()) {
       try {
         const data = await redisClient.get(this.getRedisKey(executionId));
         if (data) {
@@ -366,7 +374,7 @@ export class ExecutionManager {
    */
   public async failExecution(executionId: string, errorMessage: string): Promise<void> {
     // Try Redis first
-    if (await this.isRedisAvailable()) {
+    if (this.isRedisAvailable()) {
       try {
         const data = await redisClient.get(this.getRedisKey(executionId));
         if (data) {
@@ -406,19 +414,57 @@ export class ExecutionManager {
     const execution = this.activeExecutions.get(executionId);
     if (execution) {
       execution.clients.delete(cloudKey);
-      // Only delete the execution entry if all clients are released
-      if (execution.clients.size === 0) {
-        this.activeExecutions.delete(executionId);
-      }
+      // Don't delete the activeExecutions entry here — cancellation state
+      // must remain readable between cloud executions in "both" mode.
+      // Cleanup happens in completeActiveExecution() after the full execution finishes.
     }
   }
 
   /**
-   * Check if execution was cancelled (in-memory, pod-specific)
+   * Remove active execution entry (called after full execution completes)
    */
-  public isCancelled(executionId: string): boolean {
+  public completeActiveExecution(executionId: string): void {
+    this.activeExecutions.delete(executionId);
+  }
+
+  /**
+   * Check if execution was cancelled.
+   * For remote Redis (multi-pod), checks Redis first for cross-pod cancellation visibility.
+   * For local Redis or when Redis is unavailable, uses in-memory only.
+   */
+  public async isCancelled(executionId: string): Promise<boolean> {
+    // Always check in-memory first (fast path, covers same-pod cancellation)
     const execution = this.activeExecutions.get(executionId);
-    return execution?.cancelled || false;
+    if (execution?.cancelled) {
+      return true;
+    }
+
+    // For local Redis, in-memory is sufficient (single pod)
+    if (this.isLocalRedis) {
+      return false;
+    }
+
+    // For remote Redis, check Redis for cross-pod cancellation
+    if (this.isRedisAvailable()) {
+      try {
+        const data = await redisClient.get(this.getRedisKey(executionId));
+        if (data) {
+          const result: ExecutionResult = JSON.parse(data);
+          if (result.status === 'cancelled') {
+            // Cache locally so subsequent checks are fast
+            if (execution) {
+              execution.cancelled = true;
+            }
+            return true;
+          }
+        }
+      } catch {
+        // Redis failed, rely on in-memory — don't flip redisAvailable here
+        // since transient errors shouldn't disable Redis for all operations
+      }
+    }
+
+    return false;
   }
 }
 
