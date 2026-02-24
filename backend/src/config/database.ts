@@ -97,7 +97,8 @@ class DatabasePools {
         password: db.password,
         database: db.database,
         schemas: db.schemas,
-        defaultSchema: db.defaultSchema
+        defaultSchema: db.defaultSchema,
+        ...(db.publicationName && { publicationName: db.publicationName }),
       })),
       secondaryClouds: jsonConfig.secondary.map((c: any) => c.cloudName),
       secondaryDatabases: Object.fromEntries(
@@ -113,7 +114,8 @@ class DatabasePools {
             password: db.password,
             database: db.database,
             schemas: db.schemas,
-            defaultSchema: db.defaultSchema
+            defaultSchema: db.defaultSchema,
+            ...(db.subscriptionName && { subscriptionName: db.subscriptionName }),
           }))
         ])
       )

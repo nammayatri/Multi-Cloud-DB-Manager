@@ -192,6 +192,23 @@ export const schemaAPI = {
   }
 };
 
+// Replication API
+export const replicationAPI = {
+  addTables: async (params: {
+    tables: Array<{ schema: string; table: string }>;
+    database: string;
+  }): Promise<{
+    success: boolean;
+    results: {
+      publication: { success: boolean; error?: string };
+      subscriptions: Array<{ cloud: string; success: boolean; error?: string }>;
+    };
+  }> => {
+    const response = await api.post('/api/replication/add-tables', params);
+    return response.data;
+  },
+};
+
 // History API
 export const historyAPI = {
   getHistory: async (filter?: HistoryFilter): Promise<QueryExecution[]> => {

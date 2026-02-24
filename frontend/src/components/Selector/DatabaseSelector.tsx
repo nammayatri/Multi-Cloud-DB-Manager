@@ -24,6 +24,7 @@ import { queryAPI, schemaAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 import type { QueryResponse, DatabaseConfiguration, DatabaseInfo } from '../../types';
 import QueryWarningDialog from '../Dialog/QueryWarningDialog';
+import ReplicationDialog from '../Dialog/ReplicationDialog';
 import { detectDangerousQueries } from '../../services/queryValidation.service';
 import type { ValidationWarning } from '../../services/queryValidation.service';
 
@@ -67,6 +68,9 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
   const [verificationPassword, setVerificationPassword] = useState('');
   const [executionModes, setExecutionModes] = useState<Array<{ value: string; label: string; cloudName: string }>>([]);
   const [cloudNames, setCloudNames] = useState<{ primary: string; secondary: string[] }>({ primary: '', secondary: [] });
+  const [showReplicationDialog, setShowReplicationDialog] = useState(false);
+  const [detectedTables, setDetectedTables] = useState<Array<{ schema: string; table: string }>>([]);
+  const dbConfigRef = useRef<DatabaseConfiguration | null>(null);
   
   // Execution state
   const [executionProgress, setExecutionProgress] = useState<{ current: number; total: number } | null>(null);
@@ -101,6 +105,7 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
       }));
 
       setDatabaseOptions(options);
+      dbConfigRef.current = config;
 
       // Build execution modes dynamically
       const primaryCloud = config.primary.cloudName;
@@ -227,6 +232,54 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
         // Show results if available (including partial results when cancelled)
         if (status.result) {
           onExecute(status.result);
+        }
+
+        // Detect CREATE TABLE for replication popup (check primary result regardless of overall status)
+        if (status.result && (status.status === 'completed' || status.status === 'failed')) {
+          const primaryCloud = cloudNames.primary;
+          const modeIncludesPrimary = selectedMode === 'both' || selectedMode === primaryCloud;
+          const primaryDbInfo = dbConfigRef.current?.primary.databases.find(
+            (db) => db.name === selectedDatabase
+          );
+          const hasPublication = !!primaryDbInfo?.publicationName;
+          const primaryResult = status.result[primaryCloud];
+
+          if (modeIncludesPrimary && hasPublication && primaryResult?.success) {
+            const createTableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:("?[a-zA-Z_][a-zA-Z0-9_]*"?)\.)?("?[a-zA-Z_][a-zA-Z0-9_]*"?)/i;
+            const foundTables: Array<{ schema: string; table: string }> = [];
+
+            const checkStatement = (stmt: { success: boolean; statement?: string; result?: any }) => {
+              if (stmt.success && stmt.result?.command?.startsWith('CREATE') && stmt.statement) {
+                const match = stmt.statement.match(createTableRegex);
+                if (match) {
+                  const schema = match[1]?.replace(/"/g, '') || selectedPgSchema;
+                  const table = match[2]?.replace(/"/g, '') || '';
+                  if (table) {
+                    foundTables.push({ schema, table });
+                  }
+                }
+              }
+            };
+
+            if (primaryResult.results && Array.isArray(primaryResult.results)) {
+              primaryResult.results.forEach(checkStatement);
+            } else if (primaryResult.result?.command?.startsWith('CREATE')) {
+              const queryText = getQueryToExecute();
+              const match = queryText.match(createTableRegex);
+              if (match) {
+                const schema = match[1]?.replace(/"/g, '') || selectedPgSchema;
+                const table = match[2]?.replace(/"/g, '') || '';
+                if (table) {
+                  foundTables.push({ schema, table });
+                }
+              }
+            }
+
+            if (foundTables.length > 0) {
+              setDetectedTables(foundTables);
+              setShowReplicationDialog(true);
+            }
+          }
         }
 
         // Show appropriate message based on status
@@ -360,6 +413,16 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
         requiresPassword={currentWarning?.requiresPassword || false}
         selectedMode={selectedMode}
         cloudNames={cloudNames}
+      />
+
+      <ReplicationDialog
+        open={showReplicationDialog}
+        tables={detectedTables}
+        database={selectedDatabase}
+        onClose={() => {
+          setShowReplicationDialog(false);
+          setDetectedTables([]);
+        }}
       />
 
       <Paper elevation={2} sx={{ p: 2 }}>

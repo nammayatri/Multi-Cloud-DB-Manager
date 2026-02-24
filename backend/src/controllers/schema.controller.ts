@@ -23,7 +23,8 @@ export const getConfiguration = async (
           label: db.label,
           cloudType: db.cloudType,
           schemas: db.schemas,
-          defaultSchema: db.defaultSchema
+          defaultSchema: db.defaultSchema,
+          ...(db.publicationName && { publicationName: db.publicationName }),
         }))
       },
       secondary: config.secondaryClouds.map(cloudName => ({
@@ -33,7 +34,8 @@ export const getConfiguration = async (
           label: db.label,
           cloudType: db.cloudType,
           schemas: db.schemas,
-          defaultSchema: db.defaultSchema
+          defaultSchema: db.defaultSchema,
+          ...(db.subscriptionName && { subscriptionName: db.subscriptionName }),
         }))
       }))
     });

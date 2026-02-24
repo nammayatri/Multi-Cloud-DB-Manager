@@ -23,6 +23,7 @@ import authRoutes from './routes/auth.routes';
 import queryRoutes from './routes/query.routes';
 import historyRoutes from './routes/history.routes';
 import schemaRoutes from './routes/schema.routes';
+import replicationRoutes from './routes/replication.routes';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -129,6 +130,8 @@ app.use('/api/history', historyRoutes);
 console.log('[STARTUP] ✓ /api/history routes mounted');
 app.use('/api/schemas', schemaRoutes);
 console.log('[STARTUP] ✓ /api/schemas routes mounted');
+app.use('/api/replication', replicationRoutes);
+console.log('[STARTUP] ✓ /api/replication routes mounted');
 
 // 404 handler
 app.use(notFoundHandler);

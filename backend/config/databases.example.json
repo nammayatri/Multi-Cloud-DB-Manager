@@ -11,7 +11,8 @@
         "password": "${CLOUD1_DB_PASSWORD}",
         "database": "${CLOUD1_DB1}",
         "schemas": ["schema_name_1", "schema_name_2"],
-        "defaultSchema": "schema_name_1"
+        "defaultSchema": "schema_name_1",
+        "publicationName": "pub_db1"
       },
       {
         "name": "db2",
@@ -22,7 +23,8 @@
         "password": "${CLOUD1_DB_PASSWORD}",
         "database": "${CLOUD1_DB2}",
         "schemas": ["schema_name_3"],
-        "defaultSchema": "schema_name_3"
+        "defaultSchema": "schema_name_3",
+        "publicationName": "pub_db2"
       }
     ]
   },
@@ -39,7 +41,8 @@
           "password": "${CLOUD2_DB_PASSWORD}",
           "database": "${CLOUD2_DB1}",
           "schemas": ["schema_name_1"],
-          "defaultSchema": "schema_name_1"
+          "defaultSchema": "schema_name_1",
+          "subscriptionName": "sub_db1"
         },
         {
           "name": "db2",
@@ -50,7 +53,8 @@
           "password": "${CLOUD2_DB_PASSWORD}",
           "database": "${CLOUD2_DB_BAP}",
           "schemas": ["schema_name_3"],
-          "defaultSchema": "schema_name_3"
+          "defaultSchema": "schema_name_3",
+          "subscriptionName": "sub_db2"
         }
       ]
     }

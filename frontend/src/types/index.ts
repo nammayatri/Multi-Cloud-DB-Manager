@@ -77,6 +77,8 @@ export interface DatabaseInfo {
   cloudType: string;
   schemas: string[];
   defaultSchema: string;
+  publicationName?: string;
+  subscriptionName?: string;
 }
 
 export interface CloudInfo {

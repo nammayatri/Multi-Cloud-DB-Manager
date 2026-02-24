@@ -97,6 +97,8 @@ export interface DatabaseConfigJson {
   database: string;
   schemas: string[];       // Pre-configured schemas
   defaultSchema: string;
+  publicationName?: string;  // Logical replication publication name (primary only)
+  subscriptionName?: string; // Logical replication subscription name (secondary only)
 }
 
 export interface CloudConfigJson {
@@ -128,6 +130,8 @@ export interface DatabaseInfo {
   database: string;
   schemas: string[];
   defaultSchema: string;
+  publicationName?: string;
+  subscriptionName?: string;
 }
 
 export interface CloudConfiguration {
