@@ -1,15 +1,19 @@
-# Database Configuration Guide
+# Database and Redis Configuration Guide
 
-Complete guide for configuring the Dual Database Manager's multi-cloud database setup.
+Complete guide for configuring the Dual Database Manager's multi-cloud database and Redis setup.
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Configuration File Structure](#configuration-file-structure)
-- [Environment Variable Substitution](#environment-variable-substitution)
-- [Configuration Examples](#configuration-examples)
-- [Adding/Removing Clouds](#addingremoving-clouds)
-- [Schema Configuration](#schema-configuration)
+- [Database Configuration](#database-configuration)
+  - [Configuration File Structure](#configuration-file-structure)
+  - [Environment Variable Substitution](#environment-variable-substitution)
+  - [Configuration Examples](#configuration-examples)
+  - [Adding/Removing Clouds](#addingremoving-clouds)
+  - [Schema Configuration](#schema-configuration)
+- [Redis Configuration](#redis-configuration)
+  - [Redis File Structure](#redis-file-structure)
+  - [Redis Examples](#redis-examples)
 - [Security Best Practices](#security-best-practices)
 - [Troubleshooting](#troubleshooting)
 
@@ -328,6 +332,120 @@ Multi-region deployment:
   }
 }
 ```
+
+## Redis Configuration
+
+The Dual Database Manager also supports managing Redis instances across multiple clouds. This enables executing Redis commands simultaneously across all configured Redis instances.
+
+### Redis File Structure
+
+Create `backend/config/redis.json`:
+
+```json
+{
+  "primary": {
+    "cloudName": "string",
+    "host": "string",
+    "port": number,
+    "password": "string"
+  },
+  "secondary": [
+    {
+      "cloudName": "string",
+      "host": "string",
+      "port": number,
+      "password": "string"
+    }
+  ]
+}
+```
+
+#### Field Descriptions
+
+- **cloudName** (string, required): Unique identifier for the Redis cloud (e.g., "aws", "gcp")
+- **host** (string, required): Redis host/IP address
+- **port** (number, required): Redis port (typically 6379)
+- **password** (string, optional): Redis password (use `${ENV_VAR}` syntax)
+
+### Redis Examples
+
+**Single Redis Instance:**
+```json
+{
+  "primary": {
+    "cloudName": "aws",
+    "host": "${REDIS_HOST}",
+    "port": 6379,
+    "password": "${REDIS_PASSWORD}"
+  },
+  "secondary": []
+}
+```
+
+**Multi-Cloud Redis:**
+```json
+{
+  "primary": {
+    "cloudName": "aws",
+    "host": "redis.cluster.amazonaws.com",
+    "port": 6379,
+    "password": "${AWS_REDIS_PASSWORD}"
+  },
+  "secondary": [
+    {
+      "cloudName": "gcp",
+      "host": "redis.googleapis.com",
+      "port": 6379,
+      "password": "${GCP_REDIS_PASSWORD}"
+    }
+  ]
+}
+```
+
+### Supported Redis Commands
+
+| Category | Commands |
+|----------|----------|
+| **String** | GET, SET, SETEX, MSET, MGET, DEL, EXISTS, TTL, PTTL, EXPIRE, PERSIST |
+| **Hash** | HGET, HSET, HMGET, HMSET, HGETALL, HDEL, HEXISTS, HKEYS, HVALS, HLEN |
+| **List** | LPUSH, RPUSH, LRANGE, LLEN, LREM |
+| **Set** | SADD, SMEMBERS, SISMEMBER, SREM, SCARD |
+| **Sorted Set** | ZADD, ZRANGE, ZRANGEBYSCORE, ZRANK, ZSCORE, ZREM, ZCARD |
+| **Stream** | XADD, XRANGE, XLEN |
+| **Geo** | GEADD, GEODIST, GEOPOS, GEOHASH |
+| **Utility** | INFO, DBSIZE, TYPE, RANDOMKEY, ECHO, PING |
+
+### Blocked Redis Commands
+
+The following commands are blocked for all roles (security measure):
+
+- FLUSHDB, FLUSHALL (data destruction)
+- KEYS (performance impact)
+- EVAL, EVALSHA, SCRIPT DEBUG (arbitrary code execution)
+- CLIENT KILL (connection management)
+- SHUTDOWN, BGSAVE, BGREWRITEAOF (server control)
+- CONFIG RESETSTAT, LASTSAVE (statistics)
+
+### Redis SCAN
+
+The SCAN command is implemented with pattern matching and pagination:
+
+- **Pattern matching**: Use `MATCH` glob pattern (e.g., `user:*`, `session:*`)
+- **Pagination**: Cursor-based iteration with `COUNT` parameter
+- **Preview**: Preview keys before deletion
+- **Bulk delete**: Delete all keys matching pattern
+
+### Redis History
+
+All Redis write operations are logged to `dual_db_manager.redis_history`:
+
+```sql
+SELECT * FROM dual_db_manager.redis_history 
+ORDER BY created_at DESC 
+LIMIT 100;
+```
+
+---
 
 ## Adding/Removing Clouds
 

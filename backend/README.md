@@ -22,18 +22,23 @@ Express + TypeScript backend for executing SQL queries across multiple PostgreSQ
 backend/
 ├── config/
 │   ├── databases.json              # Database connections (gitignored)
-│   └── databases.example.json      # Template
+│   ├── databases.example.json      # Template
+│   ├── redis.json                  # Redis connections (gitignored)
+│   └── redis.example.json          # Template
 ├── migrations/
 │   └── 001_prod_schema.sql         # Schema migrations
 ├── src/
 │   ├── config/
 │   │   ├── database.ts             # DatabasePools singleton, connection pooling
+│   │   ├── redis-pools.ts          # Redis connection pools per cloud
+│   │   ├── redis-config-loader.ts  # Redis JSON config loader
 │   │   └── config-loader.ts        # JSON config loader with ${ENV_VAR} substitution
 │   ├── controllers/
 │   │   ├── auth.controller.ts      # Login, register, user management, search
 │   │   ├── query.controller.ts     # Async query execution, cancellation, status
 │   │   ├── history.controller.ts   # Query history retrieval with filters
-│   │   └── schema.controller.ts    # Database configuration endpoint
+│   │   ├── schema.controller.ts    # Database configuration endpoint
+│   │   └── redis.controller.ts     # Redis command execution, SCAN, history
 │   ├── middleware/
 │   │   ├── auth.middleware.ts      # isAuthenticated, requireMaster, validateQueryPermissions
 │   │   ├── validation.middleware.ts # Zod request schemas
@@ -42,19 +47,24 @@ backend/
 │   │   ├── auth.routes.ts          # /api/auth/*
 │   │   ├── query.routes.ts         # /api/query/*
 │   │   ├── history.routes.ts       # /api/history/*
-│   │   └── schema.routes.ts        # /api/schemas/*
+│   │   ├── schema.routes.ts        # /api/schemas/*
+│   │   └── redis.routes.ts         # /api/redis/*
 │   ├── services/
 │   │   ├── query/
 │   │   │   ├── QueryExecutor.ts    # Multi-cloud parallel execution
 │   │   │   └── QueryValidator.ts   # Dangerous query detection, blocked operations
-│   │   └── history.service.ts      # Query logging and retrieval
+│   │   ├── history.service.ts      # Query logging and retrieval
+│   │   └── redis/
+│   │       ├── RedisManagerService.ts  # Redis command execution
+│   │       ├── RedisCommandExecutor.ts  # Individual command parsing and execution
+│   │       └── RedisScanService.ts      # SCAN with pattern matching
 │   ├── types/
 │   │   └── index.ts                # TypeScript interfaces
 │   ├── utils/
 │   │   └── logger.ts               # Winston config (console + file transports)
 │   └── server.ts                   # Entry point: Express app, Redis, middleware
 ├── Dockerfile                      # Multi-stage production build
-├── CONFIG.md                       # Database configuration guide
+├── CONFIG.md                       # Database and Redis configuration guide
 ├── .env                            # Environment variables (gitignored)
 └── package.json
 ```
@@ -75,6 +85,14 @@ cp config/databases.example.json config/databases.json
 ```
 
 Edit `config/databases.json` with your database connections. Use `${ENV_VAR}` for secrets. See [CONFIG.md](CONFIG.md) for full reference.
+
+### 2b. Configure Redis (optional)
+
+```bash
+cp config/redis.example.json config/redis.json
+```
+
+Edit `config/redis.json` with your Redis connections. Use `${ENV_VAR}` for secrets. See [CONFIG.md](CONFIG.md) for full reference.
 
 ### 3. Environment
 
@@ -174,6 +192,27 @@ WHERE username = 'your-username';
 | `GET` | `/configuration` | User | Full database + cloud config for frontend |
 | `GET` | `/:database?cloud=` | User | Schemas for a specific database |
 
+### Redis Manager (`/api/redis`)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/execute` | User | Execute Redis command across clouds |
+| `POST` | `/validate` | User | Validate Redis command syntax |
+| `GET` | `/scan` | User | SCAN for keys matching pattern |
+| `POST` | `/delete-keys` | User | Delete keys matching pattern |
+| `GET` | `/history` | User | Redis write history with filters |
+
+**Execute request body:**
+```json
+{
+  "command": "GET",
+  "args": ["mykey"],
+  "mode": "both"
+}
+```
+
+**Supported commands:** GET, SET, SETEX, MSET, MGET, DEL, EXISTS, TTL, PTTL, EXPIRE, PERSIST, HGET, HSET, HMGET, HMSET, HGETALL, HDEL, HEXISTS, HKEYS, HVALS, HLEN, LPUSH, RPUSH, LRANGE, LLEN, LREM, SADD, SMEMBERS, SISMEMBER, SREM, SCARD, ZADD, ZRANGE, ZRANGEBYSCORE, ZRANK, ZSCORE, ZREM, ZCARD, XADD, XRANGE, XLEN, GEADD, GEODIST, GEOPOS, GEOHASH, INFO, DBSIZE, TYPE, RANDOMKEY, ECHO, PING
+
 ## Role-Based Access Control
 
 Permission checks happen in `auth.middleware.ts` → `validateQueryPermissions`:
@@ -187,8 +226,13 @@ Permission checks happen in `auth.middleware.ts` → `validateQueryPermissions`:
 | DELETE | Yes (password) | — | — |
 | DROP / TRUNCATE | Yes (password) | — | — |
 | ALTER DROP | Yes (password) | — | — |
+| Redis READ commands | Yes | Yes | Yes |
+| Redis WRITE commands | Yes | Yes | — |
+| Redis SCAN / KEYS | Yes | Yes | — |
 
 **Blocked for all roles:** DROP/CREATE DATABASE/SCHEMA, GRANT/REVOKE, ALTER/CREATE/DROP ROLE/USER
+
+**Blocked Redis commands (all roles):** FLUSHDB, FLUSHALL, KEYS, EVAL, EVALSHA, SCRIPT DEBUG, CLIENT KILL, SHUTDOWN, BGSAVE, BGREWRITEAOF, CONFIG RESETSTAT, LASTSAVE
 
 **Password verification:** MASTER must re-enter password for destructive operations (DELETE, DROP, TRUNCATE, ALTER DROP). Validated via bcrypt in `query.controller.ts`.
 
@@ -214,6 +258,14 @@ user_id         UUID REFERENCES users(id) ON DELETE CASCADE
 query           TEXT NOT NULL
 database_name   VARCHAR(50) NOT NULL
 execution_mode  VARCHAR(50) NOT NULL
+cloud_results   JSONB NOT NULL DEFAULT '{}'
+created_at      TIMESTAMP DEFAULT NOW()
+
+-- dual_db_manager.redis_history
+id              UUID PRIMARY KEY DEFAULT gen_random_uuid()
+user_id         UUID REFERENCES users(id) ON DELETE CASCADE
+command         VARCHAR(50) NOT NULL
+args            JSONB NOT NULL DEFAULT '[]'
 cloud_results   JSONB NOT NULL DEFAULT '{}'
 created_at      TIMESTAMP DEFAULT NOW()
 ```
@@ -258,6 +310,7 @@ Winston with two file transports + console (dev only):
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_PASSWORD` | — | Redis password (optional) |
+| `REDIS_DB` | `0` | Redis database number |
 | `SESSION_SECRET` | — | **Required.** Session encryption key |
 | `FRONTEND_URL` | `http://localhost:5173` | CORS allowed origin |
 | `MAX_QUERY_TIMEOUT_MS` | `300000` | Max query timeout (5 min) |
@@ -298,6 +351,7 @@ Built-in health check: `GET /health` every 30s.
 - CORS whitelist
 - Server-side query validation + dangerous operation detection
 - Blocked system operations (DROP DATABASE, GRANT, etc.) for all roles
+- Blocked Redis commands (FLUSHDB, FLUSHALL, KEYS, EVAL, etc.) for all roles
 - Redis-backed sessions (no JWT tokens)
 - Trust proxy enabled for load balancers
 

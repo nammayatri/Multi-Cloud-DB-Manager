@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">Multi-Cloud DB Manager</h1>
   <p align="center">
-    A web-based PostgreSQL management tool for querying multiple database instances across cloud providers simultaneously.
+    A web-based PostgreSQL and Redis management tool for querying multiple database instances across cloud providers simultaneously.
     <br /><br />
     <a href="#quick-start">Quick Start</a> &middot; <a href="#features">Features</a> &middot; <a href="backend/CONFIG.md">Configuration Guide</a> &middot; <a href="#api-reference">API Reference</a>
   </p>
@@ -64,6 +64,18 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 | **Per-statement breakdown** | Individual results for each statement in a batch |
 | **Execution timing** | Duration in milliseconds per cloud |
 
+### Redis Manager
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-cloud Redis** | Execute commands across all configured Redis instances simultaneously |
+| **50+ commands** | Support for String, Hash, List, Set, Sorted Set, Stream, Geo, and utility commands |
+| **Pattern SCAN** | Find keys matching patterns with preview, pagination, and bulk delete |
+| **Command validation** | Syntax checking and dangerous command blocking |
+| **Write history** | Full audit trail of all Redis write operations |
+
+---
+
 ### User Management (MASTER only)
 
 | Feature | Description |
@@ -83,14 +95,19 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 | SELECT | Yes | Yes | Yes |
 | INSERT / UPDATE | Yes | Yes | - |
 | CREATE TABLE / INDEX | Yes | Yes | - |
-| ALTER TABLE (ADD) | Yes | Yes | - |
+| Alter TABLE (ADD) | Yes | Yes | - |
 | DELETE | Yes (pwd) | - | - |
 | DROP / TRUNCATE | Yes (pwd) | - | - |
 | ALTER DROP | Yes (pwd) | - | - |
+| Redis READ commands | Yes | Yes | Yes |
+| Redis WRITE commands | Yes | Yes | - |
+| Redis SCAN / KEYS | Yes | Yes | - |
 | User management | Yes | - | - |
 | Cancel any user's query | Yes | - | - |
 
 **Blocked for all roles:** DROP/CREATE DATABASE, DROP/CREATE SCHEMA, GRANT, REVOKE, ALTER/CREATE/DROP ROLE/USER
+
+**Blocked Redis commands (all roles):** FLUSHDB, FLUSHALL, KEYS, EVAL, EVALSHA, SCRIPT DEBUG, CLIENT KILL, SHUTDOWN, BGSAVE, BGREWRITEAOF, CONFIG RESETSTAT, LASTSAVE
 
 ---
 
@@ -210,6 +227,29 @@ Create `backend/config/databases.json`:
 - **history**: Database where users and query audit trail are stored (can reuse an existing database).
 - Use `${ENV_VAR}` syntax for secrets — values are substituted from `.env` at startup.
 
+### 2b. Configure Redis (optional)
+
+Create `backend/config/redis.json`:
+
+```jsonc
+{
+  "primary": {
+    "cloudName": "aws",
+    "host": "redis.cluster.amazonaws.com",
+    "port": 6379,
+    "password": "${REDIS_PASSWORD}"
+  },
+  "secondary": [
+    {
+      "cloudName": "gcp",
+      "host": "redis.googleapis.com",
+      "port": 6379,
+      "password": "${GCP_REDIS_PASSWORD}"
+    }
+  ]
+}
+```
+
 > See [backend/CONFIG.md](backend/CONFIG.md) for the full configuration reference.
 
 ### 3. Set environment variables
@@ -274,6 +314,7 @@ WHERE username = 'your-username';
 | `REDIS_HOST` | `localhost` | Redis hostname |
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_PASSWORD` | — | Redis password (optional) |
+| `REDIS_DB` | `0` | Redis database number |
 | `SESSION_SECRET` | — | **Required.** Random string for session encryption |
 | `FRONTEND_URL` | `http://localhost:5173` | CORS allowed origin |
 | `MAX_QUERY_TIMEOUT_MS` | `300000` | Overall query timeout (5 min) |
@@ -390,6 +431,16 @@ kubectl apply -f k8s/
 | `POST` | `/api/query/cancel/:id` | User | Cancel a running query (own queries, or any as MASTER) |
 | `GET` | `/api/query/active` | User | List active executions |
 | `POST` | `/api/query/validate` | User | Validate SQL syntax without executing |
+
+### Redis Manager (`/api/redis`)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/redis/execute` | User | Execute Redis command across clouds |
+| `POST` | `/api/redis/validate` | User | Validate Redis command syntax |
+| `GET` | `/api/redis/scan` | User | SCAN for keys matching pattern |
+| `POST` | `/api/redis/delete-keys` | User | Delete keys matching pattern |
+| `GET` | `/api/redis/history` | User | Redis write history with filters |
 
 ### History (`/api/history`)
 
