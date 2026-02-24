@@ -161,6 +161,36 @@ export class QueryValidator {
   }
 
   /**
+   * Auto-append LIMIT to SELECT statements that don't already have one.
+   * Handles plain SELECT, CTEs (WITH ... SELECT), and skips non-SELECT statements.
+   */
+  public addDefaultLimit(statement: string, limit: number = 10): string {
+    // Strip comments for analysis but keep original for modification
+    const clean = statement
+      .replace(/--.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .trim();
+
+    const upper = clean.toUpperCase();
+
+    // Only apply to SELECT or WITH...SELECT (CTE) queries
+    const isSelect = upper.startsWith('SELECT') || upper.startsWith('WITH');
+    if (!isSelect) return statement;
+
+    // Skip if it's a SELECT INTO or INSERT ... SELECT
+    if (/^\s*SELECT\s+.*\s+INTO\s+/i.test(clean)) return statement;
+
+    // Already has LIMIT — don't touch it
+    // Match LIMIT at the end, possibly followed by OFFSET, trailing semicolons/whitespace
+    if (/LIMIT\s+\d+/i.test(clean)) return statement;
+
+    // Remove trailing semicolon, add LIMIT, put semicolon back
+    const trimmed = statement.replace(/;\s*$/, '').trimEnd();
+    const hadSemicolon = /;\s*$/.test(statement);
+    return trimmed + ` LIMIT ${limit}` + (hadSemicolon ? ';' : '');
+  }
+
+  /**
    * Split query into individual statements
    */
   public splitStatements(query: string): string[] {

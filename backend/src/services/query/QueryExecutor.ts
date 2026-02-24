@@ -124,7 +124,8 @@ export class QueryExecutor {
     const startTime = Date.now();
 
     // Split into multiple statements first (for error handling)
-    const statements = QueryValidator.splitStatements(query);
+    const statements = QueryValidator.splitStatements(query)
+      .map(s => QueryValidator.addDefaultLimit(s));
 
     try {
       // If pgSchema is provided, we need to set search_path
