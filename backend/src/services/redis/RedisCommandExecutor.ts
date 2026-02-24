@@ -62,7 +62,12 @@ const COMMAND_MAP: Record<string, CommandDefinition> = {
   MSET: {
     isWrite: true,
     execute: (client, args) => {
-      const pairs = JSON.parse(args.pairs);
+      let pairs: Record<string, any>;
+      try {
+        pairs = JSON.parse(args.pairs);
+      } catch {
+        throw new Error('Invalid JSON for MSET pairs. Expected format: {"key1":"val1","key2":"val2"}');
+      }
       const arr: string[] = [];
       for (const [k, v] of Object.entries(pairs)) {
         arr.push(k, String(v));
@@ -184,13 +189,16 @@ const COMMAND_MAP: Record<string, CommandDefinition> = {
   ZRANGEBYSCORE: {
     isWrite: false,
     execute: (client, args) => {
+      // min/max kept as strings to support -inf, +inf, and exclusive syntax like "(1.5"
+      const min = String(args.min);
+      const max = String(args.max);
       const options: any = {};
       if (args.offset !== undefined && args.count !== undefined) {
         options.LIMIT = { offset: parseInt(args.offset), count: parseInt(args.count) };
       }
       return Object.keys(options).length > 0
-        ? client.zRangeByScore(args.key, args.min, args.max, options)
-        : client.zRangeByScore(args.key, args.min, args.max);
+        ? client.zRangeByScore(args.key, min, max, options)
+        : client.zRangeByScore(args.key, min, max);
     },
   },
   ZRANGEWITHSCORES: {
@@ -207,11 +215,15 @@ const COMMAND_MAP: Record<string, CommandDefinition> = {
   },
   ZCOUNT: {
     isWrite: false,
-    execute: (client, args) => client.zCount(args.key, args.min, args.max),
+    execute: (client, args) => client.zCount(args.key, String(args.min), String(args.max)),
   },
   ZSCORE: {
     isWrite: false,
     execute: (client, args) => client.zScore(args.key, args.member),
+  },
+  ZRANK: {
+    isWrite: false,
+    execute: (client, args) => client.zRank(args.key, args.member),
   },
   ZREVRANK: {
     isWrite: false,
@@ -231,7 +243,7 @@ const COMMAND_MAP: Record<string, CommandDefinition> = {
   },
   ZREMRANGEBYSCORE: {
     isWrite: true,
-    execute: (client, args) => client.zRemRangeByScore(args.key, args.min, args.max),
+    execute: (client, args) => client.zRemRangeByScore(args.key, String(args.min), String(args.max)),
   },
 
   // ── Stream ───────────────────────────────────────────────────
@@ -274,7 +286,12 @@ const COMMAND_MAP: Record<string, CommandDefinition> = {
   XADD: {
     isWrite: true,
     execute: (client, args) => {
-      const fields = JSON.parse(args.fields);
+      let fields: Record<string, string>;
+      try {
+        fields = JSON.parse(args.fields);
+      } catch {
+        throw new Error('Invalid JSON for XADD fields. Expected format: {"field1":"val1","field2":"val2"}');
+      }
       return client.xAdd(args.key, args.id || '*', fields);
     },
   },

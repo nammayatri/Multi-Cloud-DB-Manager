@@ -5,7 +5,7 @@ import { RedisScanProgress, RedisScanResponse } from '../../types';
 import logger from '../../utils/logger';
 
 const MAX_PREVIEW_KEYS = 10000;
-const DELETE_BATCH_SIZE = 1000;
+const DELETE_BATCH_SIZE = 100; // smaller batches to avoid overwhelming cluster
 const SCAN_DELAY_MS = 100;
 const SCAN_PROGRESS_TTL = 600; // 10 minutes
 

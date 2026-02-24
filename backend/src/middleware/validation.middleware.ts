@@ -49,7 +49,7 @@ export const redisScanSchema = z.object({
   pattern: z.string().min(1, 'Pattern is required'),
   cloud: z.string().min(1, 'Cloud is required'),
   action: z.enum(['preview', 'delete']),
-  scanCount: z.number().int().positive().max(10000).optional(),
+  scanCount: z.number().int().positive().max(200000).optional(),
 });
 
 // Query history filter schema

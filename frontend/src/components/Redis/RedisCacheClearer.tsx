@@ -88,6 +88,7 @@ const phaseLabel = (p: RedisScanProgress, action: 'preview' | 'delete'): string 
 const RedisCacheClearer = () => {
   const { user } = useAppStore();
   const [pattern, setPattern] = useState('');
+  const [scanCount, setScanCount] = useState('10000'); // default 10k, max 200k
   const [selectedCloud, setSelectedCloud] = useState('both');
   const [cloudNames, setCloudNames] = useState<string[]>([]);
   const [scanResult, setScanResult] = useState<RedisScanResponse | null>(null);
@@ -164,10 +165,12 @@ const RedisCacheClearer = () => {
     setScanResult(null);
 
     try {
+      const count = parseInt(scanCount) || 10000;
       const { executionId } = await redisAPI.startScan({
         pattern: pattern.trim(),
         cloud: selectedCloud,
         action,
+        scanCount: Math.min(Math.max(count, 1), 200000),
       });
 
       setCurrentExecutionId(executionId);
@@ -247,6 +250,25 @@ const RedisCacheClearer = () => {
             size="small"
             sx={{ flex: 1 }}
             disabled={isScanning}
+          />
+
+          <TextField
+            label="Scan Count"
+            value={scanCount}
+            onChange={(e) => {
+              const val = parseInt(e.target.value) || 0;
+              if (val > 200000) {
+                setScanCount('200000');
+              } else {
+                setScanCount(e.target.value);
+              }
+            }}
+            size="small"
+            type="number"
+            sx={{ width: 130 }}
+            disabled={isScanning}
+            inputProps={{ min: 1, max: 200000 }}
+            helperText="Max 200k"
           />
 
           <FormControl sx={{ minWidth: 180 }} size="small">

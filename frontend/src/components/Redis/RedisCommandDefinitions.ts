@@ -281,6 +281,13 @@ export const ALL_STRUCTURED_COMMANDS: RedisCommandDefinition[] = [
     ],
   },
   {
+    command: 'ZRANK', label: 'ZRANK', category: 'Sorted Set', isWrite: false,
+    fields: [
+      { name: 'key', label: 'Key', required: true },
+      { name: 'member', label: 'Member', required: true },
+    ],
+  },
+  {
     command: 'ZREVRANK', label: 'ZREVRANK', category: 'Sorted Set', isWrite: false,
     fields: [
       { name: 'key', label: 'Key', required: true },
