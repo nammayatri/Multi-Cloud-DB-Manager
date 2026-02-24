@@ -13,8 +13,6 @@ import {
   Drawer,
   Button,
   Stack,
-  ToggleButtonGroup,
-  ToggleButton,
 } from '@mui/material';
 import HistoryIcon from '@mui/icons-material/History';
 import LogoutIcon from '@mui/icons-material/Logout';
@@ -130,32 +128,59 @@ const ConsolePage = () => {
 
           <Box sx={{ flexGrow: 1 }} />
 
-          <ToggleButtonGroup
-            value={managerMode}
-            exclusive
-            onChange={(_, value) => value && setManagerMode(value)}
-            size="small"
+          {/* Smooth pill toggle */}
+          <Box
             sx={{
-              bgcolor: 'rgba(255,255,255,0.1)',
-              '& .MuiToggleButton-root': {
-                color: 'rgba(255,255,255,0.7)',
-                borderColor: 'rgba(255,255,255,0.3)',
-                '&.Mui-selected': {
-                  color: '#fff',
-                  bgcolor: 'rgba(255,255,255,0.2)',
-                },
-              },
+              display: 'flex',
+              bgcolor: 'rgba(255,255,255,0.08)',
+              borderRadius: '20px',
+              p: '3px',
+              position: 'relative',
             }}
           >
-            <ToggleButton value="db">
-              <StorageIcon sx={{ mr: 0.5, fontSize: 18 }} />
-              DB Manager
-            </ToggleButton>
-            <ToggleButton value="redis">
-              <MemoryIcon sx={{ mr: 0.5, fontSize: 18 }} />
-              Redis Manager
-            </ToggleButton>
-          </ToggleButtonGroup>
+            {/* Sliding indicator */}
+            <Box
+              sx={{
+                position: 'absolute',
+                top: 3,
+                left: managerMode === 'db' ? 3 : 'calc(50% + 0px)',
+                width: 'calc(50% - 3px)',
+                height: 'calc(100% - 6px)',
+                borderRadius: '17px',
+                bgcolor: 'primary.main',
+                opacity: 0.25,
+                border: '1px solid',
+                borderColor: 'primary.main',
+                transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+            />
+            {(['db', 'redis'] as const).map((mode) => (
+              <Box
+                key={mode}
+                onClick={() => setManagerMode(mode)}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                  px: 2,
+                  py: 0.75,
+                  borderRadius: '17px',
+                  cursor: 'pointer',
+                  position: 'relative',
+                  zIndex: 1,
+                  color: managerMode === mode ? '#fff' : 'rgba(255,255,255,0.5)',
+                  transition: 'color 0.25s ease',
+                  fontSize: '0.85rem',
+                  fontWeight: 500,
+                  userSelect: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {mode === 'db' ? <StorageIcon sx={{ fontSize: 18 }} /> : <MemoryIcon sx={{ fontSize: 18 }} />}
+                {mode === 'db' ? 'DB Manager' : 'Redis Manager'}
+              </Box>
+            ))}
+          </Box>
 
           <Box sx={{ flexGrow: 1 }} />
 
@@ -224,23 +249,31 @@ const ConsolePage = () => {
       <Box sx={{ display: 'flex', flexGrow: 1, overflow: 'hidden' }}>
         {/* Main Area */}
         <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <Box sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
-            {managerMode === 'db' ? (
-              /* DB Manager View */
+          <Box sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+            {/* DB Manager View */}
+            <Box
+              key="db-view"
+              sx={{
+                position: managerMode === 'db' ? 'relative' : 'absolute',
+                inset: managerMode === 'db' ? undefined : 0,
+                opacity: managerMode === 'db' ? 1 : 0,
+                pointerEvents: managerMode === 'db' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'db' ? 1 : undefined,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'db' ? 0 : 2,
+              }}
+            >
               <Grid container spacing={2} sx={{ flexGrow: 1, overflow: 'hidden' }}>
-                {/* Left Column - Editor */}
                 <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   <Box sx={{ overflowY: 'auto', flex: 1 }}>
                     <Stack spacing={2} sx={{ p: 1 }}>
-                      {/* Database Selector */}
                       <DatabaseSelector onExecute={handleQueryExecute} />
-
-                      {/* SQL Editor */}
                       <Box sx={{ height: '400px' }}>
                         <SQLEditor />
                       </Box>
-
-                      {/* Results - Only show after first execution */}
                       {currentResult && (
                         <Box ref={resultsPanelRef}>
                           <ResultsPanel result={currentResult} />
@@ -249,44 +282,51 @@ const ConsolePage = () => {
                     </Stack>
                   </Box>
                 </Grid>
-
-                {/* Right Column - History (conditional) */}
                 {showHistory && (
                   <Grid item xs={12} md={4} sx={{ height: '100%' }}>
                     <QueryHistory />
                   </Grid>
                 )}
               </Grid>
-            ) : (
-              /* Redis Manager View */
+            </Box>
+
+            {/* Redis Manager View */}
+            <Box
+              key="redis-view"
+              sx={{
+                position: managerMode === 'redis' ? 'relative' : 'absolute',
+                inset: managerMode === 'redis' ? undefined : 0,
+                opacity: managerMode === 'redis' ? 1 : 0,
+                pointerEvents: managerMode === 'redis' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'redis' ? 1 : undefined,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'redis' ? 0 : 2,
+              }}
+            >
               <Grid container spacing={2} sx={{ flexGrow: 1, overflow: 'hidden' }}>
                 <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   <Box sx={{ overflowY: 'auto', flex: 1 }}>
                     <Stack spacing={2} sx={{ p: 1 }}>
-                      {/* Redis Command Form */}
                       <RedisCommandForm onResult={handleRedisResult} />
-
-                      {/* Redis Results */}
                       {redisResult && (
                         <Box ref={redisResultsPanelRef}>
                           <RedisResultsPanel result={redisResult} />
                         </Box>
                       )}
-
-                      {/* Cache Clearer */}
                       <RedisCacheClearer />
                     </Stack>
                   </Box>
                 </Grid>
-
-                {/* Right Column - Redis History (conditional) */}
                 {showHistory && (
                   <Grid item xs={12} md={4} sx={{ height: '100%' }}>
                     <RedisHistory />
                   </Grid>
                 )}
               </Grid>
-            )}
+            </Box>
           </Box>
         </Box>
       </Box>
