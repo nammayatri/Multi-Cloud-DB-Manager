@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -35,7 +35,13 @@ import type { QueryResponse, RedisCommandResponse } from '../types';
 
 const ConsolePage = () => {
   const navigate = useNavigate();
-  const { user, setUser, showHistory, setShowHistory, setCurrentQuery, managerMode, setManagerMode } = useAppStore();
+  const user = useAppStore(s => s.user);
+  const setUser = useAppStore(s => s.setUser);
+  const showHistory = useAppStore(s => s.showHistory);
+  const setShowHistory = useAppStore(s => s.setShowHistory);
+  const setCurrentQuery = useAppStore(s => s.setCurrentQuery);
+  const managerMode = useAppStore(s => s.managerMode);
+  const setManagerMode = useAppStore(s => s.setManagerMode);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [currentResult, setCurrentResult] = useState<QueryResponse | null>(null);
   const [redisResult, setRedisResult] = useState<RedisCommandResponse | null>(null);
@@ -84,7 +90,7 @@ const ConsolePage = () => {
     }
   };
 
-  const handleQueryExecute = (result: QueryResponse) => {
+  const handleQueryExecute = useCallback((result: QueryResponse) => {
     setCurrentResult(result);
 
     // Auto-scroll to results panel after results render
@@ -97,9 +103,9 @@ const ConsolePage = () => {
         });
       }
     }, 200);
-  };
+  }, []);
 
-  const handleRedisResult = (result: RedisCommandResponse) => {
+  const handleRedisResult = useCallback((result: RedisCommandResponse) => {
     setRedisResult(result);
 
     setTimeout(() => {
@@ -111,7 +117,7 @@ const ConsolePage = () => {
         });
       }
     }, 200);
-  };
+  }, []);
 
   if (!user) {
     return <Box>Loading...</Box>;
@@ -123,7 +129,7 @@ const ConsolePage = () => {
       <AppBar position="static" elevation={2}>
         <Toolbar>
           <Typography variant="h6" component="div" noWrap>
-            {managerMode === 'db' ? 'Dual DB Manager' : 'Redis Manager'}
+            {managerMode === 'db' ? 'Multi-Cloud DB Manager' : 'Redis Manager'}
           </Typography>
 
           <Box sx={{ flexGrow: 1 }} />

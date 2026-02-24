@@ -89,10 +89,10 @@ const LoginPage = () => {
           {/* Logo/Title */}
           <Box sx={{ textAlign: 'center' }}>
             <Typography variant="h3" component="h1" gutterBottom>
-              Dual DB Manager
+              Multi-Cloud DB Manager
             </Typography>
             <Typography variant="subtitle1" color="text.secondary">
-              Execute queries across multiple databases
+              Execute queries across multiple databases simultaneously across multiple clouds
             </Typography>
           </Box>
 
@@ -222,7 +222,7 @@ const LoginPage = () => {
                 Role-based access: MASTER, USER, READER
               </Typography>
               <Typography component="li" variant="body2" color="text.secondary">
-                Execute queries on Multiplle Clouds simultaneously
+                Execute queries on Multiple Clouds simultaneously
               </Typography>
               <Typography component="li" variant="body2" color="text.secondary">
                 Complete query history and audit trail

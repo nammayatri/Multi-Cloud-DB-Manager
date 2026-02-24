@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Paper,
@@ -86,7 +86,7 @@ const phaseLabel = (p: RedisScanProgress, action: 'preview' | 'delete'): string 
 };
 
 const RedisCacheClearer = () => {
-  const { user } = useAppStore();
+  const user = useAppStore(s => s.user);
   const [pattern, setPattern] = useState('');
   const [scanCount, setScanCount] = useState('10000'); // default 10k, max 200k
   const [selectedCloud, setSelectedCloud] = useState('both');
@@ -391,4 +391,4 @@ const RedisCacheClearer = () => {
   );
 };
 
-export default RedisCacheClearer;
+export default React.memo(RedisCacheClearer);

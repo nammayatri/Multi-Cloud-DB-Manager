@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Box,
   Paper,
@@ -40,7 +40,7 @@ interface RedisHistoryEntry {
 }
 
 const RedisHistory = () => {
-  const { user } = useAppStore();
+  const user = useAppStore(s => s.user);
   const [history, setHistory] = useState<RedisHistoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
@@ -242,4 +242,4 @@ const RedisHistory = () => {
   );
 };
 
-export default RedisHistory;
+export default React.memo(RedisHistory);

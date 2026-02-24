@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -29,7 +29,7 @@ interface RedisCommandFormProps {
 const BLOCKED_KEY_RE = /^(\*{1,2}|\?)$/;
 
 const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
-  const { user } = useAppStore();
+  const user = useAppStore(s => s.user);
   const [selectedCommand, setSelectedCommand] = useState('GET');
   const [selectedCloud, setSelectedCloud] = useState('both');
   const [args, setArgs] = useState<Record<string, string>>({});
@@ -248,4 +248,4 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
   );
 };
 
-export default RedisCommandForm;
+export default React.memo(RedisCommandForm);

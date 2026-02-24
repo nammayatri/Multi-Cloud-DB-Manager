@@ -1,5 +1,5 @@
 -- ============================================
--- Dual DB Manager - Production Schema
+-- Multi-Cloud DB Manager - Production Schema
 -- Run with a superuser (e.g., postgres or RDS master)
 -- ============================================
 

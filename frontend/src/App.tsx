@@ -1,9 +1,11 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
+import { ThemeProvider, createTheme, CssBaseline, CircularProgress, Box } from '@mui/material';
 import { Toaster } from 'react-hot-toast';
-import LoginPage from './pages/LoginPage';
-import ConsolePage from './pages/ConsolePage';
-import UsersPage from './pages/UsersPage';
+
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const ConsolePage = lazy(() => import('./pages/ConsolePage'));
+const UsersPage = lazy(() => import('./pages/UsersPage'));
 
 // Create dark theme
 const darkTheme = createTheme({
@@ -48,12 +50,14 @@ function App() {
         }}
       />
       <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/" element={<ConsolePage />} />
-          <Route path="/users" element={<UsersPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <Suspense fallback={<Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}><CircularProgress /></Box>}>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/" element={<ConsolePage />} />
+            <Route path="/users" element={<UsersPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
       </BrowserRouter>
     </ThemeProvider>
   );

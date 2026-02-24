@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Box,
   FormControl,
@@ -42,23 +42,21 @@ interface DatabaseOption {
 const POLL_INTERVAL = 1000; // 1 second polling
 
 const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
-  const {
-    selectedDatabase,
-    setSelectedDatabase,
-    selectedPgSchema,
-    setSelectedPgSchema,
-    selectedMode,
-    setSelectedMode,
-    currentQuery,
-    getQueryToExecute,
-    isExecuting,
-    setIsExecuting,
-    currentExecutionId,
-    setCurrentExecutionId,
-    continueOnError,
-    setContinueOnError,
-    user,
-  } = useAppStore();
+  const selectedDatabase = useAppStore(s => s.selectedDatabase);
+  const setSelectedDatabase = useAppStore(s => s.setSelectedDatabase);
+  const selectedPgSchema = useAppStore(s => s.selectedPgSchema);
+  const setSelectedPgSchema = useAppStore(s => s.setSelectedPgSchema);
+  const selectedMode = useAppStore(s => s.selectedMode);
+  const setSelectedMode = useAppStore(s => s.setSelectedMode);
+  const currentQuery = useAppStore(s => s.currentQuery);
+  const getQueryToExecute = useAppStore(s => s.getQueryToExecute);
+  const isExecuting = useAppStore(s => s.isExecuting);
+  const setIsExecuting = useAppStore(s => s.setIsExecuting);
+  const currentExecutionId = useAppStore(s => s.currentExecutionId);
+  const setCurrentExecutionId = useAppStore(s => s.setCurrentExecutionId);
+  const continueOnError = useAppStore(s => s.continueOnError);
+  const setContinueOnError = useAppStore(s => s.setContinueOnError);
+  const user = useAppStore(s => s.user);
 
   const [databaseOptions, setDatabaseOptions] = useState<DatabaseOption[]>([]);
   const [loadingConfig, setLoadingConfig] = useState(true);
@@ -398,7 +396,7 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
   };
 
   // Register execute handler on store ref so Monaco keybinding can call it
-  const { executeRef } = useAppStore();
+  const executeRef = useAppStore(s => s.executeRef);
   useEffect(() => {
     executeRef.current = handleExecute;
     return () => { executeRef.current = null; };
@@ -610,4 +608,4 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
   );
 };
 
-export default DatabaseSelector;
+export default React.memo(DatabaseSelector);

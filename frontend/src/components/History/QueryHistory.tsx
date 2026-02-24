@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
   Box,
   Paper,
@@ -39,7 +39,10 @@ interface UserOption {
 }
 
 const QueryHistory = () => {
-  const { user, queryHistory, setQueryHistory, setCurrentQuery } = useAppStore();
+  const user = useAppStore(s => s.user);
+  const queryHistory = useAppStore(s => s.queryHistory);
+  const setQueryHistory = useAppStore(s => s.setQueryHistory);
+  const setCurrentQuery = useAppStore(s => s.setCurrentQuery);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
@@ -410,4 +413,4 @@ const QueryHistory = () => {
   );
 };
 
-export default QueryHistory;
+export default React.memo(QueryHistory);

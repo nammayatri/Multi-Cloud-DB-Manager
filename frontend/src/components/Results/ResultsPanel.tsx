@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -426,4 +426,4 @@ const ResultsPanel = ({ result }: ResultsPanelProps) => {
   );
 };
 
-export default ResultsPanel;
+export default React.memo(ResultsPanel);

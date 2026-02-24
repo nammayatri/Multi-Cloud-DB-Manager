@@ -1,3 +1,4 @@
+import React from 'react';
 import { Editor } from '@monaco-editor/react';
 import { Box, Paper, Button, Stack, Typography, IconButton, Tooltip } from '@mui/material';
 import FormatAlignLeftIcon from '@mui/icons-material/FormatAlignLeft';
@@ -11,7 +12,10 @@ import { useAutoSave } from '../../hooks/useAutoSave';
 import { formatDistanceToNow } from 'date-fns';
 
 const SQLEditor = () => {
-  const { currentQuery, setCurrentQuery, setEditorInstance, executeRef } = useAppStore();
+  const currentQuery = useAppStore(s => s.currentQuery);
+  const setCurrentQuery = useAppStore(s => s.setCurrentQuery);
+  const setEditorInstance = useAppStore(s => s.setEditorInstance);
+  const executeRef = useAppStore(s => s.executeRef);
   const { lastSaved, isSaving, clearDraft } = useAutoSave();
 
   const handleEditorDidMount = (editorInstance: editor.IStandaloneCodeEditor) => {
@@ -124,4 +128,4 @@ const SQLEditor = () => {
   );
 };
 
-export default SQLEditor;
+export default React.memo(SQLEditor);

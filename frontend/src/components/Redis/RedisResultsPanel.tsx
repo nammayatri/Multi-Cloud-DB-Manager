@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -244,4 +244,4 @@ const RedisResultsPanel = ({ result }: RedisResultsPanelProps) => {
   );
 };
 
-export default RedisResultsPanel;
+export default React.memo(RedisResultsPanel);
