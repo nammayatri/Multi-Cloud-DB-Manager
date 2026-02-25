@@ -61,21 +61,38 @@ class RedisManagerPools {
 
     logger.info(`Redis Manager: Connecting to ${cloudName} cluster at ${cloudConfig.host}:${cloudConfig.port}`);
 
+    let errorCount = 0;
     const client = createCluster({
       rootNodes: [{ url: `redis://${cloudConfig.host}:${cloudConfig.port}` }],
       defaults: {
         socket: {
           connectTimeout: 10000,
           reconnectStrategy: (retries: number) => {
-            if (retries > 3) return new Error('Max retries reached');
-            return Math.min(retries * 500, 3000);
+            // Give up after 10 retries (~5 min with backoff).
+            // Client is evicted from cache so next request creates a fresh one.
+            if (retries >= 10) {
+              logger.error(`Redis Manager [${cloudName}]: giving up after ${retries} retries, will reconnect on next request`);
+              this.clients.delete(cloudName);
+              return new Error('Max retries reached');
+            }
+            return Math.min(500 * Math.pow(2, retries), 30000);
           },
         },
       },
     });
 
     client.on('error', (err: Error) => {
-      logger.error(`Redis Manager [${cloudName}] error:`, err);
+      errorCount++;
+      if (errorCount === 1 || errorCount % 10 === 0) {
+        logger.error(`Redis Manager [${cloudName}] error (count: ${errorCount}): ${err.message}`);
+      }
+    });
+
+    client.on('connect', () => {
+      if (errorCount > 0) {
+        logger.info(`Redis Manager [${cloudName}] reconnected after ${errorCount} errors`);
+      }
+      errorCount = 0;
     });
 
     await client.connect();

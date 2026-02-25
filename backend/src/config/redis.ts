@@ -24,28 +24,54 @@ export interface RedisClient {
   on(event: string, listener: (...args: any[]) => void): void;
 }
 
+// Exponential backoff: 500ms → 1s → 2s → ... capped at 30s
+// node-redis internally re-runs CLUSTER SLOTS on reconnect,
+// so topology changes (autoscaling) are picked up automatically.
+let errorCount = 0;
+const reconnectStrategy = (retries: number) => {
+  const delay = Math.min(500 * Math.pow(2, retries), 30000);
+  if (retries % 10 === 0) {
+    logger.warn(`Redis reconnect attempt #${retries}, next retry in ${delay}ms`);
+  }
+  return delay;
+};
+
 function buildClient(): RedisClient {
   if (isCluster) {
     logger.info('Connecting to Redis Cluster');
     return createCluster({
       rootNodes: [{ url: `redis://${host}:${port}` }],
+      defaults: {
+        socket: {
+          reconnectStrategy,
+        },
+      },
     }) as unknown as RedisClient;
   }
 
   logger.info('Connecting to standalone Redis');
   return createClient({
-    socket: { host, port },
+    socket: { host, port, reconnectStrategy },
   }) as unknown as RedisClient;
 }
 
 const redisClient = buildClient();
 
+// Throttle error logs — log first, then every 10th
 redisClient.on('error', (err: Error) => {
-  logger.error('Redis client error:', err);
+  errorCount++;
+  if (errorCount === 1 || errorCount % 10 === 0) {
+    logger.error(`Redis client error (count: ${errorCount}): ${err.message}`);
+  }
 });
 
 redisClient.on('connect', () => {
-  logger.info('Redis client connected');
+  if (errorCount > 0) {
+    logger.info(`Redis client reconnected after ${errorCount} errors`);
+  } else {
+    logger.info('Redis client connected');
+  }
+  errorCount = 0;
 });
 
 // Connect immediately

@@ -19,19 +19,29 @@ const api = axios.create({
 });
 
 // Response interceptor for error handling
+let isRedirecting = false;
 api.interceptors.response.use(
-  (response) => {
-    return response;
-  },
+  (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      // Unauthorized - redirect to login
-      window.location.href = '/login';
-    } else if (error.response?.data?.error) {
-      // Show error message
-      toast.error(error.response.data.error);
-    } else {
-      toast.error('An unexpected error occurred');
+    const url = error.config?.url || '';
+    // Let login/register callers handle their own errors (no redirect, no toast)
+    const isAuthForm = url.includes('/auth/login') || url.includes('/auth/register');
+
+    if (error.response?.status === 401 && !isAuthForm) {
+      // Expired session — redirect to login (deduplicated)
+      if (!isRedirecting) {
+        isRedirecting = true;
+        window.location.href = '/login';
+      }
+    } else if (!isAuthForm) {
+      // Show error toast for non-auth-form endpoints
+      if (error.response?.data?.error) {
+        toast.error(error.response.data.error);
+      } else if (error.response?.data?.message) {
+        toast.error(error.response.data.message);
+      } else {
+        toast.error('An unexpected error occurred');
+      }
     }
     return Promise.reject(error);
   }

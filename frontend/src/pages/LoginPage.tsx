@@ -30,9 +30,11 @@ const LoginPage = () => {
   const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
+  const [error, setError] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
     setLoading(true);
 
     try {
@@ -40,9 +42,16 @@ const LoginPage = () => {
       setUser(response.user);
       toast.success('Login successful!');
       navigate('/');
-    } catch (error: any) {
-      const message = error.response?.data?.message || 'Login failed';
-      toast.error(message);
+    } catch (err: any) {
+      const status = err.response?.status;
+      const msg = err.response?.data?.error || err.response?.data?.message;
+      if (status === 401) {
+        setError('Invalid username or password');
+      } else if (status === 403) {
+        setError(msg || 'Account not activated. Please contact MASTER.');
+      } else {
+        setError(msg || 'Login failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -50,17 +59,25 @@ const LoginPage = () => {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
     setLoading(true);
 
     try {
       await authAPI.register(username, password, email, name);
       toast.success('Account created! Please wait for MASTER to activate your account.');
-      // Switch to login tab
       setTab('login');
-      setPassword(''); // Clear password for security
-    } catch (error: any) {
-      const message = error.response?.data?.message || 'Registration failed';
-      toast.error(message);
+      setPassword('');
+      setError('');
+    } catch (err: any) {
+      const status = err.response?.status;
+      const msg = err.response?.data?.error || err.response?.data?.message;
+      if (status === 409) {
+        setError('Username or email already exists');
+      } else if (status === 400) {
+        setError(msg || 'Invalid input. Check your fields and try again.');
+      } else {
+        setError(msg || 'Registration failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -99,7 +116,7 @@ const LoginPage = () => {
           {/* Tabs */}
           <Tabs
             value={tab}
-            onChange={(_, newValue) => setTab(newValue)}
+            onChange={(_, newValue) => { setTab(newValue); setError(''); }}
             centered
           >
             <Tab label="Login" value="login" />
@@ -109,10 +126,11 @@ const LoginPage = () => {
           {/* Login Form */}
           {tab === 'login' && (
             <Box component="form" onSubmit={handleLogin} sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {error && <Alert severity="error" onClose={() => setError('')}>{error}</Alert>}
               <TextField
                 label="Username"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => { setUsername(e.target.value); setError(''); }}
                 required
                 autoFocus
                 autoComplete="username"
@@ -121,7 +139,7 @@ const LoginPage = () => {
                 label="Password"
                 type={showPassword ? 'text' : 'password'}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => { setPassword(e.target.value); setError(''); }}
                 required
                 autoComplete="current-password"
                 InputProps={{
@@ -152,6 +170,7 @@ const LoginPage = () => {
           {/* Register Form */}
           {tab === 'register' && (
             <Box component="form" onSubmit={handleRegister} sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {error && <Alert severity="error" onClose={() => setError('')}>{error}</Alert>}
               <Alert severity="info">
                 New accounts require activation by MASTER before you can login.
               </Alert>

@@ -246,7 +246,7 @@ const RedisCacheClearer = () => {
             label="Pattern"
             value={pattern}
             onChange={(e) => setPattern(e.target.value)}
-            placeholder="e.g., user:*:session"
+            placeholder="e.g. *user*"
             size="small"
             sx={{ flex: 1 }}
             disabled={isScanning}

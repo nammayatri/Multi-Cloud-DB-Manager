@@ -30,39 +30,37 @@ interface ActiveExecution {
 }
 
 /**
- * ExecutionManager - Manages query execution state using Redis for cross-pod visibility
- * Stores execution results in Redis so all pods can access them
- * Keeps active execution tracking in-memory (pod-specific)
+ * ExecutionManager - Manages query execution state using Redis
+ * Local dev (localhost Redis) uses in-memory fallback for execution results
+ * Production always uses Redis — no in-memory fallback
+ * Active execution tracking (cancellation, clients) is always in-memory (pod-specific)
  */
 export class ExecutionManager {
   private activeExecutions: Map<string, ActiveExecution> = new Map();
   private readonly REDIS_KEY_PREFIX = 'execution:';
   private readonly REDIS_TTL_SECONDS: number;
-  private redisAvailable: boolean = true;
   private readonly isLocalRedis: boolean;
 
-  private inMemoryFallback: Map<string, ExecutionResult> = new Map();
+  // In-memory fallback only for local development
+  private inMemoryFallback: Map<string, ExecutionResult> | null = null;
 
   constructor() {
-    // Read TTL from env or default to 5 minutes (300 seconds)
     this.REDIS_TTL_SECONDS = parseInt(process.env.REDIS_EXECUTION_TTL_SECONDS || '300', 10);
 
-    // Determine if Redis is local (single-pod, no cross-pod cancellation needed)
     const redisHost = process.env.REDIS_HOST || 'localhost';
     this.isLocalRedis = redisHost === 'localhost' || redisHost === '127.0.0.1';
 
-    // No cleanup needed - Redis handles TTL automatically
-    // In-memory fallback has its own cleanup
-    setInterval(() => this.cleanupFallback(), 5 * 60 * 1000); // Cleanup every 5 minutes
+    // Only create in-memory fallback for local dev
+    if (this.isLocalRedis) {
+      this.inMemoryFallback = new Map();
+      setInterval(() => this.cleanupFallback(), 5 * 60 * 1000);
+    }
   }
 
-  /**
-   * Cleanup old in-memory fallback entries
-   */
   private cleanupFallback(): void {
+    if (!this.inMemoryFallback) return;
     const now = Date.now();
-    const maxAge = 25 * 60 * 1000; // 25 minutes
-    
+    const maxAge = 25 * 60 * 1000;
     for (const [id, result] of this.inMemoryFallback.entries()) {
       if (result.endTime && (now - result.endTime > maxAge)) {
         this.inMemoryFallback.delete(id);
@@ -70,32 +68,50 @@ export class ExecutionManager {
     }
   }
 
-  /**
-   * Check if Redis is available
-   */
-  private isRedisAvailable(): boolean {
-    if (!redisClient.isOpen) {
-      if (this.redisAvailable) {
-        this.redisAvailable = false;
-        logger.warn('Redis unavailable, falling back to in-memory storage');
-
-        // Try to re-check after 30 seconds
-        setTimeout(() => {
-          this.redisAvailable = true;
-          logger.info('Attempting to reconnect to Redis');
-        }, 30000);
-      }
-      return false;
-    }
-    this.redisAvailable = true;
-    return true;
+  private getRedisKey(executionId: string): string {
+    return `${this.REDIS_KEY_PREFIX}${executionId}`;
   }
 
   /**
-   * Get Redis key for an execution
+   * Store execution result — Redis in production, in-memory fallback for local dev only
    */
-  private getRedisKey(executionId: string): string {
-    return `${this.REDIS_KEY_PREFIX}${executionId}`;
+  private async setResult(executionId: string, result: ExecutionResult): Promise<void> {
+    try {
+      await redisClient.setEx(
+        this.getRedisKey(executionId),
+        this.REDIS_TTL_SECONDS,
+        JSON.stringify(result)
+      );
+    } catch (error) {
+      if (this.isLocalRedis && this.inMemoryFallback) {
+        this.inMemoryFallback.set(executionId, result);
+        return;
+      }
+      throw error; // In production, let it fail — don't silently swallow
+    }
+  }
+
+  /**
+   * Get execution result — Redis in production, in-memory fallback for local dev only
+   */
+  private async getResult(executionId: string): Promise<ExecutionResult | null> {
+    try {
+      const data = await redisClient.get(this.getRedisKey(executionId));
+      if (data) {
+        return JSON.parse(data) as ExecutionResult;
+      }
+    } catch (error) {
+      if (this.isLocalRedis && this.inMemoryFallback) {
+        return this.inMemoryFallback.get(executionId) || null;
+      }
+      throw error;
+    }
+
+    // Not in Redis, check local fallback
+    if (this.isLocalRedis && this.inMemoryFallback) {
+      return this.inMemoryFallback.get(executionId) || null;
+    }
+    return null;
   }
 
   /**
@@ -112,50 +128,14 @@ export class ExecutionManager {
         totalStatements: 0
       }
     };
-
-    // Check if Redis is available
-    if (this.isRedisAvailable()) {
-      try {
-        await redisClient.setEx(
-          this.getRedisKey(executionId),
-          this.REDIS_TTL_SECONDS,
-          JSON.stringify(execution)
-        );
-        return;
-      } catch (error) {
-        logger.warn('Redis failed, falling back to in-memory', { executionId, error });
-        this.redisAvailable = false;
-      }
-    }
-
-    // Fallback to in-memory storage
-    this.inMemoryFallback.set(executionId, execution);
-    logger.info('Execution stored in memory (Redis unavailable)', { executionId });
+    await this.setResult(executionId, execution);
   }
 
   /**
-   * Get execution status from Redis or in-memory fallback
+   * Get execution status
    */
   public async getExecutionStatus(executionId: string): Promise<ExecutionResult | null> {
-    // Try Redis first
-    if (this.isRedisAvailable()) {
-      try {
-        const data = await redisClient.get(this.getRedisKey(executionId));
-        if (data) {
-          return JSON.parse(data) as ExecutionResult;
-        }
-      } catch (error) {
-        logger.warn('Redis get failed, checking in-memory', { executionId, error });
-      }
-    }
-
-    // Fallback to in-memory
-    const inMemoryResult = this.inMemoryFallback.get(executionId);
-    if (inMemoryResult) {
-      return inMemoryResult;
-    }
-
-    return null;
+    return this.getResult(executionId);
   }
 
   /**
@@ -198,32 +178,19 @@ export class ExecutionManager {
     }
 
     // Update Redis status (for cross-pod visibility)
-    if (this.isRedisAvailable()) {
-      try {
-        const data = await redisClient.get(this.getRedisKey(executionId));
-        if (!data) {
-          // Not in Redis — return true if we at least set in-memory
-          return !!execution;
-        }
-
-        const result: ExecutionResult = JSON.parse(data);
-        result.status = 'cancelled';
-        result.endTime = Date.now();
-
-        await redisClient.setEx(
-          this.getRedisKey(executionId),
-          this.REDIS_TTL_SECONDS,
-          JSON.stringify(result)
-        );
-
-        return true;
-      } catch (error) {
-        logger.error('Failed to mark execution as cancelled in Redis', { executionId, error });
+    try {
+      const result = await this.getResult(executionId);
+      if (!result) {
+        return !!execution;
       }
+      result.status = 'cancelled';
+      result.endTime = Date.now();
+      await this.setResult(executionId, result);
+      return true;
+    } catch (error) {
+      logger.error('Failed to mark execution as cancelled', { executionId, error });
+      return !!execution;
     }
-
-    // Redis unavailable — return true if we at least set in-memory
-    return !!execution;
   }
 
   /**
@@ -257,7 +224,7 @@ export class ExecutionManager {
   }
 
   /**
-   * Update execution progress in Redis or in-memory
+   * Update execution progress
    */
   public async updateProgress(
     executionId: string,
@@ -265,31 +232,14 @@ export class ExecutionManager {
     totalStatements: number,
     currentStatementText?: string
   ): Promise<void> {
-    const progress = { currentStatement, totalStatements, currentStatementText };
-
-    // Try Redis first
-    if (this.isRedisAvailable()) {
-      try {
-        const data = await redisClient.get(this.getRedisKey(executionId));
-        if (data) {
-          const result: ExecutionResult = JSON.parse(data);
-          result.progress = progress;
-          await redisClient.setEx(
-            this.getRedisKey(executionId),
-            this.REDIS_TTL_SECONDS,
-            JSON.stringify(result)
-          );
-          return;
-        }
-      } catch (error) {
-        logger.warn('Redis update failed, using in-memory', { executionId, error });
+    try {
+      const result = await this.getResult(executionId);
+      if (result) {
+        result.progress = { currentStatement, totalStatements, currentStatementText };
+        await this.setResult(executionId, result);
       }
-    }
-
-    // Fallback to in-memory
-    const inMemoryResult = this.inMemoryFallback.get(executionId);
-    if (inMemoryResult) {
-      inMemoryResult.progress = progress;
+    } catch (error) {
+      logger.warn('Failed to update progress', { executionId, error });
     }
   }
 
@@ -300,110 +250,56 @@ export class ExecutionManager {
     executionId: string,
     response: QueryResponse
   ): Promise<void> {
-    // Try Redis first
-    if (this.isRedisAvailable()) {
-      try {
-        const data = await redisClient.get(this.getRedisKey(executionId));
-        if (data) {
-          const result: ExecutionResult = JSON.parse(data);
-          // Only save results, keep status as 'running'
-          result.result = response;
-          await redisClient.setEx(
-            this.getRedisKey(executionId),
-            this.REDIS_TTL_SECONDS,
-            JSON.stringify(result)
-          );
-          return;
-        }
-      } catch (error) {
-        logger.warn('Redis save partial failed, using in-memory', { executionId, error });
+    try {
+      const result = await this.getResult(executionId);
+      if (result) {
+        result.result = response;
+        await this.setResult(executionId, result);
       }
-    }
-
-    // Fallback to in-memory
-    const inMemoryResult = this.inMemoryFallback.get(executionId);
-    if (inMemoryResult) {
-      inMemoryResult.result = response;
+    } catch (error) {
+      logger.warn('Failed to save partial results', { executionId, error });
     }
   }
 
   /**
-   * Complete execution with result in Redis or in-memory
+   * Complete execution with result
    */
   public async completeExecution(
     executionId: string,
     response: QueryResponse,
     success: boolean
   ): Promise<void> {
-    // Try Redis first
-    if (this.isRedisAvailable()) {
-      try {
-        const data = await redisClient.get(this.getRedisKey(executionId));
-        if (data) {
-          const result: ExecutionResult = JSON.parse(data);
-          result.result = response;
-          if (result.status !== 'cancelled') {
-            result.status = success ? 'completed' : 'failed';
-          }
-          result.endTime = Date.now();
-          await redisClient.setEx(
-            this.getRedisKey(executionId),
-            this.REDIS_TTL_SECONDS,
-            JSON.stringify(result)
-          );
-          return;
+    try {
+      const result = await this.getResult(executionId);
+      if (result) {
+        result.result = response;
+        if (result.status !== 'cancelled') {
+          result.status = success ? 'completed' : 'failed';
         }
-      } catch (error) {
-        logger.warn('Redis complete failed, using in-memory', { executionId, error });
+        result.endTime = Date.now();
+        await this.setResult(executionId, result);
       }
-    }
-
-    // Fallback to in-memory
-    const inMemoryResult = this.inMemoryFallback.get(executionId);
-    if (inMemoryResult) {
-      inMemoryResult.result = response;
-      if (inMemoryResult.status !== 'cancelled') {
-        inMemoryResult.status = success ? 'completed' : 'failed';
-      }
-      inMemoryResult.endTime = Date.now();
+    } catch (error) {
+      logger.warn('Failed to complete execution', { executionId, error });
     }
   }
 
   /**
-   * Complete execution with error in Redis or in-memory
+   * Complete execution with error
    */
   public async failExecution(executionId: string, errorMessage: string): Promise<void> {
-    // Try Redis first
-    if (this.isRedisAvailable()) {
-      try {
-        const data = await redisClient.get(this.getRedisKey(executionId));
-        if (data) {
-          const result: ExecutionResult = JSON.parse(data);
-          if (result.status !== 'cancelled') {
-            result.status = 'failed';
-            result.error = errorMessage;
-            result.endTime = Date.now();
-          }
-          await redisClient.setEx(
-            this.getRedisKey(executionId),
-            this.REDIS_TTL_SECONDS,
-            JSON.stringify(result)
-          );
-          return;
+    try {
+      const result = await this.getResult(executionId);
+      if (result) {
+        if (result.status !== 'cancelled') {
+          result.status = 'failed';
+          result.error = errorMessage;
+          result.endTime = Date.now();
         }
-      } catch (error) {
-        logger.warn('Redis fail failed, using in-memory', { executionId, error });
+        await this.setResult(executionId, result);
       }
-    }
-
-    // Fallback to in-memory
-    const inMemoryResult = this.inMemoryFallback.get(executionId);
-    if (inMemoryResult) {
-      if (inMemoryResult.status !== 'cancelled') {
-        inMemoryResult.status = 'failed';
-        inMemoryResult.error = errorMessage;
-        inMemoryResult.endTime = Date.now();
-      }
+    } catch (error) {
+      logger.warn('Failed to mark execution as failed', { executionId, error });
     }
   }
 
@@ -414,9 +310,6 @@ export class ExecutionManager {
     const execution = this.activeExecutions.get(executionId);
     if (execution) {
       execution.clients.delete(cloudKey);
-      // Don't delete the activeExecutions entry here — cancellation state
-      // must remain readable between cloud executions in "both" mode.
-      // Cleanup happens in completeActiveExecution() after the full execution finishes.
     }
   }
 
@@ -429,8 +322,7 @@ export class ExecutionManager {
 
   /**
    * Check if execution was cancelled.
-   * For remote Redis (multi-pod), checks Redis first for cross-pod cancellation visibility.
-   * For local Redis or when Redis is unavailable, uses in-memory only.
+   * Checks in-memory first (fast), then Redis for cross-pod visibility.
    */
   public async isCancelled(executionId: string): Promise<boolean> {
     // Always check in-memory first (fast path, covers same-pod cancellation)
@@ -445,23 +337,16 @@ export class ExecutionManager {
     }
 
     // For remote Redis, check Redis for cross-pod cancellation
-    if (this.isRedisAvailable()) {
-      try {
-        const data = await redisClient.get(this.getRedisKey(executionId));
-        if (data) {
-          const result: ExecutionResult = JSON.parse(data);
-          if (result.status === 'cancelled') {
-            // Cache locally so subsequent checks are fast
-            if (execution) {
-              execution.cancelled = true;
-            }
-            return true;
-          }
+    try {
+      const result = await this.getResult(executionId);
+      if (result?.status === 'cancelled') {
+        if (execution) {
+          execution.cancelled = true;
         }
-      } catch {
-        // Redis failed, rely on in-memory — don't flip redisAvailable here
-        // since transient errors shouldn't disable Redis for all operations
+        return true;
       }
+    } catch {
+      // Redis failed, rely on in-memory
     }
 
     return false;
