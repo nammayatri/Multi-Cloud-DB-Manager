@@ -17,7 +17,7 @@ metadata:
     app: dual-db-backend
 spec:
   progressDeadlineSeconds: 600
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 10
   selector:
     matchLabels:
@@ -58,6 +58,20 @@ spec:
           value: "<REDIS_HOST>"  # Replace with your Redis host (e.g., redis-service.default.svc.cluster.local or localhost)
         - name: REDIS_PORT
           value: "6379"
+        - name: REDIS_CLUSTER_MODE
+          value: "false"  # Set to "true" if using Redis Cluster (e.g., AWS ElastiCache cluster mode)
+        - name: RUN_MIGRATIONS
+          value: "false"  # Set to "true" on first deploy to auto-create tables (users, history)
+
+        # Optional tuning (defaults shown)
+        - name: SESSION_TTL_SECONDS
+          value: "43200"  # Session cookie lifetime (default: 12 hours)
+        - name: REDIS_EXECUTION_TTL_SECONDS
+          value: "300"  # TTL for query execution state in Redis (default: 5 minutes)
+        - name: MAX_QUERY_TIMEOUT_MS
+          value: "300000"  # Maximum total query timeout (default: 5 minutes)
+        - name: STATEMENT_TIMEOUT_MS
+          value: "300000"  # Per-statement PostgreSQL timeout (default: 5 minutes)
 
         resources:
           requests:
