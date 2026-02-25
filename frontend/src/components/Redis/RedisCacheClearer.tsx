@@ -88,7 +88,7 @@ const phaseLabel = (p: RedisScanProgress, action: 'preview' | 'delete'): string 
 const RedisCacheClearer = () => {
   const user = useAppStore(s => s.user);
   const [pattern, setPattern] = useState('');
-  const [scanCount, setScanCount] = useState('10000'); // default 10k, max 200k
+  const [scanCount, setScanCount] = useState('100000'); // default 100k, max 200k
   const [selectedCloud, setSelectedCloud] = useState('both');
   const [cloudNames, setCloudNames] = useState<string[]>([]);
   const [scanResult, setScanResult] = useState<RedisScanResponse | null>(null);
