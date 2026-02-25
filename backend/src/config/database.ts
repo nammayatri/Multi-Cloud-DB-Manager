@@ -220,7 +220,7 @@ class DatabasePools {
     // Setup error handlers for all pools in the map
     this.pools.forEach((pool, name) => {
       pool.on('error', (err) => {
-        logger.error(`Unexpected error on ${name} pool:`, err);
+        logger.error(`Unexpected error on ${name} pool: ${err.message}`);
       });
 
       pool.on('connect', () => {
@@ -234,7 +234,7 @@ class DatabasePools {
 
     // Setup error handler for history pool
     this.history.on('error', (err) => {
-      logger.error('Unexpected error on history pool:', err);
+      logger.error(`Unexpected error on history pool: ${err.message}`);
     });
   }
 
