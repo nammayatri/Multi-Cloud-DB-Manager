@@ -69,8 +69,8 @@ const computeProgress = (p: RedisScanProgress, action: 'preview' | 'delete'): nu
 };
 
 const phaseLabel = (p: RedisScanProgress, action: 'preview' | 'delete'): string => {
-  if (p.status === 'completed') return 'Completed';
-  if (p.status === 'cancelled') return 'Cancelled';
+  if (p.status === 'completed') return `Completed — ${p.nodesScanned}/${p.nodesTotal} nodes scanned, ${p.keysFound} keys found`;
+  if (p.status === 'cancelled') return `Cancelled — ${p.nodesScanned}/${p.nodesTotal} nodes scanned, ${p.keysFound} keys found`;
   if (p.status === 'error') return 'Error';
 
   if (p.status === 'scanning') {
