@@ -12,6 +12,7 @@ import logger from '../utils/logger';
 const isCluster = process.env.REDIS_CLUSTER_MODE === 'true';
 const host = process.env.REDIS_HOST || 'localhost';
 const port = parseInt(process.env.REDIS_PORT || '6379');
+const keepAlive = parseInt(process.env.REDIS_KEEPALIVE_MS || '60000');
 
 // Common interface covering all methods we use across the codebase
 export interface RedisClient {
@@ -43,6 +44,8 @@ function buildClient(): RedisClient {
       rootNodes: [{ url: `redis://${host}:${port}` }],
       defaults: {
         socket: {
+          connectTimeout: 10000,
+          keepAlive,
           reconnectStrategy,
         },
       },
@@ -51,7 +54,7 @@ function buildClient(): RedisClient {
 
   logger.info('Connecting to standalone Redis');
   return createClient({
-    socket: { host, port, reconnectStrategy },
+    socket: { host, port, connectTimeout: 10000, keepAlive, reconnectStrategy },
   }) as unknown as RedisClient;
 }
 

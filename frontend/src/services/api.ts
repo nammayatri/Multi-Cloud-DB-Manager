@@ -131,6 +131,9 @@ export const queryAPI = {
   },
 };
 
+// Shared in-flight promise to deduplicate concurrent getConfiguration calls
+let configInFlight: Promise<DatabaseConfiguration> | null = null;
+
 // Schema API with caching
 export const schemaAPI = {
   // Get full database configuration
@@ -151,16 +154,24 @@ export const schemaAPI = {
       }
     }
 
+    // Deduplicate: if a fetch is already in flight, reuse it
+    if (configInFlight) {
+      return configInFlight;
+    }
+
     // Fetch from API
-    const response = await api.get('/api/schemas/configuration');
+    configInFlight = api.get('/api/schemas/configuration').then(response => {
+      // Cache the result
+      localStorage.setItem(cacheKey, JSON.stringify({
+        data: response.data,
+        timestamp: Date.now()
+      }));
+      return response.data;
+    }).finally(() => {
+      configInFlight = null;
+    });
 
-    // Cache the result
-    localStorage.setItem(cacheKey, JSON.stringify({
-      data: response.data,
-      timestamp: Date.now()
-    }));
-
-    return response.data;
+    return configInFlight;
   },
 
   getSchemas: async (database: 'primary' | 'secondary', cloud: 'aws' | 'gcp' = 'aws'): Promise<{ schemas: string[]; default: string }> => {

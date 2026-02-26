@@ -4,6 +4,8 @@ import { RedisConfigJson } from '../types';
 import { loadRedisConfig } from './redis-config-loader';
 import logger from '../utils/logger';
 
+const keepAlive = parseInt(process.env.REDIS_KEEPALIVE_MS || '60000');
+
 type RedisClusterClient = RedisClusterType<any, any, any>;
 
 interface ClusterMasterNode {
@@ -67,6 +69,7 @@ class RedisManagerPools {
       defaults: {
         socket: {
           connectTimeout: 10000,
+          keepAlive,
           reconnectStrategy: (retries: number) => {
             // Give up after 10 retries (~5 min with backoff).
             // Client is evicted from cache so next request creates a fresh one.
