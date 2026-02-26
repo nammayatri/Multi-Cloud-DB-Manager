@@ -39,16 +39,21 @@ class SelfHealingRedisClient {
 
   private buildClient(): RedisClient {
     let errorCount = 0;
+    let rawClient: any; // declared before reconnectStrategy so the closure can capture it
 
     const reconnectStrategy = (retries: number) => {
       // Retry at 1s, 2s, 3s, 4s — give up after ~10s total
       // Then destroy client so next request creates a fresh one
       if (retries >= 4) {
         logger.error(`Redis session: giving up after ${retries} retries (~10s), will recreate on next request`);
-        const deadClient = this.client;
-        this.client = null;
-        this.connecting = null;
-        if (deadClient) deadClient.quit().catch(() => {});
+        // Only clear this.client if it still points to THIS dying client.
+        // A new getClient() call may have already created a fresh client between
+        // when this timer was scheduled and when it fired — don't wipe that one.
+        if (this.client === rawClient) {
+          this.client = null;
+          this.connecting = null;
+        }
+        rawClient?.quit().catch(() => {});
         return new Error('Max retries reached');
       }
       const delay = (retries + 1) * 1000; // 1s, 2s, 3s, 4s
@@ -56,7 +61,6 @@ class SelfHealingRedisClient {
       return delay;
     };
 
-    let rawClient: any;
     if (isCluster) {
       logger.info('Connecting to Redis Cluster (session)');
       rawClient = createCluster({
