@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 import RedisManagerPools from '../../config/redis-pools';
 import redisClient from '../../config/redis';
-import { RedisScanProgress, RedisScanResponse } from '../../types';
+import { RedisScanResponse } from '../../types';
 import logger from '../../utils/logger';
 
 const MAX_PREVIEW_KEYS = 10000;
@@ -150,9 +150,8 @@ async function scanCloud(
 
     const allKeys: string[] = [];
 
-    // SCAN each master node
-    for (const master of masters) {
-      // Check cancellation before each node
+    // SCAN all master nodes in parallel
+    const scanNode = async (master: { host: string; port: number }) => {
       if (await isCancelled(executionId)) {
         progress.status = 'cancelled';
         await saveProgress(executionId, response);
@@ -173,7 +172,6 @@ async function scanCloud(
 
           let cursor = 0;
           do {
-            // Check cancellation between SCAN iterations
             if (await isCancelled(executionId)) {
               progress.status = 'cancelled';
               await saveProgress(executionId, response);
@@ -191,7 +189,7 @@ async function scanCloud(
               allKeys.push(...result.keys);
               progress.keysFound = allKeys.length;
 
-              // Always populate keys[] for live display (capped at MAX_PREVIEW_KEYS)
+              // Populate keys[] for live display (capped at MAX_PREVIEW_KEYS)
               if (progress.keys && progress.keys.length < MAX_PREVIEW_KEYS) {
                 const remaining = MAX_PREVIEW_KEYS - progress.keys.length;
                 progress.keys.push(...result.keys.slice(0, remaining));
@@ -200,12 +198,10 @@ async function scanCloud(
               await saveProgress(executionId, response);
             }
 
-            // Non-blocking delay
             if (cursor !== 0) {
               await sleep(SCAN_DELAY_MS);
             }
 
-            // Safety cap for preview
             if (action === 'preview' && allKeys.length >= MAX_PREVIEW_KEYS) {
               break;
             }
@@ -215,12 +211,13 @@ async function scanCloud(
         }
       } catch (nodeError: any) {
         logger.error(`SCAN failed on node ${master.host}:${master.port}:`, nodeError);
-        // Continue with other nodes
       }
 
       progress.nodesScanned++;
       await saveProgress(executionId, response);
-    }
+    };
+
+    await Promise.all(masters.map(scanNode));
 
     // Check cancellation before delete phase
     if (await isCancelled(executionId)) {

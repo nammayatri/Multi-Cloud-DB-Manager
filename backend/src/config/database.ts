@@ -39,7 +39,6 @@ class DatabasePools {
 
   public history!: Pool;
 
-  // New internal structures
   private pools: Map<string, Pool> = new Map();
   private schemaCache: Map<string, SchemaInfo> = new Map();
   private cloudConfig: CloudConfiguration;

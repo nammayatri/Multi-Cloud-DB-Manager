@@ -19,7 +19,6 @@ class RedisManagerPools {
 
   private clients: Map<string, RedisClusterClient> = new Map();
   private config: RedisConfigJson | null = null;
-  private initialized = false;
 
   private constructor() {
     this.config = loadRedisConfig();
