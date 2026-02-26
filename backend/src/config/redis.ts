@@ -14,11 +14,15 @@ const host = process.env.REDIS_HOST || 'localhost';
 const port = parseInt(process.env.REDIS_PORT || '6379');
 const keepAlive = parseInt(process.env.REDIS_KEEPALIVE_MS || '60000');
 
-// Common interface covering all methods we use across the codebase
+// Interface covering methods used by our code + connect-redis session store
 export interface RedisClient {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<string | null>;
+  set(key: string, value: string, options?: any): Promise<string | null>;
   setEx(key: string, seconds: number, value: string): Promise<string>;
+  expire(key: string, seconds: number): Promise<boolean>;
+  del(key: string | string[]): Promise<number>;
+  mGet(keys: string[]): Promise<(string | null)[]>;
+  scanIterator(options: any): AsyncIterable<string>;
   connect(): Promise<void>;
   quit(): Promise<void>;
   isOpen: boolean;
@@ -26,7 +30,7 @@ export interface RedisClient {
 
 /**
  * Self-healing Redis client wrapper.
- * Caps reconnect at 5 retries (~10s), then destroys and
+ * Caps reconnect at 4 retries (~10s), then destroys and
  * recreates the underlying client on next use.
  */
 class SelfHealingRedisClient {
@@ -39,7 +43,7 @@ class SelfHealingRedisClient {
     const reconnectStrategy = (retries: number) => {
       // Retry at 1s, 2s, 3s, 4s — give up after ~10s total
       // Then destroy client so next request creates a fresh one
-      if (retries >= 5) {
+      if (retries >= 4) {
         logger.error(`Redis session: giving up after ${retries} retries (~10s), will recreate on next request`);
         const deadClient = this.client;
         this.client = null;
@@ -47,7 +51,7 @@ class SelfHealingRedisClient {
         if (deadClient) deadClient.quit().catch(() => {});
         return new Error('Max retries reached');
       }
-      const delay = (retries + 1) * 1000; // 1s, 2s, 3s, 4s, 5s
+      const delay = (retries + 1) * 1000; // 1s, 2s, 3s, 4s
       logger.warn(`Redis session reconnect attempt #${retries + 1}, next retry in ${delay}ms`);
       return delay;
     };
@@ -117,21 +121,41 @@ class SelfHealingRedisClient {
     return this.client!;
   }
 
-  // --- Public API (same interface as before) ---
+  // --- Public API ---
 
   async get(key: string): Promise<string | null> {
     const c = await this.getClient();
     return c.get(key);
   }
 
-  async set(key: string, value: string): Promise<string | null> {
+  async set(key: string, value: string, options?: any): Promise<string | null> {
     const c = await this.getClient();
-    return c.set(key, value);
+    return options ? (c as any).set(key, value, options) : c.set(key, value);
   }
 
   async setEx(key: string, seconds: number, value: string): Promise<string> {
     const c = await this.getClient();
     return c.setEx(key, seconds, value);
+  }
+
+  async expire(key: string, seconds: number): Promise<boolean> {
+    const c = await this.getClient();
+    return (c as any).expire(key, seconds);
+  }
+
+  async del(key: string | string[]): Promise<number> {
+    const c = await this.getClient();
+    return (c as any).del(key);
+  }
+
+  async mGet(keys: string[]): Promise<(string | null)[]> {
+    const c = await this.getClient();
+    return (c as any).mGet(keys);
+  }
+
+  async *scanIterator(options: any): AsyncIterable<string> {
+    const c = await this.getClient();
+    yield* (c as any).scanIterator(options);
   }
 
   async connect(): Promise<void> {

@@ -19,14 +19,14 @@ export function loadRedisConfig(): RedisConfigJson | null {
   // Try Kubernetes mounted config
   const k8sConfigPath = '/config/redis.json';
   if (fs.existsSync(k8sConfigPath)) {
-    logger.info('Loading Redis configuration from Kubernetes mount:', k8sConfigPath);
+    logger.info('Loading Redis configuration from Kubernetes mount', { path: k8sConfigPath });
     return loadFromJsonFile(k8sConfigPath);
   }
 
   // Try local config file
   const configPath = path.join(__dirname, '../../config/redis.json');
   if (fs.existsSync(configPath)) {
-    logger.info('Loading Redis configuration from local file:', configPath);
+    logger.info('Loading Redis configuration from local file', { path: configPath });
     return loadFromJsonFile(configPath);
   }
 

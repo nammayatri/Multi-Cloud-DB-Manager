@@ -1,6 +1,6 @@
 {
   "name": "dual-db-manager-backend",
-  "version": "2.0.37",
+  "version": "2.0.38",
   "description": "High-reliability dual database management backend",
   "main": "dist/server.js",
   "scripts": {

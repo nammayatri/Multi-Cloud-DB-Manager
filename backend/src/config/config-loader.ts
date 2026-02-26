@@ -20,14 +20,14 @@ export function loadDatabaseConfig(): DatabasesConfigJson | null {
   // Try Kubernetes mounted config (ConfigMap or Secret)
   const k8sConfigPath = '/config/databases.json';
   if (fs.existsSync(k8sConfigPath)) {
-    logger.info('Loading database configuration from Kubernetes mount:', k8sConfigPath);
+    logger.info('Loading database configuration from Kubernetes mount', { path: k8sConfigPath });
     return loadFromJsonFile(k8sConfigPath);
   }
 
   // Try local config file
   const configPath = path.join(__dirname, '../../config/databases.json');
   if (fs.existsSync(configPath)) {
-    logger.info('Loading database configuration from local file:', configPath);
+    logger.info('Loading database configuration from local file', { path: configPath });
     return loadFromJsonFile(configPath);
   }
 
