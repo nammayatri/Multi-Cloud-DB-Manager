@@ -191,59 +191,111 @@ export class QueryValidator {
   }
 
   /**
-   * Split query into individual statements
+   * Split query into individual statements.
+   * Handles dollar-quoted strings ($$...$$, $tag$...$tag$), single-quoted strings,
+   * and SQL comments so that semicolons inside string literals or function bodies
+   * are never treated as statement separators.
    */
   public splitStatements(query: string): string[] {
-    // Remove comments first
-    const cleanQuery = query
-      .replace(/--.*$/gm, '')
-      .replace(/\/\*[\s\S]*?\*\//g, '');
-
-    // Split by semicolons, but handle BEGIN/END blocks carefully
     const statements: string[] = [];
-    let currentStatement = '';
-    let inBlock = false;
+    let current = '';
+    let i = 0;
 
-    const lines = cleanQuery.split('\n');
-    
-    for (const line of lines) {
-      const trimmedLine = line.trim();
-      
-      // Skip empty lines
-      if (!trimmedLine) continue;
+    // State
+    let inSingleQuote = false;
+    let dollarTag: string | null = null; // null = not in dollar-quote; '' = $$; 'tag' = $tag$
 
-      // Check for block start (PL/pgSQL blocks, DO statements, etc.)
-      // Match DO $$ blocks and standalone BEGIN (PL/pgSQL), but NOT transaction BEGIN; (ends with semicolon)
-      if (/^\s*DO\s+\$/i.test(trimmedLine) || (/^\s*BEGIN\s*$/i.test(trimmedLine))) {
-        inBlock = true;
-      }
+    while (i < query.length) {
+      const ch = query[i];
 
-      // Check for block end
-      if (inBlock && /^\s*(END|EXCEPTION)/i.test(trimmedLine)) {
-        inBlock = false;
-      }
-
-      currentStatement += line + '\n';
-
-      // Only split on semicolon if we're not inside a block
-      if (!inBlock && trimmedLine.endsWith(';')) {
-        const trimmed = currentStatement.trim();
-        if (trimmed) {
-          statements.push(trimmed);
+      // ── Inside a single-quoted string ────────────────────────────────
+      if (inSingleQuote) {
+        if (ch === "'" && query[i + 1] === "'") {
+          // Escaped quote ('') — consume both
+          current += "''";
+          i += 2;
+        } else if (ch === "'") {
+          current += ch;
+          inSingleQuote = false;
+          i++;
+        } else {
+          current += ch;
+          i++;
         }
-        currentStatement = '';
+        continue;
       }
+
+      // ── Inside a dollar-quoted string ────────────────────────────────
+      if (dollarTag !== null) {
+        const closeTag = `$${dollarTag}$`;
+        if (query.startsWith(closeTag, i)) {
+          current += closeTag;
+          i += closeTag.length;
+          dollarTag = null;
+        } else {
+          current += ch;
+          i++;
+        }
+        continue;
+      }
+
+      // ── Outside any string literal ────────────────────────────────────
+
+      // Single-line comment — skip to end of line
+      if (ch === '-' && query[i + 1] === '-') {
+        const nl = query.indexOf('\n', i);
+        if (nl === -1) { i = query.length; } else { i = nl + 1; }
+        continue;
+      }
+
+      // Block comment — skip to */
+      if (ch === '/' && query[i + 1] === '*') {
+        const end = query.indexOf('*/', i + 2);
+        if (end === -1) { i = query.length; } else { i = end + 2; }
+        continue;
+      }
+
+      // Enter single-quoted string
+      if (ch === "'") {
+        inSingleQuote = true;
+        current += ch;
+        i++;
+        continue;
+      }
+
+      // Enter dollar-quoted string — match $tag$ pattern
+      if (ch === '$') {
+        const rest = query.slice(i);
+        const match = rest.match(/^\$([^$\s]*)\$/);
+        if (match) {
+          dollarTag = match[1]; // '' for $$, or the tag name
+          current += match[0];
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Statement separator
+      if (ch === ';') {
+        current += ch;
+        const trimmed = current.trim();
+        if (trimmed) statements.push(trimmed);
+        current = '';
+        i++;
+        continue;
+      }
+
+      current += ch;
+      i++;
     }
 
-    // Handle last statement without semicolon
-    const trimmed = currentStatement.trim();
-    if (trimmed) {
-      statements.push(trimmed);
-    }
+    // Trailing statement without semicolon
+    const trimmed = current.trim();
+    if (trimmed) statements.push(trimmed);
 
-    // If no statements found, treat entire query as one statement
-    if (statements.length === 0 && cleanQuery.trim()) {
-      statements.push(cleanQuery.trim());
+    // Fallback: if nothing was split, return the whole query as one statement
+    if (statements.length === 0 && query.trim()) {
+      statements.push(query.trim());
     }
 
     return statements;

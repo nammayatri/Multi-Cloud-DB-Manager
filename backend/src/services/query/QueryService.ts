@@ -155,6 +155,83 @@ class QueryService {
         success: false,
       };
 
+      // Block INSERT statements that would generate different UUIDs on each cloud:
+      //   1. Explicit: INSERT contains gen_random_uuid() / uuid_generate_vX() in its text
+      //   2. Implicit: INSERT omits a column whose table DEFAULT is gen_random_uuid()
+      // SELECT with gen_random_uuid() is allowed (read-only, no divergence risk).
+      //
+      // continueOnError: false → block entire batch if any INSERT has UUID divergence risk
+      // continueOnError: true  → skip only the offending INSERT statements, run the rest
+      const UUID_FN_REGEX = /(?:gen_random_uuid|uuid_generate_v[1345](?:mc)?)\(\)/gi;
+      let processedQuery = request.query;
+
+      if (cloudsToExecute.length > 1) {
+        const allStatements = QueryValidator.splitStatements(request.query);
+        const blockedStatements: string[] = [];
+        // Statements that passed the explicit check — will go through implicit check next
+        const candidateAllowed: string[] = [];
+
+        // Pass 1: explicit UUID function check
+        // Block any statement that contains INSERT + UUID function anywhere in its text.
+        UUID_FN_REGEX.lastIndex = 0;
+        for (const stmt of allStatements) {
+          const hasInsert = /\bINSERT\b/i.test(stmt);
+          const hasUuidFn = UUID_FN_REGEX.test(stmt);
+          UUID_FN_REGEX.lastIndex = 0;
+          if (hasInsert && hasUuidFn) {
+            blockedStatements.push(stmt);
+          } else {
+            candidateAllowed.push(stmt);
+          }
+        }
+
+        // Pass 2: implicit UUID check — INSERT omits a UUID-default column
+        const finalAllowed: string[] = [];
+        const implicitBlockInfo: Array<{ cols: string[] }> = [];
+        for (const stmt of candidateAllowed) {
+          if (/\bINSERT\b/i.test(stmt)) {
+            const implicitCols = await this.getImplicitUuidColumns(
+              stmt, pgSchema, cloudConfig.primaryCloud, databaseName
+            );
+            if (implicitCols.length > 0) {
+              logger.debug('INSERT has implicit UUID-default columns', { executionId, implicitCols });
+              blockedStatements.push(stmt);
+              implicitBlockInfo.push({ cols: implicitCols });
+            } else {
+              finalAllowed.push(stmt);
+            }
+          } else {
+            finalAllowed.push(stmt);
+          }
+        }
+
+        if (blockedStatements.length > 0) {
+          const implicitColsDesc = implicitBlockInfo.length > 0
+            ? ` Columns with UUID defaults that must be explicitly set: ${[...new Set(implicitBlockInfo.flatMap(i => i.cols))].join(', ')}.`
+            : '';
+          const uuidErrorMsg =
+            `${blockedStatements.length} INSERT statement(s) contain or rely on gen_random_uuid() which would generate different UUIDs on each cloud, causing data divergence.${implicitColsDesc} ` +
+            'Use the Generate UUID button in the editor toolbar to replace gen_random_uuid() with explicit UUID literals.';
+
+          if (!request.continueOnError) {
+            logger.warn('Execution blocked: INSERT with UUID divergence risk in multi-cloud query', { executionId, blockedCount: blockedStatements.length });
+            await this.executionManager.failExecution(executionId, uuidErrorMsg, 'UUID_DIVERGENCE');
+            this.executionManager.completeActiveExecution(executionId);
+            return;
+          }
+
+          // continueOnError: skip blocked statements, execute the rest
+          logger.warn('Skipping INSERT(s) with UUID divergence risk due to continueOnError', { executionId, blockedCount: blockedStatements.length });
+          processedQuery = finalAllowed.join('\n\n');
+
+          if (!processedQuery.trim()) {
+            await this.executionManager.failExecution(executionId, uuidErrorMsg, 'UUID_DIVERGENCE');
+            this.executionManager.completeActiveExecution(executionId);
+            return;
+          }
+        }
+      }
+
       // Execute on each cloud
       const successes: boolean[] = [];
       let wasCancelled = false;
@@ -173,11 +250,12 @@ class QueryService {
           continue; // Continue to add placeholders for remaining clouds
         }
 
+
         try {
           const result = await this.executor.executeOnDatabase(
             cloudName,
             databaseName,
-            request.query,
+            processedQuery,
             timeout,
             pgSchema,
             request.continueOnError || false,
@@ -297,6 +375,65 @@ class QueryService {
             logger.error('Failed to save failed query to history:', err);
           });
       }
+    }
+  }
+
+  /**
+   * Query information_schema to find UUID-default columns that are NOT explicitly
+   * listed in the given INSERT statement's column list.
+   * Returns column names that would be auto-generated with gen_random_uuid() by the DB.
+   */
+  private async getImplicitUuidColumns(
+    stmt: string,
+    pgSchema: string,
+    cloudName: string,
+    databaseName: string
+  ): Promise<string[]> {
+    // Parse: INSERT INTO [schema.]table [(col1, col2, ...)] VALUES/SELECT
+    const match = stmt.match(
+      /^\s*INSERT\s+INTO\s+(?:"?(\w+)"?\.)?"?(\w+)"?\s*(?:\(([^)]*)\))?\s*(?:VALUES|SELECT)/i
+    );
+    if (!match) return [];
+
+    const tableSchema = match[1] || pgSchema || 'public';
+    const tableName   = match[2];
+    const columnListStr = match[3];
+
+    // If no column list: all columns are implied — any UUID-default column will be auto-generated
+    const explicitColumns = columnListStr
+      ? columnListStr.split(',').map(c => c.trim().replace(/"/g, '').toLowerCase())
+      : null;
+
+    const pool = DatabasePools.getInstance().getPoolByName(cloudName, databaseName);
+    if (!pool) return [];
+
+    try {
+      const client = await pool.connect();
+      try {
+        const result = await client.query(
+          `SELECT column_name
+           FROM information_schema.columns
+           WHERE table_schema = $1
+             AND table_name   = $2
+             AND (column_default ILIKE '%gen_random_uuid%'
+                  OR column_default ILIKE '%uuid_generate_v%')`,
+          [tableSchema, tableName]
+        );
+        const uuidDefaultCols: string[] = result.rows.map((r: any) => r.column_name.toLowerCase());
+        if (uuidDefaultCols.length === 0) return [];
+
+        // No explicit column list → all UUID-default columns will be auto-generated
+        if (explicitColumns === null) return uuidDefaultCols;
+
+        // Return UUID-default columns missing from the explicit list
+        return uuidDefaultCols.filter(col => !explicitColumns.includes(col));
+      } finally {
+        client.release();
+      }
+    } catch (err: any) {
+      // Schema query failed — don't block, log and continue
+      logger.warn('Failed to query information_schema for UUID defaults', { err: err.message });
+      return [];
     }
   }
 

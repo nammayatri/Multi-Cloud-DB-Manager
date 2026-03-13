@@ -11,6 +11,7 @@ export interface ExecutionResult {
   status: 'running' | 'completed' | 'failed' | 'cancelled';
   result?: QueryResponse;
   error?: string;
+  errorCode?: string;
   progress?: {
     currentStatement: number;
     totalStatements: number;
@@ -287,13 +288,14 @@ export class ExecutionManager {
   /**
    * Complete execution with error
    */
-  public async failExecution(executionId: string, errorMessage: string): Promise<void> {
+  public async failExecution(executionId: string, errorMessage: string, errorCode?: string): Promise<void> {
     try {
       const result = await this.getResult(executionId);
       if (result) {
         if (result.status !== 'cancelled') {
           result.status = 'failed';
           result.error = errorMessage;
+          if (errorCode) result.errorCode = errorCode;
           result.endTime = Date.now();
         }
         await this.setResult(executionId, result);

@@ -3,6 +3,7 @@ import { Editor } from '@monaco-editor/react';
 import { Box, Paper, Button, Stack, Typography, IconButton, Tooltip } from '@mui/material';
 import FormatAlignLeftIcon from '@mui/icons-material/FormatAlignLeft';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import FingerprintIcon from '@mui/icons-material/Fingerprint';
 import { useAppStore } from '../../store/appStore';
 import type { editor } from 'monaco-editor';
 import { KeyMod, KeyCode } from 'monaco-editor';
@@ -30,6 +31,30 @@ const SQLEditor = () => {
         executeRef.current?.();
       },
     });
+  };
+
+  const handleGenerateUUID = () => {
+    const editorInstance = useAppStore.getState().editorInstance;
+    const uuid = crypto.randomUUID();
+    if (editorInstance) {
+      const position = editorInstance.getPosition();
+      if (position) {
+        editorInstance.executeEdits('insert-uuid', [{
+          range: {
+            startLineNumber: position.lineNumber,
+            startColumn: position.column,
+            endLineNumber: position.lineNumber,
+            endColumn: position.column,
+          },
+          text: `'${uuid}'`,
+        }]);
+        editorInstance.focus();
+        return;
+      }
+    }
+    // Fallback: copy to clipboard
+    navigator.clipboard.writeText(uuid);
+    toast.success(`UUID copied: ${uuid}`);
   };
 
   const handleFormatSQL = () => {
@@ -74,6 +99,17 @@ const SQLEditor = () => {
         >
           Format SQL
         </Button>
+
+        <Tooltip title="Insert a pre-generated UUID literal at cursor position">
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<FingerprintIcon />}
+            onClick={handleGenerateUUID}
+          >
+            Generate UUID
+          </Button>
+        </Tooltip>
 
         <Box sx={{ flexGrow: 1 }} />
 

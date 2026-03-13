@@ -108,6 +108,7 @@ export const queryAPI = {
     status: 'running' | 'completed' | 'failed' | 'cancelled';
     result?: QueryResponse;
     error?: string;
+    errorCode?: string;
     progress?: {
       currentStatement: number;
       totalStatements: number;

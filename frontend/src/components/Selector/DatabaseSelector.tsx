@@ -15,7 +15,13 @@ import {
   Checkbox,
   FormControlLabel,
   Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Alert,
 } from '@mui/material';
+import FingerprintIcon from '@mui/icons-material/Fingerprint';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
 import InfoIcon from '@mui/icons-material/Info';
@@ -68,6 +74,8 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
   const [cloudNames, setCloudNames] = useState<{ primary: string; secondary: string[] }>({ primary: '', secondary: [] });
   const [showReplicationDialog, setShowReplicationDialog] = useState(false);
   const [detectedTables, setDetectedTables] = useState<Array<{ schema: string; table: string }>>([]);
+  const [showUuidDialog, setShowUuidDialog] = useState(false);
+  const [uuidErrorMessage, setUuidErrorMessage] = useState<string>('');
   const dbConfigRef = useRef<DatabaseConfiguration | null>(null);
   
   // Execution state
@@ -286,7 +294,10 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
         } else if (status.status === 'cancelled') {
           toast('Query was cancelled', { icon: '⚠️' });
         } else if (status.status === 'failed') {
-          if (status.error) {
+          if (status.errorCode === 'UUID_DIVERGENCE') {
+            setUuidErrorMessage(status.error || '');
+            setShowUuidDialog(true);
+          } else if (status.error) {
             toast.error(status.error);
           } else {
             toast.error('Query execution failed');
@@ -604,6 +615,63 @@ const DatabaseSelector = ({ onExecute }: DatabaseSelectorProps) => {
           )}
         </Stack>
       </Paper>
+
+      {/* UUID Divergence Dialog */}
+      {(() => {
+        const colMatch = uuidErrorMessage.match(/Columns with UUID defaults that must be explicitly set: ([^.]+)\./);
+        const implicitCols = colMatch ? colMatch[1].split(',').map(c => c.trim()) : [];
+        const isImplicit = implicitCols.length > 0;
+        return (
+          <Dialog open={showUuidDialog} onClose={() => setShowUuidDialog(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>⚠️ UUID Divergence Detected</DialogTitle>
+            <DialogContent>
+              <Alert severity="error" sx={{ mb: 2 }}>
+                Running this INSERT on multiple clouds would generate <strong>different UUIDs on each cloud</strong>, causing data divergence.
+              </Alert>
+
+              {isImplicit && (
+                <Box sx={{ mb: 2, p: 1.5, bgcolor: 'warning.main', borderRadius: 1 }}>
+                  <Typography variant="body2" fontWeight="bold" color="warning.contrastText" sx={{ mb: 1 }}>
+                    These columns have UUID defaults and are missing from your INSERT:
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    {implicitCols.map(col => (
+                      <Chip
+                        key={col}
+                        label={col}
+                        size="small"
+                        sx={{ fontFamily: 'monospace', fontWeight: 'bold', bgcolor: 'warning.dark', color: 'white' }}
+                      />
+                    ))}
+                  </Box>
+                </Box>
+              )}
+
+              <Typography variant="body2" fontWeight="bold" sx={{ mb: 1 }}>
+                To fix this:
+              </Typography>
+              {isImplicit ? (
+                <Stack spacing={0.75}>
+                  <Typography variant="body2">1. Add the column(s) above to your INSERT column list</Typography>
+                  <Typography variant="body2">2. Place your cursor at the corresponding value position</Typography>
+                  <Typography variant="body2">3. Click <strong><FingerprintIcon sx={{ fontSize: 14, verticalAlign: 'middle' }} /> Generate UUID</strong> to insert an explicit UUID literal</Typography>
+                  <Typography variant="body2">4. Repeat for each missing column, then re-run</Typography>
+                </Stack>
+              ) : (
+                <Stack spacing={0.75}>
+                  <Typography variant="body2">1. Place your cursor where <code>gen_random_uuid()</code> appears</Typography>
+                  <Typography variant="body2">2. Click <strong><FingerprintIcon sx={{ fontSize: 14, verticalAlign: 'middle' }} /> Generate UUID</strong> in the editor toolbar</Typography>
+                  <Typography variant="body2">3. It inserts an explicit UUID literal — same value used on all clouds</Typography>
+                  <Typography variant="body2">4. Re-run the query</Typography>
+                </Stack>
+              )}
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setShowUuidDialog(false)} variant="contained">Got it</Button>
+            </DialogActions>
+          </Dialog>
+        );
+      })()}
     </>
   );
 };
