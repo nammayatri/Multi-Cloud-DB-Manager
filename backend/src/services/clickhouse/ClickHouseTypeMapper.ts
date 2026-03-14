@@ -16,22 +16,35 @@ export class ClickHouseTypeMapper {
      */
     public static map(pgDataType: string, pgUdtName: string, isNullable: string): string {
         const nullable = isNullable === 'YES';
-        const baseType = this.baseType(pgDataType.toLowerCase(), pgUdtName.toLowerCase());
+        const ldt = pgDataType.toLowerCase();
+        const ludt = pgUdtName.toLowerCase();
+
+        // Arrays: nullability applies to the element type, not the array container itself.
+        // e.g. PG nullable int[] → Array(Nullable(Int32))
+        //      PG NOT NULL text[] → Array(String)
+        if (ludt.startsWith('_') || ldt === 'array') {
+            // Derive the element PG type by stripping the leading underscore from udt_name
+            // (e.g. _int4 → int4, _text → text). Fall back to String for unknown types.
+            const elemUdt = ludt.startsWith('_') ? ludt.slice(1) : ludt;
+            const elemBase = this.scalarBase(elemUdt) ?? 'String';
+            return nullable ? `Array(Nullable(${elemBase}))` : `Array(${elemBase})`;
+        }
+
+        const baseType = this.scalarBase(ldt) ?? this.scalarBase(ludt) ?? 'String';
         return nullable ? `Nullable(${baseType})` : baseType;
     }
 
-    private static baseType(pgDataType: string, pgUdtName: string): string {
-        // Arrays — udt_name starts with underscore in PG
-        if (pgUdtName.startsWith('_') || pgDataType === 'array') {
-            return 'Array(String)';
-        }
-
-        switch (pgDataType) {
+    /**
+     * Map a single scalar PG type keyword to a CH base type.
+     * Returns null for unknown types (caller falls back to 'String').
+     * Does NOT handle arrays or nullability — those are handled in map().
+     */
+    private static scalarBase(pgType: string): string | null {
+        switch (pgType) {
             // --- UUIDs and booleans → String ---
-            case 'uuid':
-                return 'String';
-            case 'boolean':
-                return 'String';
+            case 'uuid': return 'String';
+            case 'boolean': return 'String';
+            case 'bool': return 'String';
 
             // --- Text types ---
             case 'text':
@@ -39,6 +52,7 @@ export class ClickHouseTypeMapper {
             case 'varchar':
             case 'character':
             case 'char':
+            case 'bpchar':         // internal name for char in PG
             case 'name':
             case 'citext':
             case 'tsvector':
@@ -53,75 +67,57 @@ export class ClickHouseTypeMapper {
             case 'line':
             case 'lseg':
             case 'box':
-            case 'circle':
-                return 'String';
+            case 'circle': return 'String';
 
             // --- Integer types ---
             case 'smallint':
-            case 'int2':
-                return 'Int16';
+            case 'int2': return 'Int16';
             case 'integer':
             case 'int':
-            case 'int4':
-                return 'Int32';
+            case 'int4': return 'Int32';
             case 'bigint':
-            case 'int8':
-                return 'Int64';
+            case 'int8': return 'Int64';
 
             // --- Floating point ---
             case 'real':
-            case 'float4':
-                return 'Float32';
+            case 'float4': return 'Float32';
             case 'double precision':
-            case 'float8':
-                return 'Float64';
+            case 'float8': return 'Float64';
 
-            // --- Exact numeric ---
+            // --- Decimal / money → Float64 ---
+            // Using Float64 avoids Decimal precision mismatches and is
+            // sufficient for analytics workloads.
             case 'numeric':
             case 'decimal':
-                return 'Decimal(18,6)';
-            case 'money':
-                return 'Decimal(18,2)';
+            case 'money': return 'Float64';
 
             // --- Date/time ---
             case 'timestamp without time zone':
             case 'timestamp':
-                return 'DateTime';
-            case 'timestamp with time zone':
             case 'timestamptz':
-                return 'DateTime';
-            case 'date':
-                return 'Date';
+            case 'timestamp with time zone': return 'DateTime';
+            case 'date': return 'Date';
             case 'time without time zone':
             case 'time with time zone':
             case 'time':
-                return 'String';
-            case 'interval':
-                return 'String';
+            case 'interval': return 'String';
 
-            // --- JSON ---
+            // --- JSON → stored as raw String ---
             case 'json':
-            case 'jsonb':
-                return 'String';
+            case 'jsonb': return 'String';
 
             // --- Binary ---
-            case 'bytea':
-                return 'String';
+            case 'bytea': return 'String';
 
-            // --- Serial / sequences (treated as integers) ---
-            case 'smallserial':
-                return 'Int16';
-            case 'serial':
-                return 'Int32';
-            case 'bigserial':
-                return 'Int64';
+            // --- Serial / sequences ---
+            case 'smallserial': return 'Int16';
+            case 'serial': return 'Int32';
+            case 'bigserial': return 'Int64';
 
             // --- Enums and user-defined ---
-            case 'user-defined':
-                return 'String';
+            case 'user-defined': return 'String';
 
-            default:
-                return 'String';
+            default: return null;
         }
     }
 

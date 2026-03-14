@@ -6,6 +6,12 @@ export interface CHColumn {
 }
 
 /**
+ * The sentinel version column added to every main ReplacingMergeTree table.
+ * Exported so SyncService can reference the same name without a second hardcode.
+ */
+export const CH_SENTINEL_COLUMN = 'date';
+
+/**
  * Index column names that get bloom_filter indexes (if present in the table).
  * Per spec: always on `id`; also on `merchant_operating_city_id` and `merchant_id`
  * if they are present and non-nullable.
@@ -63,9 +69,31 @@ export class ClickHouseDDLBuilder {
         return columns.find(c => this.isDateTimeLike(c.chType)) ?? null;
     }
 
+    /**
+     * Iteratively strip outermost Nullable(...) and LowCardinality(...) wrappers
+     * to get the raw ClickHouse base type.
+     * e.g. Nullable(LowCardinality(String)) → String
+     *      Nullable(DateTime64(3))          → DateTime64(3)
+     */
+    private static unwrapType(chType: string): string {
+        let t = chType.trim();
+        const wrappers = ['Nullable(', 'LowCardinality('];
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const w of wrappers) {
+                if (t.startsWith(w) && t.endsWith(')')) {
+                    t = t.slice(w.length, -1).trim();
+                    changed = true;
+                }
+            }
+        }
+        return t;
+    }
+
     private static isDateTimeLike(chType: string): boolean {
-        const bare = chType.replace('Nullable(', '').replace(')', '');
-        return bare === 'DateTime' || bare === 'Date';
+        const bare = this.unwrapType(chType);
+        return bare === 'DateTime' || bare === 'Date' || bare.startsWith('DateTime64');
     }
 
     private static isNullable(chType: string): boolean {
@@ -304,13 +332,11 @@ export class ClickHouseDDLBuilder {
      */
     private static jsonExtractExpr(col: CHColumn): string {
         const name = col.name;
-        // Strip Nullable(...) and LowCardinality(...) wrappers to get the bare type
-        const bare = col.chType
-            .replace(/^Nullable\(/, '').replace(/\)$/, '')
-            .replace(/^LowCardinality\(/, '').replace(/\)$/, '');
+        // Use unwrapType to correctly handle nested wrappers like Nullable(LowCardinality(String))
+        const bare = this.unwrapType(col.chType);
 
-        // DateTime / Date types -> toDateTime(JSONExtractInt(message, 'col'))
-        if (bare === 'DateTime' || bare === 'Date') {
+        // DateTime64 / DateTime / Date -> toDateTime(JSONExtractInt(message, 'col'))
+        if (bare === 'DateTime' || bare === 'Date' || bare.startsWith('DateTime64')) {
             return `  toDateTime(JSONExtractInt(message, '${name}')) AS ${name}`;
         }
 
@@ -325,7 +351,7 @@ export class ClickHouseDDLBuilder {
         }
 
         // Array types -> JSONExtractRaw
-        if (bare.startsWith('Array(') || col.chType.startsWith('Array(')) {
+        if (bare.startsWith('Array(')) {
             return `  JSONExtractRaw(message, '${name}') AS ${name}`;
         }
 
@@ -345,7 +371,8 @@ export class ClickHouseDDLBuilder {
      */
     public static buildGrant(db: string, table: string, cluster: string, users: string[]): string {
         const userList = users.join(', ');
-        return `GRANT SELECT ON ${db}.${table} ON CLUSTER '${cluster}' TO ${userList}`;
+        // Correct ClickHouse GRANT syntax: GRANT ON CLUSTER '<cluster>' <privilege> ON <table> TO <users>
+        return `GRANT ON CLUSTER '${cluster}' SELECT ON ${db}.${table} TO ${userList}`;
     }
 }
 

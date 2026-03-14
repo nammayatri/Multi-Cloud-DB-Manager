@@ -3,7 +3,7 @@ import logger from '../../utils/logger';
 import ClickHouseClientManager from '../../config/clickhouse';
 import { ClickHouseKafkaConfig } from '../../config/clickhouse-config-loader';
 import ClickHouseTypeMapper from './ClickHouseTypeMapper';
-import ClickHouseDDLBuilder, { CHColumn } from './ClickHouseDDLBuilder';
+import ClickHouseDDLBuilder, { CHColumn, CH_SENTINEL_COLUMN } from './ClickHouseDDLBuilder';
 
 // ──────────────────────────────────────────────
 // Types
@@ -48,6 +48,43 @@ function clean(sql: string): string {
 }
 
 /**
+ * Split SQL on semicolons while respecting single- and double-quoted strings.
+ * Prevents incorrectly splitting on semicolons inside string literals like
+ * DEFAULT 'foo;bar'.
+ */
+function splitStatements(sql: string): string[] {
+    const stmts: string[] = [];
+    let current = '';
+    let inString = false;
+    let stringChar = '';
+    for (let i = 0; i < sql.length; i++) {
+        const ch = sql[i];
+        if (inString) {
+            current += ch;
+            // Handle escaped quotes ('' in SQL, or \' in some drivers)
+            if (ch === stringChar && sql[i + 1] === stringChar) {
+                current += sql[++i]; // consume escaped quote char
+            } else if (ch === stringChar) {
+                inString = false;
+            }
+        } else if (ch === "'" || ch === '"') {
+            inString = true;
+            stringChar = ch;
+            current += ch;
+        } else if (ch === ';') {
+            const trimmed = current.trim();
+            if (trimmed) stmts.push(trimmed);
+            current = '';
+        } else {
+            current += ch;
+        }
+    }
+    const trimmed = current.trim();
+    if (trimmed) stmts.push(trimmed);
+    return stmts;
+}
+
+/**
  * Parse the SQL and return what kind of DDL it is (or SKIP).
  * Handles both schema-qualified and unqualified table names.
  */
@@ -66,8 +103,9 @@ function parseDDL(sql: string, defaultSchema: string): ParsedDDL {
 
     // ── ALTER TABLE ADD COLUMN ────────────────────────────
     // Matches: ALTER TABLE [schema.]table ADD [COLUMN] col_name ...
+    // Supports both bare identifiers and double-quoted identifiers (e.g. "my-col").
     const alterMatch = c.match(
-        /ALTER\s+TABLE\s+([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)?)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)/i,
+        /ALTER\s+TABLE\s+([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)?)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?!(CONSTRAINT|INDEX|PRIMARY|UNIQUE|CHECK|FOREIGN)\b)("[^"]+"|[a-zA-Z0-9_]+)/i,
     );
     if (alterMatch) {
         // Collect ALL ADD COLUMN targets (there may be multiple via ADD COLUMN ... ADD COLUMN ...)
@@ -92,10 +130,13 @@ function qualifiedName(raw: string, defaultSchema: string): [string, string] {
 function extractAddedColumns(cleanedSql: string): string[] {
     const cols: string[] = [];
     // Match every occurrence of ADD [COLUMN] [IF NOT EXISTS] <name>
-    const re = /ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)/gi;
+    // Supports bare identifiers and double-quoted identifiers (e.g. "my-col").
+    // Negative lookahead prevents matching ADD CONSTRAINT / ADD INDEX / etc.
+    const re = /ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?!(CONSTRAINT|INDEX|PRIMARY|UNIQUE|CHECK|FOREIGN)\b)("([^"]+)"|([a-zA-Z0-9_]+))/gi;
     let m: RegExpExecArray | null;
     while ((m = re.exec(cleanedSql)) !== null) {
-        cols.push(m[1]);
+        // m[3] = name inside double-quotes, m[4] = bare identifier
+        cols.push(m[3] ?? m[4]);
     }
     return cols;
 }
@@ -174,9 +215,9 @@ async function chCurrentColumns(
      WHERE database = '${db}' AND table = '${table}'
      ORDER BY position`,
     );
-    // Exclude the `date` sentinel column — it only belongs on the main table
+    // Exclude the sentinel version column — it only belongs on the main table, not queue/MV
     return rows
-        .filter(r => r.name !== 'date')
+        .filter(r => r.name !== CH_SENTINEL_COLUMN)
         .map(r => ({ name: r.name, chType: r.type }));
 }
 
@@ -197,6 +238,21 @@ async function chQueueColumns(
      ORDER BY position`,
     );
     return rows.map(r => ({ name: r.name, chType: r.type }));
+}
+
+/**
+ * Returns true if the given table exists in ClickHouse system.tables.
+ * Used to detect "orphaned" PG tables that were never mirrored (or were dropped) in CH.
+ */
+async function chTableExists(
+    chManager: ClickHouseClientManager,
+    db: string,
+    table: string,
+): Promise<boolean> {
+    const rows = await chManager.query<{ name: string }>(
+        `SELECT name FROM system.tables WHERE database = '${db}' AND name = '${table}' LIMIT 1`,
+    );
+    return rows.length > 0;
 }
 
 // ──────────────────────────────────────────────
@@ -228,11 +284,8 @@ export class ClickHouseSyncService {
         const kafkaCfg = config.kafka;
         const selectUsers = config.selectUsers ?? [];
 
-        // Parse each statement in the SQL (semicolon-separated)
-        const statements = sql
-            .split(';')
-            .map(s => s.trim())
-            .filter(Boolean);
+        // Parse each statement in the SQL (quote-aware split — respects semicolons inside string literals)
+        const statements = splitStatements(sql);
 
         const results: CHSyncResult[] = [];
 
@@ -248,7 +301,7 @@ export class ClickHouseSyncService {
             try {
                 const result = parsed.kind === 'CREATE_TABLE'
                     ? await this.handleCreateTable(parsed, pgPool, chManager, chDb, cluster, kafkaCfg, selectUsers)
-                    : await this.handleAlterAddColumn(parsed, pgPool, chManager, chDb, cluster, kafkaCfg);
+                    : await this.handleAlterAddColumn(parsed, pgPool, chManager, chDb, cluster, kafkaCfg, selectUsers);
                 results.push(result);
             } catch (err: any) {
                 logger.error('ClickHouse sync error', { stmt: stmt.slice(0, 100), error: err.message });
@@ -328,6 +381,7 @@ export class ClickHouseSyncService {
             await ch.exec(grantDDL);
         }
 
+
         logger.info(`CH sync: created ${table}, ${table}_queue, ${table}_mv in ${chDb}`);
 
         return {
@@ -349,9 +403,48 @@ export class ClickHouseSyncService {
         chDb: string,
         cluster: string,
         kafkaCfg: ClickHouseKafkaConfig,
+        selectUsers: string[] = [],
     ): Promise<CHSyncResult> {
         const { schema, table, columns: newColNames } = parsed;
         logger.info(`CH sync: ALTER TABLE ${schema}.${table} ADD COLUMN(s): ${newColNames.join(', ')}`);
+
+        // 0. Guard: if the CH table doesn't exist at all, bootstrap it from the full PG schema
+        //    rather than trying to ALTER a non-existent table.
+        const tableExists = await chTableExists(ch, chDb, table);
+        if (!tableExists) {
+            logger.warn(
+                `CH sync: table ${chDb}.${table} not found in ClickHouse; ` +
+                `bootstrapping full CREATE from PG schema instead of ALTER`,
+            );
+            const allPgRows = await pgColumns(pgPool, schema, table);
+            if (allPgRows.length === 0) {
+                return {
+                    success: false,
+                    action: 'altered',
+                    table,
+                    details: `Bootstrap failed: ${schema}.${table} not found in PG information_schema`,
+                    error: 'Table not found in PG',
+                };
+            }
+            const allColumns = mapColumns(allPgRows);
+            const createTableDDL = ClickHouseDDLBuilder.buildCreateTable(chDb, table, cluster, allColumns);
+            await ch.exec(createTableDDL);
+            const queueDDL = ClickHouseDDLBuilder.buildQueue(chDb, table, cluster, allColumns, kafkaCfg);
+            await ch.exec(queueDDL);
+            const mvDDL = ClickHouseDDLBuilder.buildMaterializedView(chDb, table, cluster, allColumns);
+            await ch.exec(mvDDL);
+            if (selectUsers.length > 0) {
+                const grantDDL = ClickHouseDDLBuilder.buildGrant(chDb, table, cluster, selectUsers);
+                await ch.exec(grantDDL);
+            }
+            logger.info(`CH sync: bootstrapped missing table ${chDb}.${table} (queue + MV) from PG schema`);
+            return {
+                success: true,
+                action: 'created',
+                table,
+                details: `Bootstrapped missing CH table ${chDb}.${table} (and queue + MV) from current PG schema`,
+            };
+        }
 
         // 1. Fetch only the new columns from PG
         const pgRows = await pgColumnsFor(pgPool, schema, table, newColNames);
@@ -399,6 +492,23 @@ export class ClickHouseSyncService {
         // 4. Detect queue pattern: Pattern A (JSONEachRow, multiple columns)
         //    vs Pattern B (JSONAsString, single `message` column).
         const queueCols = await chQueueColumns(ch, chDb, table);
+
+        if (queueCols.length === 0) {
+            // Queue table exists (we just ran ALTER on the main table) but returned no columns.
+            // This is abnormal — log a warning and abort rather than silently pick the wrong pattern.
+            logger.warn(
+                `CH sync: ${chDb}.${table}_queue returned 0 columns from system.columns — ` +
+                `cannot detect Kafka format pattern; skipping queue+MV rebuild`,
+            );
+            return {
+                success: false,
+                action: 'altered',
+                table,
+                details: `Column(s) added to ${chDb}.${table} but queue+MV rebuild skipped: queue returned 0 columns`,
+                error: 'Queue pattern detection failed: system.columns empty for queue table',
+            };
+        }
+
         const isPatternB = queueCols.length === 1 && queueCols[0].name === 'message';
 
         logger.info(`CH sync: detected ${isPatternB ? 'Pattern B (JSONAsString)' : 'Pattern A (JSONEachRow)'} for ${table}_queue`);
