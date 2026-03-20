@@ -3,7 +3,7 @@ import logger from '../../utils/logger';
 import ClickHouseClientManager from '../../config/clickhouse';
 import { ClickHouseKafkaConfig } from '../../config/clickhouse-config-loader';
 import ClickHouseTypeMapper from './ClickHouseTypeMapper';
-import ClickHouseDDLBuilder, { CHColumn, CH_SENTINEL_COLUMN } from './ClickHouseDDLBuilder';
+import ClickHouseDDLBuilder, { CHColumn, CH_SENTINEL_COLUMN, ExtractedKafkaConfig } from './ClickHouseDDLBuilder';
 
 // ──────────────────────────────────────────────
 // Types
@@ -256,6 +256,67 @@ async function chTableExists(
 }
 
 // ──────────────────────────────────────────────
+// Kafka config helpers
+// ──────────────────────────────────────────────
+
+async function getKafkaQueueConfig(
+    chManager: ClickHouseClientManager,
+    db: string,
+    table: string,
+): Promise<ExtractedKafkaConfig | null> {
+    try {
+        const rows = await chManager.query<{ create_table_query: string }>(
+            `SELECT create_table_query FROM system.tables WHERE database = '${db}' AND name = '${table}_queue' LIMIT 1`,
+        );
+        if (rows.length === 0 || !rows[0].create_table_query) return null;
+
+        const ddl = rows[0].create_table_query;
+        const brokerMatch = ddl.match(/kafka_broker_list\s*=\s*'([^']+)'/);
+        const topicMatch = ddl.match(/kafka_topic_list\s*=\s*'([^']+)'/);
+        const groupMatch = ddl.match(/kafka_group_name\s*=\s*'([^']+)'/);
+        const formatMatch = ddl.match(/kafka_format\s*=\s*'([^']+)'/);
+
+        if (brokerMatch && topicMatch && groupMatch && formatMatch) {
+            return {
+                kafka_broker_list: brokerMatch[1],
+                kafka_topic_list: topicMatch[1],
+                kafka_group_name: groupMatch[1],
+                kafka_format: formatMatch[1],
+            };
+        }
+    } catch (err) {
+        logger.error(`Failed to extract Kafka config for ${db}.${table}_queue`, { error: err });
+    }
+    return null;
+}
+
+function getDefaultKafkaConfig(db: string, table: string, fallbackCfg: ClickHouseKafkaConfig): ExtractedKafkaConfig {
+    const cleanTable = table.replace(/_/g, '').replace(/\s+/g, '').toLowerCase();
+    if (db === 'atlas_app') {
+        return {
+            kafka_broker_list: 'eks-kurukshetra-kafka-3-e2e26d957f42486c.elb.ap-south-1.amazonaws.com:9096',
+            kafka_topic_list: `aap-sessionizer-${cleanTable}`,
+            kafka_group_name: `aap-sessionizer-${cleanTable}-ec2-ckh-consumer-v2`,
+            kafka_format: 'JSONEachRow',
+        };
+    } else if (db === 'atlas_driver_offer_bpp') {
+        return {
+            kafka_broker_list: 'eks-kurukshetra-kafka-3-e2e26d957f42486c.elb.ap-south-1.amazonaws.com:9096',
+            kafka_topic_list: `adob-sessionizer-${cleanTable}`,
+            kafka_group_name: `adob-sessionizer-${cleanTable}-ec2-ckh-consumer`,
+            kafka_format: 'JSONEachRow',
+        };
+    }
+    
+    return {
+        kafka_broker_list: fallbackCfg.brokerList,
+        kafka_topic_list: ClickHouseDDLBuilder.topicName(db, table, fallbackCfg.topicMiddle),
+        kafka_group_name: ClickHouseDDLBuilder.groupName(db, table, fallbackCfg),
+        kafka_format: 'JSONEachRow'
+    };
+}
+
+// ──────────────────────────────────────────────
 // Main service
 // ──────────────────────────────────────────────
 
@@ -365,7 +426,8 @@ export class ClickHouseSyncService {
         await ch.exec(createTableDDL);
 
         // 3. Build and execute queue DDL
-        const queueDDL = ClickHouseDDLBuilder.buildQueue(chDb, table, cluster, columns, kafkaCfg);
+        const queueConfig = getDefaultKafkaConfig(chDb, table, kafkaCfg);
+        const queueDDL = ClickHouseDDLBuilder.buildQueue(chDb, table, cluster, columns, queueConfig);
         logger.debug('CH CREATE QUEUE DDL', { ddl: queueDDL });
         await ch.exec(queueDDL);
 
@@ -429,7 +491,8 @@ export class ClickHouseSyncService {
             const allColumns = mapColumns(allPgRows);
             const createTableDDL = ClickHouseDDLBuilder.buildCreateTable(chDb, table, cluster, allColumns);
             await ch.exec(createTableDDL);
-            const queueDDL = ClickHouseDDLBuilder.buildQueue(chDb, table, cluster, allColumns, kafkaCfg);
+            const queueConfig = getDefaultKafkaConfig(chDb, table, kafkaCfg);
+            const queueDDL = ClickHouseDDLBuilder.buildQueue(chDb, table, cluster, allColumns, queueConfig);
             await ch.exec(queueDDL);
             const mvDDL = ClickHouseDDLBuilder.buildMaterializedView(chDb, table, cluster, allColumns);
             await ch.exec(mvDDL);
@@ -446,26 +509,41 @@ export class ClickHouseSyncService {
             };
         }
 
-        // 1. Fetch only the new columns from PG
-        const pgRows = await pgColumnsFor(pgPool, schema, table, newColNames);
+        // 1. Fetch ALL columns from PG
+        const pgRows = await pgColumns(pgPool, schema, table);
         if (pgRows.length === 0) {
             return {
                 success: false,
                 action: 'altered',
                 table,
-                details: `New column(s) ${newColNames.join(', ')} not found in PG information_schema`,
-                error: 'Columns not found in PG',
+                details: `Table ${schema}.${table} not found in PG information_schema`,
+                error: 'Table not found in PG',
             };
         }
-        const newColumns = mapColumns(pgRows).map(col => ({
-            ...col,
-            // Force Nullable for ALTER ADD COLUMN — newly added columns
-            // typically don't specify NOT NULL, and Kafka data may not
-            // include the new field for existing rows.
-            chType: col.chType.startsWith('Nullable(') || col.chType.startsWith('Array(')
-                ? col.chType
-                : `Nullable(${col.chType})`,
-        }));
+
+        // 1b. Fetch ALL columns from CH (main table)
+        const currentChCols = await chCurrentColumns(ch, chDb, table);
+        const chColNames = new Set(currentChCols.map(c => c.name));
+
+        // 1c. Find columns in PG that missing in CH
+        const missingPgRows = pgRows.filter(r => !chColNames.has(r.column_name));
+
+        if (missingPgRows.length === 0) {
+             return { success: true, action: 'skipped', table, details: `No missing columns to add to ${chDb}.${table}` };
+        }
+
+        const mappedPgCols = mapColumns(pgRows);
+        const newColumns = mappedPgCols
+            .filter(c => missingPgRows.some(m => m.column_name === c.name))
+            .map(col => ({
+                ...col,
+                // Force Nullable for ALTER ADD COLUMN
+                chType: col.chType.startsWith('Nullable(') || col.chType.startsWith('Array(')
+                    ? col.chType
+                    : `Nullable(${col.chType})`,
+            }));
+            
+        const addedColNames = newColumns.map(c => c.name);
 
         // 2. ALTER the main CH table for each new column
         for (const col of newColumns) {
@@ -513,6 +591,9 @@ export class ClickHouseSyncService {
 
         logger.info(`CH sync: detected ${isPatternB ? 'Pattern B (JSONAsString)' : 'Pattern A (JSONEachRow)'} for ${table}_queue`);
 
+        // 4b. Extract existing Kafka config before dropping
+        const existingKafkaConfig = await getKafkaQueueConfig(ch, chDb, table) || getDefaultKafkaConfig(chDb, table, kafkaCfg);
+
         // 5. DROP MV and Queue (order matters — MV first, queue second)
         const dropMvDDL = ClickHouseDDLBuilder.buildDropTable(chDb, `${table}_mv`, cluster);
         logger.debug('CH DROP MV', { ddl: dropMvDDL });
@@ -527,12 +608,12 @@ export class ClickHouseSyncService {
         let newMvDDL: string;
 
         if (isPatternB) {
-            // Pattern B: JSONAsString queue + JSONExtract MV
-            newQueueDDL = ClickHouseDDLBuilder.buildQueueJsonAsString(chDb, table, cluster, kafkaCfg);
+            existingKafkaConfig.kafka_format = 'JSONAsString';
+            newQueueDDL = ClickHouseDDLBuilder.buildQueueJsonAsString(chDb, table, cluster, existingKafkaConfig);
             newMvDDL = ClickHouseDDLBuilder.buildMvJsonAsString(chDb, table, cluster, currentCols);
         } else {
-            // Pattern A: JSONEachRow queue + SELECT * MV
-            newQueueDDL = ClickHouseDDLBuilder.buildQueue(chDb, table, cluster, currentCols, kafkaCfg);
+            existingKafkaConfig.kafka_format = 'JSONEachRow';
+            newQueueDDL = ClickHouseDDLBuilder.buildQueue(chDb, table, cluster, currentCols, existingKafkaConfig);
             newMvDDL = ClickHouseDDLBuilder.buildMaterializedView(chDb, table, cluster, currentCols);
         }
 
@@ -542,13 +623,13 @@ export class ClickHouseSyncService {
         logger.debug('CH RECREATE MV DDL', { ddl: newMvDDL });
         await ch.exec(newMvDDL);
 
-        logger.info(`CH sync: altered ${table} (+${newColNames.join(', ')}), rebuilt queue+MV (${isPatternB ? 'Pattern B' : 'Pattern A'})`);
+        logger.info(`CH sync: altered ${table} (+${addedColNames.join(', ')}), rebuilt queue+MV (${isPatternB ? 'Pattern B' : 'Pattern A'})`);
 
         return {
             success: true,
             action: 'altered',
             table,
-            details: `Added column(s) [${newColNames.join(', ')}] to ${chDb}.${table}; rebuilt ${table}_queue and ${table}_mv (${isPatternB ? 'JSONAsString' : 'JSONEachRow'})`,
+            details: `Added column(s) [${addedColNames.join(', ')}] to ${chDb}.${table}; rebuilt ${table}_queue and ${table}_mv (${isPatternB ? 'JSONAsString' : 'JSONEachRow'})`,
         };
     }
 }

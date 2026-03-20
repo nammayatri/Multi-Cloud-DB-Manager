@@ -1,5 +1,12 @@
 import { ClickHouseKafkaConfig } from '../../config/clickhouse-config-loader';
 
+export interface ExtractedKafkaConfig {
+    kafka_broker_list: string;
+    kafka_topic_list: string;
+    kafka_group_name: string;
+    kafka_format: string;
+}
+
 export interface CHColumn {
     name: string;
     chType: string;      // Full CH type, e.g. "String", "Nullable(Int64)", "DateTime"
@@ -210,10 +217,8 @@ export class ClickHouseDDLBuilder {
         table: string,
         cluster: string,
         columns: CHColumn[],
-        kafkaCfg: ClickHouseKafkaConfig,
+        kafkaCfg: ExtractedKafkaConfig,
     ): string {
-        const topic = this.topicName(db, table, kafkaCfg.topicMiddle);
-        const group = this.groupName(db, table, kafkaCfg);
         const colLines = columns.map(c => this.colLine(c)).join(',\n');
 
         return [
@@ -223,10 +228,10 @@ export class ClickHouseDDLBuilder {
             `)`,
             `ENGINE = Kafka`,
             `SETTINGS`,
-            `  kafka_broker_list = '${kafkaCfg.brokerList}',`,
-            `  kafka_topic_list = '${topic}',`,
-            `  kafka_group_name = '${group}',`,
-            `  kafka_format = 'JSONEachRow'`,
+            `  kafka_broker_list = '${kafkaCfg.kafka_broker_list}',`,
+            `  kafka_topic_list = '${kafkaCfg.kafka_topic_list}',`,
+            `  kafka_group_name = '${kafkaCfg.kafka_group_name}',`,
+            `  kafka_format = '${kafkaCfg.kafka_format}'`
         ].join('\n');
     }
 
@@ -277,11 +282,8 @@ export class ClickHouseDDLBuilder {
         db: string,
         table: string,
         cluster: string,
-        kafkaCfg: ClickHouseKafkaConfig,
+        kafkaCfg: ExtractedKafkaConfig,
     ): string {
-        const topic = this.topicName(db, table, kafkaCfg.topicMiddle);
-        const group = this.groupName(db, table, kafkaCfg);
-
         return [
             `CREATE TABLE IF NOT EXISTS ${db}.${table}_queue ON CLUSTER '${cluster}'`,
             `(`,
@@ -289,10 +291,10 @@ export class ClickHouseDDLBuilder {
             `)`,
             `ENGINE = Kafka`,
             `SETTINGS`,
-            `  kafka_broker_list = '${kafkaCfg.brokerList}',`,
-            `  kafka_topic_list = '${topic}',`,
-            `  kafka_group_name = '${group}',`,
-            `  kafka_format = 'JSONAsString'`,
+            `  kafka_broker_list = '${kafkaCfg.kafka_broker_list}',`,
+            `  kafka_topic_list = '${kafkaCfg.kafka_topic_list}',`,
+            `  kafka_group_name = '${kafkaCfg.kafka_group_name}',`,
+            `  kafka_format = '${kafkaCfg.kafka_format}'`
         ].join('\n');
     }
 

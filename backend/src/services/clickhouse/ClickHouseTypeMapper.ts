@@ -19,15 +19,14 @@ export class ClickHouseTypeMapper {
         const ldt = pgDataType.toLowerCase();
         const ludt = pgUdtName.toLowerCase();
 
-        // Arrays: nullability applies to the element type, not the array container itself.
-        // e.g. PG nullable int[] → Array(Nullable(Int32))
-        //      PG NOT NULL text[] → Array(String)
+        // Arrays: element type is always Nullable for ClickHouse compatibility (avoids type mismatch on CDC ingestion).
+        // e.g. int[] → Array(Nullable(Int32)), text[] → Array(Nullable(String))
         if (ludt.startsWith('_') || ldt === 'array') {
             // Derive the element PG type by stripping the leading underscore from udt_name
             // (e.g. _int4 → int4, _text → text). Fall back to String for unknown types.
             const elemUdt = ludt.startsWith('_') ? ludt.slice(1) : ludt;
             const elemBase = this.scalarBase(elemUdt) ?? 'String';
-            return nullable ? `Array(Nullable(${elemBase}))` : `Array(${elemBase})`;
+            return `Array(Nullable(${elemBase}))`;
         }
 
         const baseType = this.scalarBase(ldt) ?? this.scalarBase(ludt) ?? 'String';
@@ -39,7 +38,7 @@ export class ClickHouseTypeMapper {
      * Returns null for unknown types (caller falls back to 'String').
      * Does NOT handle arrays or nullability — those are handled in map().
      */
-    private static scalarBase(pgType: string): string | null {
+    public static scalarBase(pgType: string): string | null {
         switch (pgType) {
             // --- UUIDs and booleans → String ---
             case 'uuid': return 'String';
