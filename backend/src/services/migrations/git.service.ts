@@ -32,16 +32,30 @@ export function ensureRepo(repoPath: string, repoUrl?: string): void {
 }
 
 /**
- * Pull latest refs from all remotes silently.
+ * Fetch all remotes + pull current branch to get latest changes.
  */
 export function pullLatest(repoPath: string): void {
   try {
+    // Fetch all remote refs and objects
     execSync('git fetch --all --prune', {
       ...execOpts(repoPath),
       stdio: 'ignore',
     });
+    logger.info('Git fetch --all completed', { repoPath });
   } catch (err: any) {
-    logger.warn('Git fetch --all --prune failed (non-fatal)', { repoPath, error: err.message });
+    logger.warn('Git fetch --all failed (non-fatal)', { repoPath, error: err.message });
+  }
+
+  try {
+    // Pull current branch to update local HEAD
+    execSync('git pull --ff-only', {
+      ...execOpts(repoPath),
+      stdio: 'ignore',
+    });
+    logger.info('Git pull completed', { repoPath });
+  } catch (err: any) {
+    // Pull can fail if there are local changes or diverged branches — non-fatal
+    logger.warn('Git pull --ff-only failed (non-fatal, local branch may be diverged)', { repoPath, error: err.message });
   }
 }
 

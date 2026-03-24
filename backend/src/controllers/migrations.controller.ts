@@ -52,7 +52,7 @@ export const analyze = async (
   next: NextFunction
 ) => {
   try {
-    const { fromRef, toRef, environment, databaseFilter } = req.body;
+    const { fromRef, toRef, environment, database: databaseFilter } = req.body;
 
     if (!fromRef || typeof fromRef !== 'string') {
       return res.status(400).json({ error: 'fromRef is required' });

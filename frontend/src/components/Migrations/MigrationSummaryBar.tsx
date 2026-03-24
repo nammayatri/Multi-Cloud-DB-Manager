@@ -55,13 +55,15 @@ const MigrationSummaryBar = () => {
   return (
     <Paper elevation={1} sx={{ p: 1.5, px: 2 }}>
       <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
-        {/* Prominent pending count */}
+        {/* Prominent actionable count */}
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75 }}>
           <Typography variant="h5" color="warning.main" sx={{ fontWeight: 700, lineHeight: 1 }}>
-            {summary.pending}
+            {summary.pending + summary.manualCheck + summary.errors}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {summary.pending === 1 ? 'query' : 'queries'} pending across {summary.totalFiles} files
+            {summary.pending + summary.manualCheck + summary.errors === 1 ? 'query' : 'queries'} to review
+            ({summary.pending} pending, {summary.manualCheck} manual check)
+            across {analysisResult.files.length} files
           </Typography>
         </Box>
 

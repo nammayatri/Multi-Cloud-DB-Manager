@@ -279,21 +279,7 @@ export async function analyze(
       });
     }
 
-    // Compute summary from ALL statements (before filtering)
-    const allStatements = fileResults.flatMap(f => f.statements);
-    const summary = {
-      totalFiles: fileResults.length,
-      totalStatements: allStatements.length,
-      applied: allStatements.filter(s => s.status === 'applied').length,
-      pending: allStatements.filter(s => s.status === 'pending').length,
-      manualCheck: allStatements.filter(s => s.status === 'manual_check').length,
-      skipped: allStatements.filter(s => s.status === 'skipped').length,
-      errors: allStatements.filter(s => s.status === 'error').length,
-    };
-
     // Strip applied/skipped statements from response to reduce payload size.
-    // Only send pending, manual_check, and error statements.
-    // Also skip files that are fully applied (no actionable statements).
     const actionableFiles = fileResults
       .map(f => {
         const actionableStatements = f.statements.filter(
@@ -301,12 +287,25 @@ export async function analyze(
         );
         return {
           ...f,
-          content: '', // Don't send file content in list — use /file endpoint
+          content: '',
           statements: actionableStatements,
           appliedCount: f.statements.length - actionableStatements.length,
         };
       })
       .filter(f => f.statements.length > 0 || f.status === 'error');
+
+    // Compute summary from ALL statements (for the filtered DB)
+    const allStatements = fileResults.flatMap(f => f.statements);
+    const actionableStatements = actionableFiles.flatMap(f => f.statements);
+    const summary = {
+      totalFiles: actionableFiles.length,
+      totalStatements: allStatements.length,
+      applied: allStatements.filter(s => s.status === 'applied').length,
+      pending: actionableStatements.filter(s => s.status === 'pending').length,
+      manualCheck: actionableStatements.filter(s => s.status === 'manual_check').length,
+      skipped: allStatements.filter(s => s.status === 'skipped').length,
+      errors: actionableStatements.filter(s => s.status === 'error').length,
+    };
 
     logger.info('Migration analysis complete', {
       summary,

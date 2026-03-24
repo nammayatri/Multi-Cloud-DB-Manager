@@ -77,7 +77,7 @@ export const useMigrationsStore = create<MigrationsState>((set, get) => ({
 
   // UI state
   selectedFilePath: null,
-  statusFilter: 'pending',
+  statusFilter: 'all',
   expandedFolders: new Set<string>(),
   viewMode: 'pending',
   selectedStatements: new Set<string>(),
