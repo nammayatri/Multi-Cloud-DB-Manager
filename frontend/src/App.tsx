@@ -6,6 +6,7 @@ import { Toaster } from 'react-hot-toast';
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const ConsolePage = lazy(() => import('./pages/ConsolePage'));
 const UsersPage = lazy(() => import('./pages/UsersPage'));
+const MigrationsPage = lazy(() => import('./pages/MigrationsPage'));
 
 // Create dark theme
 const darkTheme = createTheme({
@@ -55,6 +56,7 @@ function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/" element={<ConsolePage />} />
             <Route path="/users" element={<UsersPage />} />
+            <Route path="/migrations" element={<MigrationsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

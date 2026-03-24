@@ -21,6 +21,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import StorageIcon from '@mui/icons-material/Storage';
 import MemoryIcon from '@mui/icons-material/Memory';
 import TableRowsIcon from '@mui/icons-material/TableRows';
+import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import { authAPI, schemaAPI } from '../services/api';
 import { useAppStore } from '../store/appStore';
 import toast from 'react-hot-toast';
@@ -202,6 +203,14 @@ const ConsolePage = () => {
                 Users
               </Button>
             )}
+
+            <Button
+              color="inherit"
+              startIcon={<CompareArrowsIcon />}
+              onClick={() => navigate('/migrations')}
+            >
+              Migrations
+            </Button>
 
             <Button
               color="inherit"
