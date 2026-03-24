@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import logger from '../../utils/logger';
 
@@ -21,7 +21,7 @@ export function ensureRepo(repoPath: string, repoUrl?: string): void {
   }
 
   try {
-    execSync('git fetch --all', {
+    execFileSync('git', ['fetch', '--all'], {
       ...execOpts(repoPath),
       stdio: 'ignore',
     });
@@ -32,30 +32,18 @@ export function ensureRepo(repoPath: string, repoUrl?: string): void {
 }
 
 /**
- * Fetch all remotes + pull current branch to get latest changes.
+ * Fetch all remotes to get latest changes.
+ * Only fetches — does not modify the working tree.
  */
 export function pullLatest(repoPath: string): void {
   try {
-    // Fetch all remote refs and objects
-    execSync('git fetch --all --prune', {
+    execFileSync('git', ['fetch', '--all', '--prune'], {
       ...execOpts(repoPath),
       stdio: 'ignore',
     });
     logger.info('Git fetch --all completed', { repoPath });
   } catch (err: any) {
     logger.warn('Git fetch --all failed (non-fatal)', { repoPath, error: err.message });
-  }
-
-  try {
-    // Pull current branch to update local HEAD
-    execSync('git pull --ff-only', {
-      ...execOpts(repoPath),
-      stdio: 'ignore',
-    });
-    logger.info('Git pull completed', { repoPath });
-  } catch (err: any) {
-    // Pull can fail if there are local changes or diverged branches — non-fatal
-    logger.warn('Git pull --ff-only failed (non-fatal, local branch may be diverged)', { repoPath, error: err.message });
   }
 }
 
@@ -66,8 +54,8 @@ function validateRef(ref: string): void {
 }
 
 function validatePath(filePath: string): void {
-  // Reject path traversal and command injection — allow typical file path chars
-  if (!filePath || /[;&|`$]/.test(filePath) || filePath.includes('..')) {
+  // Reject path traversal, command injection, newlines, nulls, and flag-like paths
+  if (!filePath || /[;&|`$\n\r\0]/.test(filePath) || filePath.includes('..') || filePath.startsWith('-')) {
     throw new Error(`Invalid file path: "${filePath}".`);
   }
 }
@@ -93,11 +81,11 @@ export function getChangedFiles(
   validateRef(toRef);
 
   try {
-    const pathFilter = migrationSubdir ? ` -- "${migrationSubdir}"` : '';
-    const output = execSync(
-      `git diff --name-only --diff-filter=ACMR ${fromRef}...${toRef}${pathFilter}`,
-      execOpts(repoPath)
-    );
+    const args = ['diff', '--name-only', '--diff-filter=ACMR', `${fromRef}...${toRef}`];
+    if (migrationSubdir) {
+      args.push('--', migrationSubdir);
+    }
+    const output = execFileSync('git', args, execOpts(repoPath));
 
     return output
       .split('\n')
@@ -122,10 +110,7 @@ export function getFileContent(repoPath: string, ref: string, filePath: string):
   validatePath(filePath);
 
   try {
-    return execSync(
-      `git show ${ref}:${filePath}`,
-      execOpts(repoPath)
-    );
+    return execFileSync('git', ['show', `${ref}:${filePath}`], execOpts(repoPath));
   } catch (err: any) {
     logger.error('Failed to get file content from git', {
       ref,
@@ -141,23 +126,27 @@ export function getFileContent(repoPath: string, ref: string, filePath: string):
  */
 export function getRecentRefs(repoPath: string): { branches: string[]; tags: string[] } {
   try {
-    const branchOutput = execSync(
-      'git branch -r --sort=-committerdate --format="%(refname:short)" | head -50',
-      { ...execOpts(repoPath), shell: '/bin/bash' }
+    const branchOutput = execFileSync(
+      'git',
+      ['branch', '-r', '--sort=-committerdate', '--format=%(refname:short)'],
+      execOpts(repoPath)
     );
     const branches = branchOutput
       .split('\n')
       .map(b => b.trim())
-      .filter(b => b.length > 0);
+      .filter(b => b.length > 0)
+      .slice(0, 50);
 
-    const tagOutput = execSync(
-      'git tag --sort=-version:refname | head -30',
+    const tagOutput = execFileSync(
+      'git',
+      ['tag', '--sort=-version:refname'],
       execOpts(repoPath)
     );
     const tags = tagOutput
       .split('\n')
       .map(t => t.trim())
-      .filter(t => t.length > 0);
+      .filter(t => t.length > 0)
+      .slice(0, 30);
 
     return { branches, tags };
   } catch (err: any) {

@@ -4,13 +4,13 @@ import { isAuthenticated } from '../middleware/auth.middleware';
 
 const router = Router();
 
-// Config and refs are safe (no secrets) — no auth needed
+// All endpoints require authentication
+router.use(isAuthenticated);
+
 router.get('/config', getConfig);
 router.get('/refs', getRefs);
-
-// Analysis and file content require authentication
-router.post('/analyze', isAuthenticated, analyze);
-router.get('/file', isAuthenticated, getFileContent);
-router.post('/refresh-repo', isAuthenticated, refreshRepo);
+router.post('/analyze', analyze);
+router.get('/file', getFileContent);
+router.post('/refresh-repo', refreshRepo);
 
 export default router;

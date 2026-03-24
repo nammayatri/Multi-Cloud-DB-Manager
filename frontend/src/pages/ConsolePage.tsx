@@ -129,6 +129,10 @@ const PillToggle = ({ managerMode, setManagerMode }: { managerMode: ManagerMode;
   );
 };
 
+// Track last sync time so we don't re-fetch on every page reload
+const SYNC_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+let lastSyncTime = 0;
+
 const MigrationsContent = () => {
   const loadConfig = useMigrationsStore((s) => s.loadConfig);
   const loadRefs = useMigrationsStore((s) => s.loadRefs);
@@ -143,12 +147,26 @@ const MigrationsContent = () => {
     if (initRef.current) return;
     initRef.current = true;
     const init = async () => {
+      const now = Date.now();
+      const needsSync = now - lastSyncTime > SYNC_COOLDOWN_MS;
+
       setInitStatus('Loading configuration...');
       await loadConfig();
-      setInitStatus('Fetching latest branches and tags...');
-      await loadRefs();
-      setInitStatus('Pulling latest changes from repository...');
-      await refreshRepo();
+
+      if (needsSync) {
+        setInitStatus('Fetching latest branches and tags...');
+        await loadRefs();
+        setInitStatus('Syncing repository...');
+        await refreshRepo();
+        lastSyncTime = Date.now();
+      } else {
+        // Config already loaded, refs may be cached in store
+        if (!useMigrationsStore.getState().refs) {
+          setInitStatus('Loading refs...');
+          await loadRefs();
+        }
+      }
+
       setIsInit(true);
     };
     init();
@@ -174,20 +192,22 @@ const MigrationsContent = () => {
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', p: 1, gap: 1.5 }}>
-      <Stack direction="row" spacing={1} alignItems="center">
-        <Box sx={{ flex: 1 }}><MigrationToolbar /></Box>
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={isRefreshing ? <CircularProgress size={14} /> : <RefreshIcon />}
-          onClick={handleRefresh}
-          disabled={isRefreshing}
-          sx={{ height: 40, whiteSpace: 'nowrap' }}
-        >
-          {isRefreshing ? 'Pulling...' : 'Refresh Repo'}
-        </Button>
-      </Stack>
+    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', p: 1, gap: 1.5, position: 'relative' }}>
+      {/* Refresh overlay */}
+      {isRefreshing && (
+        <Box sx={{
+          position: 'absolute', inset: 0, zIndex: 10,
+          bgcolor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(2px)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
+          borderRadius: 1,
+        }}>
+          <CircularProgress size={40} />
+          <Typography variant="body1" color="white">Pulling latest changes from repository...</Typography>
+          <LinearProgress sx={{ width: 250 }} />
+        </Box>
+      )}
+
+      <MigrationToolbar onRefresh={handleRefresh} />
       <MigrationSummaryBar />
       <Box sx={{ flex: 1, overflow: 'auto' }}>
         <MigrationResultsView />

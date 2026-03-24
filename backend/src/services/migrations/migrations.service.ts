@@ -139,6 +139,11 @@ export async function analyze(
   // 1. Get ALL changed files from git (no path scoping — we match against pathMapping)
   const changedFiles = getChangedFiles(config.repoPath, undefined, fromRef, toRef);
 
+  const MAX_FILES = 500;
+  if (changedFiles.length > MAX_FILES) {
+    throw new Error(`Too many changed files (${changedFiles.length}). Maximum is ${MAX_FILES}. Use a narrower commit range.`);
+  }
+
   logger.info('Migration analysis started', {
     fromRef,
     toRef,
@@ -355,6 +360,8 @@ export function getConfig(): {
     };
   }
 
+  // repoPath is kept in the return type for internal use (controller needs it)
+  // but the controller should NOT expose it in API responses
   return {
     environments: safeEnvs,
     pathMapping: config.pathMapping,

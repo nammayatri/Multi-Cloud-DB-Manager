@@ -13,8 +13,8 @@ export const getConfig = async (
   next: NextFunction
 ) => {
   try {
-    const config = migrationsService.getConfig();
-    res.json({ success: true, ...config });
+    const { repoPath, ...safeConfig } = migrationsService.getConfig();
+    res.json({ success: true, ...safeConfig });
   } catch (error: any) {
     logger.error('Failed to load migration config:', error);
     next(error);
@@ -62,6 +62,15 @@ export const analyze = async (
     }
     if (!environment || typeof environment !== 'string') {
       return res.status(400).json({ error: 'environment is required' });
+    }
+    if (fromRef.length > 200) {
+      return res.status(400).json({ error: 'fromRef too long' });
+    }
+    if (toRef.length > 200) {
+      return res.status(400).json({ error: 'toRef too long' });
+    }
+    if (environment.length > 200) {
+      return res.status(400).json({ error: 'environment too long' });
     }
 
     logger.info('Migration analysis requested', {
@@ -117,8 +126,22 @@ export const getFileContent = async (
     if (!filePath || typeof filePath !== 'string') {
       return res.status(400).json({ error: 'path query parameter is required' });
     }
+    if (ref.length > 200) {
+      return res.status(400).json({ error: 'ref too long' });
+    }
+    if (filePath.length > 500) {
+      return res.status(400).json({ error: 'path too long' });
+    }
 
+    // Validate that the requested path is under a configured migration path
     const config = migrationsService.getConfig();
+    const isAllowedPath = config.pathMapping.some(
+      (mapping) => filePath.startsWith(mapping.path + '/') || filePath === mapping.path
+    );
+    if (!isAllowedPath) {
+      return res.status(403).json({ error: 'Requested path is not within a configured migration directory' });
+    }
+
     const content = gitService.getFileContent(config.repoPath, ref, filePath);
     res.json({ success: true, ref, path: filePath, content });
   } catch (error: any) {

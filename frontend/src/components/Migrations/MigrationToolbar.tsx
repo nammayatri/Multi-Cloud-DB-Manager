@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Paper,
   Stack,
@@ -10,11 +10,14 @@ import {
   MenuItem,
   Button,
   CircularProgress,
+  Tooltip,
+  IconButton,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import SyncIcon from '@mui/icons-material/Sync';
 import { useMigrationsStore } from '../../store/migrationsStore';
 
-const MigrationToolbar = () => {
+const MigrationToolbar = ({ onRefresh }: { onRefresh?: () => Promise<void> }) => {
   const config = useMigrationsStore((s) => s.config);
   const refs = useMigrationsStore((s) => s.refs);
   const fromRef = useMigrationsStore((s) => s.fromRef);
@@ -27,6 +30,7 @@ const MigrationToolbar = () => {
   const setEnvironment = useMigrationsStore((s) => s.setEnvironment);
   const setDatabaseFilter = useMigrationsStore((s) => s.setDatabaseFilter);
   const analyze = useMigrationsStore((s) => s.analyze);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const refOptions = [
     ...(refs?.branches || []),
@@ -41,10 +45,20 @@ const MigrationToolbar = () => {
     ? config.environments[environment].databases
     : [];
 
+  const handleSync = async () => {
+    if (!onRefresh) return;
+    setIsSyncing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   return (
     <Paper elevation={2} sx={{ p: 2 }}>
-      <Stack spacing={2}>
-        <Stack direction="row" spacing={2} alignItems="center">
+      <Stack spacing={1.5}>
+        <Stack direction="row" spacing={1.5} alignItems="center">
           <Autocomplete
             freeSolo
             options={refOptions}
@@ -67,8 +81,20 @@ const MigrationToolbar = () => {
             sx={{ flex: 1 }}
             disabled={isAnalyzing}
           />
+          <Tooltip title="Pull latest changes from repository">
+            <IconButton
+              onClick={handleSync}
+              disabled={isSyncing || isAnalyzing}
+              sx={{
+                bgcolor: 'rgba(255,255,255,0.05)',
+                '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' },
+              }}
+            >
+              {isSyncing ? <CircularProgress size={20} /> : <SyncIcon />}
+            </IconButton>
+          </Tooltip>
         </Stack>
-        <Stack direction="row" spacing={2} alignItems="center">
+        <Stack direction="row" spacing={1.5} alignItems="center">
           <FormControl size="small" sx={{ flex: 1 }}>
             <InputLabel>Environment</InputLabel>
             <Select
