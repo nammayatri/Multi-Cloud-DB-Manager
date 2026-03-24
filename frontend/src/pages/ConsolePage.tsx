@@ -34,7 +34,168 @@ import RedisResultsPanel from '../components/Redis/RedisResultsPanel';
 import RedisCacheClearer from '../components/Redis/RedisCacheClearer';
 import RedisHistory from '../components/Redis/RedisHistory';
 import CsvBatchPanel from '../components/CsvBatch/CsvBatchPanel';
+import MigrationToolbar from '../components/Migrations/MigrationToolbar';
+import MigrationSummaryBar from '../components/Migrations/MigrationSummaryBar';
+import MigrationResultsView from '../components/Migrations/MigrationResultsView';
+import MigrationActionBar from '../components/Migrations/MigrationActionBar';
+import { useMigrationsStore } from '../store/migrationsStore';
 import type { QueryResponse, RedisCommandResponse } from '../types';
+
+import CircularProgress from '@mui/material/CircularProgress';
+import LinearProgress from '@mui/material/LinearProgress';
+
+type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations';
+
+const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode }> = [
+  { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} /> },
+  { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} /> },
+  { mode: 'batch', label: 'Batch Query', icon: <TableRowsIcon sx={{ fontSize: 18 }} /> },
+  { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} /> },
+];
+
+const PillToggle = ({ managerMode, setManagerMode }: { managerMode: ManagerMode; setManagerMode: (m: ManagerMode) => void }) => {
+  const tabRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [indicator, setIndicator] = useState({ left: 3, width: 0 });
+
+  useEffect(() => {
+    const el = tabRefs.current[managerMode];
+    if (el) {
+      const parent = el.parentElement;
+      if (parent) {
+        const parentRect = parent.getBoundingClientRect();
+        const tabRect = el.getBoundingClientRect();
+        setIndicator({
+          left: tabRect.left - parentRect.left,
+          width: tabRect.width,
+        });
+      }
+    }
+  }, [managerMode]);
+
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        bgcolor: 'rgba(255,255,255,0.08)',
+        borderRadius: '20px',
+        p: '3px',
+        position: 'relative',
+      }}
+    >
+      {/* Sliding indicator — auto-sized to active tab */}
+      <Box
+        sx={{
+          position: 'absolute',
+          top: 3,
+          left: indicator.left,
+          width: indicator.width,
+          height: 'calc(100% - 6px)',
+          borderRadius: '17px',
+          bgcolor: 'primary.main',
+          opacity: 0.25,
+          border: '1px solid',
+          borderColor: 'primary.main',
+          transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1), width 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        }}
+      />
+      {TAB_CONFIG.map((tab) => (
+        <Box
+          key={tab.mode}
+          ref={(el: HTMLDivElement | null) => { tabRefs.current[tab.mode] = el; }}
+          onClick={() => setManagerMode(tab.mode)}
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.5,
+            px: 1.5,
+            py: 0.75,
+            borderRadius: '17px',
+            cursor: 'pointer',
+            position: 'relative',
+            zIndex: 1,
+            color: managerMode === tab.mode ? '#fff' : 'rgba(255,255,255,0.5)',
+            transition: 'color 0.25s ease',
+            fontSize: '0.8rem',
+            fontWeight: 500,
+            userSelect: 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {tab.icon}
+          {tab.label}
+        </Box>
+      ))}
+    </Box>
+  );
+};
+
+const MigrationsContent = () => {
+  const loadConfig = useMigrationsStore((s) => s.loadConfig);
+  const loadRefs = useMigrationsStore((s) => s.loadRefs);
+  const refreshRepo = useMigrationsStore((s) => s.refreshRepo);
+  const config = useMigrationsStore((s) => s.config);
+  const [isInit, setIsInit] = useState(false);
+  const [initStatus, setInitStatus] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const initRef = useRef(false);
+
+  useEffect(() => {
+    if (initRef.current) return;
+    initRef.current = true;
+    const init = async () => {
+      setInitStatus('Loading configuration...');
+      await loadConfig();
+      setInitStatus('Fetching latest branches and tags...');
+      await loadRefs();
+      setInitStatus('Pulling latest changes from repository...');
+      await refreshRepo();
+      setIsInit(true);
+    };
+    init();
+  }, []);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await refreshRepo();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  if (!isInit) {
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 8, gap: 2 }}>
+        <CircularProgress size={36} />
+        <Typography variant="body1" color="text.secondary">{initStatus}</Typography>
+        <LinearProgress sx={{ width: 300 }} />
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', p: 1, gap: 1.5 }}>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Box sx={{ flex: 1 }}><MigrationToolbar /></Box>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={isRefreshing ? <CircularProgress size={14} /> : <RefreshIcon />}
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          sx={{ height: 40, whiteSpace: 'nowrap' }}
+        >
+          {isRefreshing ? 'Pulling...' : 'Refresh Repo'}
+        </Button>
+      </Stack>
+      <MigrationSummaryBar />
+      <Box sx={{ flex: 1, overflow: 'auto' }}>
+        <MigrationResultsView />
+      </Box>
+      <MigrationActionBar />
+    </Box>
+  );
+};
 
 const ConsolePage = () => {
   const navigate = useNavigate();
@@ -132,64 +293,13 @@ const ConsolePage = () => {
       <AppBar position="static" elevation={2}>
         <Toolbar>
           <Typography variant="h6" component="div" noWrap>
-            {managerMode === 'db' ? 'Multi-Cloud DB Manager' : managerMode === 'redis' ? 'Redis Manager' : 'Batch Query Manager'}
+            {managerMode === 'db' ? 'Multi-Cloud DB Manager' : managerMode === 'redis' ? 'Redis Manager' : managerMode === 'batch' ? 'Batch Query Manager' : 'DB Migration Verifier'}
           </Typography>
 
           <Box sx={{ flexGrow: 1 }} />
 
-          {/* Smooth pill toggle */}
-          <Box
-            sx={{
-              display: 'flex',
-              bgcolor: 'rgba(255,255,255,0.08)',
-              borderRadius: '20px',
-              p: '3px',
-              position: 'relative',
-            }}
-          >
-            {/* Sliding indicator */}
-            <Box
-              sx={{
-                position: 'absolute',
-                top: 3,
-                left: managerMode === 'db' ? 3 : managerMode === 'redis' ? 'calc(33.33% + 0px)' : 'calc(66.66% + 0px)',
-                width: 'calc(33.33% - 3px)',
-                height: 'calc(100% - 6px)',
-                borderRadius: '17px',
-                bgcolor: 'primary.main',
-                opacity: 0.25,
-                border: '1px solid',
-                borderColor: 'primary.main',
-                transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              }}
-            />
-            {(['db', 'redis', 'batch'] as const).map((mode) => (
-              <Box
-                key={mode}
-                onClick={() => setManagerMode(mode)}
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 0.5,
-                  px: 2,
-                  py: 0.75,
-                  borderRadius: '17px',
-                  cursor: 'pointer',
-                  position: 'relative',
-                  zIndex: 1,
-                  color: managerMode === mode ? '#fff' : 'rgba(255,255,255,0.5)',
-                  transition: 'color 0.25s ease',
-                  fontSize: '0.85rem',
-                  fontWeight: 500,
-                  userSelect: 'none',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {mode === 'db' ? <StorageIcon sx={{ fontSize: 18 }} /> : mode === 'redis' ? <MemoryIcon sx={{ fontSize: 18 }} /> : <TableRowsIcon sx={{ fontSize: 18 }} />}
-                {mode === 'db' ? 'DB Manager' : mode === 'redis' ? 'Redis Manager' : 'Batch Query'}
-              </Box>
-            ))}
-          </Box>
+          {/* Smooth pill toggle — auto-width based on content */}
+          <PillToggle managerMode={managerMode} setManagerMode={setManagerMode} />
 
           <Box sx={{ flexGrow: 1 }} />
 
@@ -203,14 +313,6 @@ const ConsolePage = () => {
                 Users
               </Button>
             )}
-
-            <Button
-              color="inherit"
-              startIcon={<CompareArrowsIcon />}
-              onClick={() => navigate('/migrations')}
-            >
-              Migrations
-            </Button>
 
             <Button
               color="inherit"
@@ -367,6 +469,25 @@ const ConsolePage = () => {
                   <CsvBatchPanel />
                 </Stack>
               </Box>
+            </Box>
+
+            {/* DB Migrations View */}
+            <Box
+              key="migrations-view"
+              sx={{
+                position: managerMode === 'migrations' ? 'relative' : 'absolute',
+                inset: managerMode === 'migrations' ? undefined : 0,
+                opacity: managerMode === 'migrations' ? 1 : 0,
+                pointerEvents: managerMode === 'migrations' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'migrations' ? 1 : undefined,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'migrations' ? 0 : 2,
+              }}
+            >
+              <MigrationsContent />
             </Box>
           </Box>
         </Box>
