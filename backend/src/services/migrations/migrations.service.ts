@@ -324,7 +324,9 @@ export async function analyze(
     const allStatements = fileResults.flatMap(f => f.statements);
     const actionableStatements = actionableFiles.flatMap(f => f.statements);
     const summary = {
+      totalFilesInDiff: fileResults.length,
       totalFiles: actionableFiles.length,
+      fullyAppliedFiles: fileResults.length - actionableFiles.length,
       totalStatements: allStatements.length,
       applied: allStatements.filter(s => s.status === 'applied').length,
       pending: actionableStatements.filter(s => s.status === 'pending').length,

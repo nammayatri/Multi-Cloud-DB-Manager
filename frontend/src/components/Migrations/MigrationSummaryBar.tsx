@@ -216,7 +216,7 @@ const MigrationSummaryBar = () => {
     <Paper elevation={1} sx={{ p: 1.5, px: 2 }}>
       <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
         {/* Prominent actionable count */}
-        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75 }}>
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75, flexWrap: 'wrap' }}>
           <Typography variant="h5" color="warning.main" sx={{ fontWeight: 700, lineHeight: 1 }}>
             {summary.pending + summary.manualCheck + summary.errors}
           </Typography>
@@ -225,6 +225,11 @@ const MigrationSummaryBar = () => {
             ({summary.pending} pending, {summary.manualCheck} manual check)
             across {analysisResult.files.length} files
           </Typography>
+          {summary.totalFilesInDiff !== undefined && summary.fullyAppliedFiles !== undefined && summary.fullyAppliedFiles > 0 && (
+            <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+              · {summary.totalFilesInDiff} files in diff, {summary.fullyAppliedFiles} fully applied (hidden)
+            </Typography>
+          )}
         </Box>
 
         <Box sx={{ flex: 1 }} />

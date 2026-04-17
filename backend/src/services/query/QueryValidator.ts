@@ -26,8 +26,6 @@ export class QueryValidator {
       /^\s*DROP\s+SCHEMA/i,
       /^\s*CREATE\s+DATABASE/i,
       /^\s*CREATE\s+SCHEMA/i,
-      /^\s*GRANT/i,
-      /^\s*REVOKE/i,
       /^\s*ALTER\s+ROLE/i,
       /^\s*ALTER\s+USER/i,
       /^\s*CREATE\s+ROLE/i,
@@ -91,6 +89,14 @@ export class QueryValidator {
         if (/\s+DROP\s+/i.test(statement)) {
           dangerousOperations.push('ALTER DROP');
         }
+      }
+
+      // GRANT / REVOKE require password (MASTER only via role middleware)
+      if (/^\s*GRANT\s+/i.test(statement)) {
+        dangerousOperations.push('GRANT');
+      }
+      if (/^\s*REVOKE\s+/i.test(statement)) {
+        dangerousOperations.push('REVOKE');
       }
     }
 

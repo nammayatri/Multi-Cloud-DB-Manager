@@ -1,6 +1,6 @@
 {
   "name": "dual-db-manager-frontend",
-  "version": "2.0.45",
+  "version": "2.0.47",
   "type": "module",
   "scripts": {
     "dev": "vite",

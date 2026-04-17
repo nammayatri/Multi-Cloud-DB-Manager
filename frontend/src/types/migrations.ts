@@ -27,7 +27,9 @@ export interface AnalysisResult {
   toRef: string;
   environment: string;
   summary: {
+    totalFilesInDiff?: number;
     totalFiles: number;
+    fullyAppliedFiles?: number;
     totalStatements: number;
     applied: number;
     pending: number;
