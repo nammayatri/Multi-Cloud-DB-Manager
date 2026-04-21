@@ -103,6 +103,26 @@ export const detectDangerousQueries = (
         requiresPassword = userRole === 'MASTER'; // Require password for UPDATE without WHERE
       }
     }
+
+    // Check for GRANT / REVOKE (permission changes — MASTER only with password)
+    if (upperStatement.match(/^\s*GRANT\s+/i)) {
+      dangerousStatements.push(statement);
+      warningType = 'danger';
+      warningTitle = 'GRANT Statement Detected';
+      warningMessage = userRole && userRole !== 'MASTER'
+        ? '⛔ GRANT operations require MASTER role.'
+        : 'This will grant permissions on database objects. MASTER password required.';
+      requiresPassword = userRole === 'MASTER';
+    }
+    if (upperStatement.match(/^\s*REVOKE\s+/i)) {
+      dangerousStatements.push(statement);
+      warningType = 'danger';
+      warningTitle = 'REVOKE Statement Detected';
+      warningMessage = userRole && userRole !== 'MASTER'
+        ? '⛔ REVOKE operations require MASTER role.'
+        : 'This will revoke permissions on database objects. MASTER password required.';
+      requiresPassword = userRole === 'MASTER';
+    }
   }
 
   if (dangerousStatements.length > 0) {
