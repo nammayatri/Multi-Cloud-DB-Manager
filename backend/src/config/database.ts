@@ -24,7 +24,12 @@ const createPoolConfig = (dbConfig: DatabaseConfig | DatabaseInfo): PgPoolConfig
     connectionTimeoutMillis: 10000, // Timeout for acquiring connection
 
     // Statement timeout (prevent long-running queries from blocking)
-    statement_timeout: 300000, // 5 minutes max per query
+    // Controlled by STATEMENT_TIMEOUT_MS env var, default 30s
+    statement_timeout: parseInt(process.env.STATEMENT_TIMEOUT_MS || '30000', 10),
+
+    // Idle-in-transaction timeout (kill idle transactions that hold locks)
+    // Controlled by IDLE_IN_TRANSACTION_TIMEOUT_MS env var, default 30s
+    options: `-c idle_in_transaction_session_timeout=${parseInt(process.env.IDLE_IN_TRANSACTION_TIMEOUT_MS || '30000', 10)}`,
 
     // Connection lifecycle
     allowExitOnIdle: false, // Keep pool alive

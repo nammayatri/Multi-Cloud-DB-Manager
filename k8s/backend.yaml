@@ -88,9 +88,11 @@ spec:
         - name: REDIS_EXECUTION_TTL_SECONDS
           value: "300"  # TTL for query execution state in Redis (default: 5 minutes)
         - name: MAX_QUERY_TIMEOUT_MS
-          value: "300000"  # Maximum total query timeout (default: 5 minutes)
+          value: "30000"  # Maximum total query timeout (default: 30 seconds)
         - name: STATEMENT_TIMEOUT_MS
-          value: "300000"  # Per-statement PostgreSQL timeout (default: 5 minutes)
+          value: "30000"  # Per-statement PostgreSQL timeout (default: 30 seconds)
+        - name: IDLE_IN_TRANSACTION_TIMEOUT_MS
+          value: "30000"  # Kill idle transactions holding locks (default: 30 seconds)
 
         resources:
           requests:

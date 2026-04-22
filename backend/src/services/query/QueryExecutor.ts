@@ -29,8 +29,8 @@ export class QueryExecutor {
 
   constructor(executionManager: ExecutionManager) {
     this.dbPools = DatabasePools.getInstance();
-    this.maxTimeout = parseInt(process.env.MAX_QUERY_TIMEOUT_MS || '300000');
-    this.statementTimeout = parseInt(process.env.STATEMENT_TIMEOUT_MS || '300000'); // 5 minutes default
+    this.maxTimeout = parseInt(process.env.MAX_QUERY_TIMEOUT_MS || '30000');
+    this.statementTimeout = parseInt(process.env.STATEMENT_TIMEOUT_MS || '30000'); // 30 seconds default
     this.executionManager = executionManager;
   }
 
