@@ -47,6 +47,19 @@ export class QueryValidator {
   }
 
   /**
+   * Check if a single statement is a CREATE INDEX without CONCURRENTLY.
+   * These take strong locks and should be blocked — but per-statement so batches can continue.
+   */
+  public isNonConcurrentCreateIndex(statement: string): boolean {
+    const clean = statement
+      .replace(/--.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .trim();
+    return /^\s*CREATE\s+(UNIQUE\s+)?INDEX\b/i.test(clean) &&
+           !/^\s*CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(clean);
+  }
+
+  /**
    * Check if query requires password verification
    * Returns the operation type if verification is required, null otherwise
    */
@@ -98,6 +111,7 @@ export class QueryValidator {
       if (/^\s*REVOKE\s+/i.test(statement)) {
         dangerousOperations.push('REVOKE');
       }
+
     }
 
     if (dangerousOperations.length > 0) {
@@ -105,6 +119,56 @@ export class QueryValidator {
     }
 
     return null;
+  }
+
+  /**
+   * Extract target table names from CREATE INDEX statements in the query.
+   * Returns array of fully-qualified table names (schema.table) if schema given, else just table.
+   */
+  public extractCreateIndexTables(query: string, defaultSchema?: string): string[] {
+    const cleanQuery = query
+      .replace(/--.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const statements = cleanQuery.split(';').map(s => s.trim()).filter(s => s);
+    const tables: string[] = [];
+
+    for (const stmt of statements) {
+      // CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] <index_name> ON [schema.]table
+      const match = stmt.match(
+        /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?"?[a-zA-Z_][a-zA-Z0-9_]*"?\s+ON\s+(?:ONLY\s+)?("?[a-zA-Z_][a-zA-Z0-9_]*"?(?:\s*\.\s*"?[a-zA-Z_][a-zA-Z0-9_]*"?)?)/i
+      );
+      if (match) {
+        const raw = match[1].replace(/"/g, '').replace(/\s+/g, '').toLowerCase();
+        if (raw.includes('.')) {
+          tables.push(raw);
+        } else if (defaultSchema) {
+          tables.push(`${defaultSchema.toLowerCase()}.${raw}`);
+        } else {
+          tables.push(raw);
+        }
+      }
+    }
+
+    return tables;
+  }
+
+  /**
+   * Check if a CREATE INDEX query targets any protected tables.
+   * Returns the list of matched protected tables, or empty array if none.
+   */
+  public checkIndexCreateBlocked(
+    query: string,
+    blockedTables: string[] | undefined,
+    defaultSchema?: string
+  ): string[] {
+    if (!blockedTables || blockedTables.length === 0) return [];
+
+    const targetTables = this.extractCreateIndexTables(query, defaultSchema);
+    if (targetTables.length === 0) return [];
+
+    const normalizedBlocked = blockedTables.map(t => t.toLowerCase());
+    return targetTables.filter(t => normalizedBlocked.includes(t));
   }
 
   /**

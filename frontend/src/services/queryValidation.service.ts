@@ -123,6 +123,7 @@ export const detectDangerousQueries = (
         : 'This will revoke permissions on database objects. MASTER password required.';
       requiresPassword = userRole === 'MASTER';
     }
+
   }
 
   if (dangerousStatements.length > 0) {

@@ -450,6 +450,13 @@ class QueryService {
   public requiresPasswordVerification(query: string): string | null {
     return QueryValidator.requiresPasswordVerification(query);
   }
+
+  /**
+   * Check if CREATE INDEX targets any protected tables — returns matched blocked tables.
+   */
+  public checkIndexCreateBlocked(query: string, blockedTables: string[] | undefined, defaultSchema?: string): string[] {
+    return QueryValidator.checkIndexCreateBlocked(query, blockedTables, defaultSchema);
+  }
 }
 
 // Export singleton instance

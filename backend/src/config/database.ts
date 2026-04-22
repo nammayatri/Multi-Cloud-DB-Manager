@@ -97,6 +97,7 @@ class DatabasePools {
         schemas: db.schemas,
         defaultSchema: db.defaultSchema,
         ...(db.publicationName && { publicationName: db.publicationName }),
+        ...(db.indexCreateBlockedTables && { indexCreateBlockedTables: db.indexCreateBlockedTables }),
       })),
       secondaryClouds: jsonConfig.secondary.map((c: any) => c.cloudName),
       secondaryDatabases: Object.fromEntries(
@@ -114,6 +115,7 @@ class DatabasePools {
             schemas: db.schemas,
             defaultSchema: db.defaultSchema,
             ...(db.subscriptionName && { subscriptionName: db.subscriptionName }),
+            ...(db.indexCreateBlockedTables && { indexCreateBlockedTables: db.indexCreateBlockedTables }),
           }))
         ])
       )

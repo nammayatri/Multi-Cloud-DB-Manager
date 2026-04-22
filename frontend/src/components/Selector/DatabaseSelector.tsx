@@ -20,6 +20,7 @@ import {
   DialogContent,
   DialogActions,
   Alert,
+  TextField,
 } from '@mui/material';
 import FingerprintIcon from '@mui/icons-material/Fingerprint';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
@@ -77,6 +78,8 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
   const [detectedTables, setDetectedTables] = useState<Array<{ schema: string; table: string }>>([]);
   const [showUuidDialog, setShowUuidDialog] = useState(false);
   const [uuidErrorMessage, setUuidErrorMessage] = useState<string>('');
+  const [showIndexPasswordDialog, setShowIndexPasswordDialog] = useState(false);
+  const [indexBlockedMessage, setIndexBlockedMessage] = useState<string>('');
   const dbConfigRef = useRef<DatabaseConfiguration | null>(null);
   
   // Execution state
@@ -340,7 +343,7 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
         database: selectedDatabase,
         mode: selectedMode,
         pgSchema: selectedPgSchema,
-        password, // Include password if provided
+        password,
         continueOnError,
       });
 
@@ -361,7 +364,17 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
       pollExecutionStatus(executionId);
 
     } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Failed to execute query');
+      const errMsg = error.response?.data?.error || '';
+      // If backend signals protected table / blocked index creation, show info dialog
+      if (errMsg.includes('CREATE INDEX is blocked') || errMsg.includes('protected table')) {
+        setIndexBlockedMessage(errMsg);
+        setShowIndexPasswordDialog(true);
+        setIsExecuting(false);
+        setCurrentExecutionId(null);
+        setExecutionProgress(null);
+        return;
+      }
+      toast.error(errMsg || 'Failed to execute query');
       setIsExecuting(false);
       setCurrentExecutionId(null);
       setExecutionProgress(null);
@@ -675,6 +688,25 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
           </Dialog>
         );
       })()}
+
+      {/* Index creation blocked dialog — hard block on protected tables */}
+      <Dialog open={showIndexPasswordDialog} onClose={() => setShowIndexPasswordDialog(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>🚫 Index Creation Blocked</DialogTitle>
+        <DialogContent>
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {indexBlockedMessage || 'CREATE INDEX is blocked on this table.'}
+          </Alert>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            These tables are critical for production. Index creation is <strong>not allowed</strong> from this tool.
+          </Typography>
+          <Typography variant="body2">
+            <strong>Please contact your administrator</strong> to run this index query through the proper operational process.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowIndexPasswordDialog(false)} variant="contained">Got it</Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 };

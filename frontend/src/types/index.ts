@@ -14,6 +14,7 @@ export interface QueryRequest {
   timeout?: number;
   pgSchema?: string;
   password?: string; // Password for sensitive operations (ALTER/DROP)
+  indexCreationPassword?: string; // Unique password for CREATE INDEX on protected tables
   continueOnError?: boolean; // Continue executing remaining statements if one fails
 }
 

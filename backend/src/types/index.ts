@@ -36,6 +36,7 @@ export interface QueryRequest {
   timeout?: number;
   pgSchema?: string;
   password?: string; // Password for sensitive operations (ALTER/DROP)
+  indexCreationPassword?: string; // Special password for CREATE INDEX on protected tables
   continueOnError?: boolean; // Continue executing remaining statements if one fails
 }
 
@@ -91,6 +92,7 @@ export interface DatabaseConfigJson {
   defaultSchema: string;
   publicationName?: string;  // Logical replication publication name (primary only)
   subscriptionName?: string; // Logical replication subscription name (secondary only)
+  indexCreateBlockedTables?: string[]; // Fully-qualified table names (schema.table) protected from index creation — requires INDEX_CREATION_PASSWORD env var to override
 }
 
 export interface CloudConfigJson {
@@ -130,6 +132,7 @@ export interface DatabaseInfo {
   defaultSchema: string;
   publicationName?: string;
   subscriptionName?: string;
+  indexCreateBlockedTables?: string[];
 }
 
 export interface CloudConfiguration {

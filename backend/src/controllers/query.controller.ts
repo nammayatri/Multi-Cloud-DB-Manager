@@ -82,6 +82,30 @@ export const executeQuery = async (
       throw new AppError(`Invalid execution mode: ${queryRequest.mode}`, 400);
     }
 
+    // Hard-block CREATE INDEX on protected tables — no override
+    const dbInfo = [
+      ...cloudConfig.primaryDatabases,
+      ...Object.values(cloudConfig.secondaryDatabases).flat(),
+    ].find(d => d.databaseName === queryRequest.database);
+
+    if (dbInfo?.indexCreateBlockedTables && dbInfo.indexCreateBlockedTables.length > 0) {
+      const blockedMatches = queryService.checkIndexCreateBlocked(
+        queryRequest.query,
+        dbInfo.indexCreateBlockedTables,
+        queryRequest.pgSchema || dbInfo.defaultSchema
+      );
+      if (blockedMatches.length > 0) {
+        logger.warn('Blocked CREATE INDEX on protected table', {
+          username: user.username,
+          tables: blockedMatches,
+        });
+        throw new AppError(
+          `CREATE INDEX is blocked on the following protected table(s): ${blockedMatches.join(', ')}. These tables are critical for production — please contact your administrator to run this index query.`,
+          403
+        );
+      }
+    }
+
     logger.info('Query execution requested', {
       user: user.email,
       database: queryRequest.database,

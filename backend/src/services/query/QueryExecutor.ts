@@ -128,6 +128,15 @@ export class QueryExecutor {
 
         if (statements.length === 1) {
           // Single statement
+          // Block non-concurrent CREATE INDEX
+          if (QueryValidator.isNonConcurrentCreateIndex(statements[0])) {
+            const duration = Date.now() - startTime;
+            return {
+              success: false,
+              error: 'CREATE INDEX without CONCURRENTLY is not allowed — it locks the table. Use CREATE INDEX CONCURRENTLY ... for zero-downtime index creation.',
+              duration_ms: duration,
+            };
+          }
           try {
             const result = await Promise.race([
               client.query(statements[0]),
@@ -262,6 +271,18 @@ export class QueryExecutor {
         } else if (upper.startsWith('COMMIT') || upper.startsWith('ROLLBACK')) {
           inTransaction = false;
         }
+      }
+
+      // Block non-concurrent CREATE INDEX per-statement (doesn't fail whole batch)
+      if (QueryValidator.isNonConcurrentCreateIndex(statement)) {
+        allSuccess = false;
+        results.push({
+          statement,
+          success: false,
+          error: 'CREATE INDEX without CONCURRENTLY is not allowed — it locks the table. Use CREATE INDEX CONCURRENTLY ... for zero-downtime index creation.',
+        });
+        if (!continueOnError) break;
+        continue;
       }
 
       try {
