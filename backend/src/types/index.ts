@@ -39,6 +39,7 @@ export interface QueryRequest {
   password?: string; // Password for sensitive operations (ALTER/DROP)
   indexCreationPassword?: string; // Special password for CREATE INDEX on protected tables
   continueOnError?: boolean; // Continue executing remaining statements if one fails
+  userRole?: Role; // Internal — set by controller from session, used by executor for per-stmt role checks
 }
 
 export interface StatementResult {

@@ -112,6 +112,11 @@ export const executeQuery = async (
       mode: queryRequest.mode,
     });
 
+    // Carry the authenticated session role into the executor so per-statement
+    // role policy (e.g. RELEASE_MANAGER) can be enforced even on the
+    // continueOnError path. Always overwrite so a client cannot smuggle their own.
+    queryRequest.userRole = user.role;
+
     // Start async execution - returns immediately with executionId
     const executionId = await queryService.startExecution(queryRequest, user.id);
 

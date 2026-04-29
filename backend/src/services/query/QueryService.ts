@@ -259,7 +259,8 @@ class QueryService {
             timeout,
             pgSchema,
             request.continueOnError || false,
-            executionId
+            executionId,
+            request.userRole
           );
           response[cloudName] = result;
           successes.push(result.success);

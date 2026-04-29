@@ -12,8 +12,8 @@ router.use(isAuthenticated);
 
 // CSV-batch runs arbitrary parameterized SQL via `queryTemplate`, so it bypasses
 // validateQueryPermissions (which inspects req.body.query). Gate it explicitly.
-// MASTER + USER are the only roles that may modify Postgres; CKH_MANAGER and
-// READER are denied, matching the /execute write-permission semantics.
+// MASTER + USER are the only roles that may modify Postgres; CKH_MANAGER,
+// RELEASE_MANAGER, and READER are denied, matching the /execute write-permission semantics.
 const requireBatchWriter = requireRoles(Role.MASTER, Role.USER);
 
 // Execute query (with role-based permissions check) - returns executionId immediately

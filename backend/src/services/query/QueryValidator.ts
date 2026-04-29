@@ -60,6 +60,197 @@ export class QueryValidator {
   }
 
   /**
+   * Strip single-quoted string literals (replaces them with empty literal '').
+   * Used to avoid keyword false-positives inside DEFAULT 'NOT NULL' style values.
+   */
+  private stripSingleQuotedStrings(text: string): string {
+    return text.replace(/'(?:''|[^'])*'/g, "''");
+  }
+
+  /**
+   * Check if an ADD COLUMN action declares NOT NULL without a DEFAULT (and no GENERATED clause).
+   * Such columns force a full table rewrite under AccessExclusiveLock — banned for RELEASE_MANAGER.
+   *
+   * Only flags the explicit NOT NULL keyword. Implicit NOT NULL via PRIMARY KEY is intentionally
+   * allowed.
+   */
+  public hasNotNullWithoutDefault(actionText: string): boolean {
+    const stripped = this.stripSingleQuotedStrings(actionText);
+    if (!/\bNOT\s+NULL\b/i.test(stripped)) return false;
+    if (/\bDEFAULT\b/i.test(stripped)) return false;
+    if (/\bGENERATED\b/i.test(stripped)) return false;
+    return true;
+  }
+
+  /**
+   * Split the actions clause of an ALTER TABLE statement on commas at paren-depth 0,
+   * ignoring commas inside parentheses (CHECK expressions, type modifiers like NUMERIC(10,2),
+   * IN-list checks, etc.) and inside single-quoted string literals.
+   */
+  public splitAlterTableActions(actionsText: string): string[] {
+    const actions: string[] = [];
+    let current = '';
+    let parenDepth = 0;
+    let inSingleQuote = false;
+    let i = 0;
+    while (i < actionsText.length) {
+      const ch = actionsText[i];
+      if (inSingleQuote) {
+        current += ch;
+        if (ch === "'" && actionsText[i + 1] === "'") {
+          current += "'";
+          i += 2;
+          continue;
+        }
+        if (ch === "'") inSingleQuote = false;
+        i++;
+        continue;
+      }
+      if (ch === "'") { inSingleQuote = true; current += ch; i++; continue; }
+      if (ch === '(') { parenDepth++; current += ch; i++; continue; }
+      if (ch === ')') { parenDepth--; current += ch; i++; continue; }
+      if (ch === ',' && parenDepth === 0) {
+        const t = current.trim();
+        if (t) actions.push(t);
+        current = '';
+        i++;
+        continue;
+      }
+      current += ch;
+      i++;
+    }
+    const t = current.trim();
+    if (t) actions.push(t);
+    return actions;
+  }
+
+  /**
+   * Extract the actions text from an ALTER TABLE statement (text after the table name).
+   * Returns null if the statement does not match the expected ALTER TABLE shape.
+   */
+  public extractAlterTableActionsText(stmt: string): string | null {
+    const clean = stmt
+      .replace(/--.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .trim()
+      .replace(/;\s*$/, '');
+    const m = clean.match(
+      /^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:"?[a-zA-Z_][a-zA-Z0-9_]*"?(?:\s*\.\s*"?[a-zA-Z_][a-zA-Z0-9_]*"?)?)\s+([\s\S]+)$/i
+    );
+    if (!m) return null;
+    return m[1].trim();
+  }
+
+  /**
+   * Decide whether a single statement is allowed for the RELEASE_MANAGER role.
+   * Allowlist:
+   *   - SELECT / WITH (CTE) / EXPLAIN / SHOW (read-only)
+   *   - Transaction control (BEGIN / COMMIT / ROLLBACK / SAVEPOINT / RELEASE / ABORT)
+   *   - CREATE [UNIQUE] INDEX CONCURRENTLY ...
+   *   - ALTER TABLE ... ADD COLUMN ... (must NOT be NOT NULL without DEFAULT/GENERATED)
+   *   - ALTER TABLE ... ADD CONSTRAINT ... (or ADD CHECK/UNIQUE/PRIMARY KEY/FOREIGN KEY/EXCLUDE)
+   * Anything else → blocked.
+   */
+  public isAllowedForReleaseManager(statement: string): { allowed: boolean; reason?: string } {
+    const clean = statement
+      .replace(/--.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .trim();
+    if (!clean) return { allowed: true };
+
+    if (this.isTransactionStatement(clean)) return { allowed: true };
+
+    if (/^\s*(SELECT|WITH|EXPLAIN|SHOW)\b/i.test(clean)) {
+      // SELECT INTO creates a new table — treat as a write
+      if (/^\s*SELECT\b[\s\S]*?\sINTO\s+(?!STRICT\b)/i.test(clean)) {
+        return {
+          allowed: false,
+          reason: 'SELECT INTO creates a new table and is not allowed for RELEASE_MANAGER',
+        };
+      }
+      return { allowed: true };
+    }
+
+    if (/^\s*CREATE\s+(UNIQUE\s+)?INDEX\b/i.test(clean)) {
+      if (/^\s*CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(clean)) {
+        return { allowed: true };
+      }
+      return {
+        allowed: false,
+        reason: 'RELEASE_MANAGER may only create indexes with CONCURRENTLY',
+      };
+    }
+
+    // CREATE TABLE (incl. TEMP/TEMPORARY/UNLOGGED, optional GLOBAL/LOCAL).
+    // Inline NOT NULL is fine on a brand-new table (no rewrite, no existing rows).
+    // CREATE TABLE AS / CREATE TABLE ... LIKE ... also covered by this branch.
+    if (/^\s*CREATE\s+(?:GLOBAL\s+|LOCAL\s+)?(?:TEMPORARY\s+|TEMP\s+|UNLOGGED\s+)?TABLE\b/i.test(clean)) {
+      return { allowed: true };
+    }
+
+    if (/^\s*ALTER\s+TABLE\b/i.test(clean)) {
+      const actionsText = this.extractAlterTableActionsText(clean);
+      if (!actionsText) {
+        return { allowed: false, reason: 'Could not parse ALTER TABLE statement' };
+      }
+      const actions = this.splitAlterTableActions(actionsText);
+      if (actions.length === 0) {
+        return { allowed: false, reason: 'ALTER TABLE has no actions' };
+      }
+      for (const action of actions) {
+        const result = this.classifyAlterTableActionForReleaseManager(action);
+        if (!result.allowed) return result;
+      }
+      return { allowed: true };
+    }
+
+    return {
+      allowed: false,
+      reason:
+        'RELEASE_MANAGER may only run SELECT / EXPLAIN, CREATE TABLE, CREATE INDEX CONCURRENTLY, ALTER TABLE ADD COLUMN/CONSTRAINT, or transaction commands',
+    };
+  }
+
+  private classifyAlterTableActionForReleaseManager(action: string): { allowed: boolean; reason?: string } {
+    const trimmed = action.trim();
+    const upper = trimmed.toUpperCase();
+
+    if (!/^ADD(\s|$)/.test(upper)) {
+      return {
+        allowed: false,
+        reason: `RELEASE_MANAGER may only ADD COLUMN or ADD CONSTRAINT in ALTER TABLE — got: ${trimmed.substring(0, 80)}`,
+      };
+    }
+
+    const rest = trimmed.replace(/^\s*ADD\s+/i, '');
+    const upperRest = rest.toUpperCase();
+
+    const constraintStarts = [
+      'CONSTRAINT ', 'CONSTRAINT\t', 'CONSTRAINT\n',
+      'CHECK ', 'CHECK(',
+      'UNIQUE ', 'UNIQUE(',
+      'PRIMARY KEY ', 'PRIMARY KEY(',
+      'FOREIGN KEY ', 'FOREIGN KEY(',
+      'EXCLUDE ', 'EXCLUDE(',
+    ];
+    if (constraintStarts.some(s => upperRest.startsWith(s))) {
+      return { allowed: true };
+    }
+
+    let colDef = rest.replace(/^\s*COLUMN\s+/i, '');
+    colDef = colDef.replace(/^\s*IF\s+NOT\s+EXISTS\s+/i, '');
+
+    if (this.hasNotNullWithoutDefault(colDef)) {
+      return {
+        allowed: false,
+        reason:
+          'ADD COLUMN with NOT NULL must include a DEFAULT — otherwise PostgreSQL rewrites the table under AccessExclusiveLock and blocks all writes',
+      };
+    }
+    return { allowed: true };
+  }
+
+  /**
    * Check if query requires password verification
    * Returns the operation type if verification is required, null otherwise
    */

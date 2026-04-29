@@ -49,14 +49,18 @@ import LinearProgress from '@mui/material/LinearProgress';
 
 type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse';
 
-// Roles that see the standard manager tabs (DB / Redis / Batch / Migrations).
-const NON_CH_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER];
+// Roles that see Redis Manager + Batch Query (general DML access).
+// RELEASE_MANAGER is intentionally excluded — schema-change scope only.
+const REDIS_BATCH_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER];
+
+// Roles that see DB Manager / Migrations (RELEASE_MANAGER joins the read+DDL crowd here).
+const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER, Role.RELEASE_MANAGER];
 
 const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode; visibleTo: Role[] }> = [
-  { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: NON_CH_ROLES },
-  { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} />, visibleTo: NON_CH_ROLES },
-  { mode: 'batch', label: 'Batch Query', icon: <TableRowsIcon sx={{ fontSize: 18 }} />, visibleTo: NON_CH_ROLES },
-  { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: NON_CH_ROLES },
+  { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
+  { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} />, visibleTo: REDIS_BATCH_ROLES },
+  { mode: 'batch', label: 'Batch Query', icon: <TableRowsIcon sx={{ fontSize: 18 }} />, visibleTo: REDIS_BATCH_ROLES },
+  { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.CKH_MANAGER] },
 ];
 

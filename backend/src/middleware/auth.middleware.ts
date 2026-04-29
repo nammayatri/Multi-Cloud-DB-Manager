@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 import { Role } from '../constants/roles';
+import QueryValidator from '../services/query/QueryValidator';
 
 /**
  * Middleware to check if user is authenticated
@@ -113,6 +114,14 @@ export const validateRedisPermissions = (req: Request, res: Response, next: Next
     });
   }
 
+  // RELEASE_MANAGER has no Redis access — schema-change role only.
+  if (user.role === Role.RELEASE_MANAGER) {
+    return res.status(403).json({
+      error: 'Forbidden',
+      message: 'RELEASE_MANAGER does not have Redis access',
+    });
+  }
+
   if (user.role === 'READER') {
     // Check for write commands
     if (upperCmd) {
@@ -191,6 +200,51 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
     return res.status(403).json({
       error: 'Forbidden',
       message: 'CKH_MANAGER does not have Postgres access',
+    });
+  }
+
+  // RELEASE_MANAGER: SELECT/EXPLAIN, ALTER TABLE ADD COLUMN/CONSTRAINT,
+  // CREATE INDEX CONCURRENTLY, transaction control. Per-statement enforcement.
+  if (user.role === Role.RELEASE_MANAGER) {
+    const continueOnError: boolean = !!req.body?.continueOnError;
+    let statements: string[];
+    try {
+      statements = QueryValidator.splitStatements(query);
+    } catch {
+      statements = [query];
+    }
+
+    const violations: Array<{ statement: string; reason: string }> = [];
+    for (const stmt of statements) {
+      const verdict = QueryValidator.isAllowedForReleaseManager(stmt);
+      if (!verdict.allowed) {
+        violations.push({ statement: stmt.trim().substring(0, 200), reason: verdict.reason || 'not allowed' });
+      }
+    }
+
+    if (violations.length === 0) {
+      return next();
+    }
+
+    // Multi-statement + continueOnError=true: let it through; the executor
+    // will reject offending statements per-statement (defense-in-depth check
+    // duplicated there).
+    if (continueOnError && statements.length > 1) {
+      return next();
+    }
+
+    logger.warn('RELEASE_MANAGER attempted disallowed query', {
+      username: user.username,
+      violations: violations.map(v => v.reason),
+    });
+
+    return res.status(403).json({
+      error: 'Forbidden',
+      message:
+        `RELEASE_MANAGER role: ${violations[0].reason}. ` +
+        `Allowed: SELECT/EXPLAIN, CREATE TABLE, CREATE INDEX CONCURRENTLY, ALTER TABLE ADD COLUMN (with DEFAULT if NOT NULL), ALTER TABLE ADD CONSTRAINT.`,
+      violations,
+      yourRole: 'RELEASE_MANAGER',
     });
   }
 

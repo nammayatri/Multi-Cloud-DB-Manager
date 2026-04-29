@@ -3,6 +3,7 @@ import DatabasePools from '../../config/database';
 import logger from '../../utils/logger';
 import QueryValidator from './QueryValidator';
 import ExecutionManager from './ExecutionManager';
+import { Role } from '../../constants/roles';
 
 // Clean field info - only keep essential properties
 interface CleanField {
@@ -59,7 +60,8 @@ export class QueryExecutor {
     timeout: number,
     pgSchema?: string,
     continueOnError: boolean = false,
-    executionId?: string
+    executionId?: string,
+    userRole?: Role
   ): Promise<{
     success: boolean;
     result?: CleanQueryResult;
@@ -137,6 +139,18 @@ export class QueryExecutor {
               duration_ms: duration,
             };
           }
+          // Defense-in-depth role check (middleware should have already rejected)
+          if (userRole === Role.RELEASE_MANAGER) {
+            const verdict = QueryValidator.isAllowedForReleaseManager(statements[0]);
+            if (!verdict.allowed) {
+              const duration = Date.now() - startTime;
+              return {
+                success: false,
+                error: `RELEASE_MANAGER: ${verdict.reason}`,
+                duration_ms: duration,
+              };
+            }
+          }
           try {
             const result = await Promise.race([
               client.query(statements[0]),
@@ -175,7 +189,8 @@ export class QueryExecutor {
             databaseName,
             startTime,
             continueOnError,
-            executionId
+            executionId,
+            userRole
           );
         }
       } finally {
@@ -232,7 +247,8 @@ export class QueryExecutor {
     databaseName: string,
     startTime: number,
     continueOnError: boolean,
-    executionId?: string
+    executionId?: string,
+    userRole?: Role
   ): Promise<{
     success: boolean;
     results: Array<{
@@ -283,6 +299,23 @@ export class QueryExecutor {
         });
         if (!continueOnError) break;
         continue;
+      }
+
+      // RELEASE_MANAGER per-statement allowlist enforcement.
+      // Middleware already accepted this batch because continueOnError=true; this layer
+      // ensures only allowed statements actually run, the rest get a per-statement error.
+      if (userRole === Role.RELEASE_MANAGER) {
+        const verdict = QueryValidator.isAllowedForReleaseManager(statement);
+        if (!verdict.allowed) {
+          allSuccess = false;
+          results.push({
+            statement,
+            success: false,
+            error: `RELEASE_MANAGER: ${verdict.reason}`,
+          });
+          if (!continueOnError) break;
+          continue;
+        }
       }
 
       try {
