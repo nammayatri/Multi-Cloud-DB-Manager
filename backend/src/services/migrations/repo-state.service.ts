@@ -65,10 +65,11 @@ class RepoStateService {
     }
 
     if (!repoUrl) {
-      this.markError(
-        `Repo not present at ${repoPath} and no repoUrl configured. ` +
-          `Set migrations.repoUrl in databases.json or pre-clone the repo.`
-      );
+      const msg =
+        `Repo not present at ${repoPath} and no migrations.repoUrl configured. ` +
+        `Set migrations.repoUrl in databases.json (or DATABASE_CONFIGS env var) or pre-clone the repo.`;
+      logger.error(msg);
+      this.markError(msg);
       return;
     }
 
