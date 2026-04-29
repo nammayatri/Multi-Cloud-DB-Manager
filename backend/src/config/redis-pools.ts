@@ -28,6 +28,15 @@ function isClusterMode(svc: RedisServiceConfig): boolean {
   return svc.clusterMode !== false;
 }
 
+// Logical DB index for standalone Redis (0–15). Cluster mode ignores this.
+function dbIndexFor(svc: RedisServiceConfig): number {
+  const i = svc.dbIndex ?? 0;
+  if (!Number.isInteger(i) || i < 0 || i > 15) {
+    throw new Error(`Invalid dbIndex ${i} for service "${svc.name}" (must be 0–15)`);
+  }
+  return i;
+}
+
 class RedisManagerPools {
   private static instance: RedisManagerPools | null = null;
 
@@ -122,6 +131,7 @@ class RedisManagerPools {
 
     let client: RedisAnyClient;
     if (cluster) {
+      // Cluster mode has only db 0 — dbIndex is ignored (warned in startup log).
       client = createCluster({
         rootNodes: [{ url: `redis://${cloudConfig.host}:${cloudConfig.port}` }],
         defaults: {
@@ -129,7 +139,9 @@ class RedisManagerPools {
         },
       });
     } else {
+      const db = dbIndexFor(svc);
       client = createClient({
+        database: db,                  // SELECT N happens automatically at connect
         socket: {
           host: cloudConfig.host,
           port: cloudConfig.port,
@@ -164,6 +176,12 @@ class RedisManagerPools {
   /** True if a service uses standalone Redis (single-node) rather than cluster. */
   public isStandalone(serviceName: string): boolean {
     return !isClusterMode(this.getService(serviceName));
+  }
+
+  /** Logical DB index (0–15) for a standalone service. 0 for cluster services. */
+  public getDbIndex(serviceName: string): number {
+    const svc = this.getService(serviceName);
+    return isClusterMode(svc) ? 0 : dbIndexFor(svc);
   }
 
   /**

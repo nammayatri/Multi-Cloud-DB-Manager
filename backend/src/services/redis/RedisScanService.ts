@@ -140,6 +140,8 @@ async function scanCloud(
 ): Promise<void> {
   const pools = RedisManagerPools.getInstance();
   const progress = response.clouds[cloudName];
+  // For standalone services this can be 1, 3, 4 etc. Cluster services always 0.
+  const dbIndex = pools.getDbIndex(serviceName);
 
   try {
     const masters = await pools.getClusterMasters(serviceName, cloudName);
@@ -158,6 +160,7 @@ async function scanCloud(
 
       try {
         const nodeClient = createClient({
+          database: dbIndex,
           socket: {
             host: master.host,
             port: master.port,
