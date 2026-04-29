@@ -62,17 +62,20 @@ class RedisManagerService {
    */
   async executeCommand(request: RedisCommandRequest, userRole: string): Promise<RedisCommandResponse> {
     const pools = RedisManagerPools.getInstance();
-    const allClouds = pools.getAllCloudNames();
     const { command, args, cloud } = request;
+    const serviceName = request.service || 'main'; // back-compat: default to 'main'
     const upperCommand = command.toUpperCase();
 
-    // Determine target clouds
+    // Validate service exists; throws on miss with available list
+    const allClouds = pools.getCloudsForService(serviceName);
+
     const targetClouds = cloud === 'both' ? allClouds : [cloud];
 
-    // Validate clouds
     for (const c of targetClouds) {
       if (!allClouds.includes(c)) {
-        throw new Error(`Invalid cloud: ${c}. Available: ${allClouds.join(', ')}`);
+        throw new Error(
+          `Invalid cloud: ${c} for service ${serviceName}. Available: ${allClouds.join(', ')}`
+        );
       }
     }
 
@@ -122,7 +125,7 @@ class RedisManagerService {
 
       const results = await Promise.all(
         targetClouds.map(async (cloudName) => {
-          const result = await executeRawCommand(cloudName, rawCmd);
+          const result = await executeRawCommand(serviceName, cloudName, rawCmd);
           return { cloudName, result };
         })
       );
@@ -136,6 +139,7 @@ class RedisManagerService {
 
       logger.info('Redis RAW command executed', {
         id,
+        service: serviceName,
         rawCommand: rawCmd.substring(0, 100),
         clouds: targetClouds,
         success: response.success,
@@ -179,7 +183,7 @@ class RedisManagerService {
     // Execute on all target clouds concurrently
     const results = await Promise.all(
       targetClouds.map(async (cloudName) => {
-        const result = await executeCommand(cloudName, command, args);
+        const result = await executeCommand(serviceName, cloudName, command, args);
         return { cloudName, result };
       })
     );
@@ -195,6 +199,7 @@ class RedisManagerService {
 
     logger.info('Redis command executed', {
       id,
+      service: serviceName,
       command: upperCommand,
       clouds: targetClouds,
       success: response.success,
@@ -208,6 +213,7 @@ class RedisManagerService {
    */
   async startScan(request: RedisScanRequest, userRole: string): Promise<{ executionId: string }> {
     const { pattern, cloud, action, scanCount } = request;
+    const serviceName = request.service || 'main';
 
     // Input sanitization
     const trimmedPattern = pattern.trim();
@@ -218,30 +224,30 @@ class RedisManagerService {
       throw new Error('Pattern too long (max 500 chars)');
     }
 
-    // Block wildcard-only SCAN patterns for ALL users
     if (BLOCKED_KEY_PATTERNS.some((re) => re.test(trimmedPattern))) {
       throw new Error('Wildcard-only patterns (e.g., "*") are blocked. Use a more specific pattern like "prefix:*".');
     }
 
-    // Check delete permissions
     if (action === 'delete' && (userRole === 'READER' || userRole === 'CKH_MANAGER')) {
       throw new Error(`${userRole} role cannot delete keys`);
     }
 
     const executionId = uuidv4();
 
-    // Validate clouds
+    // Validate service + cloud
     const pools = RedisManagerPools.getInstance();
-    const allClouds = pools.getAllCloudNames();
+    const allClouds = pools.getCloudsForService(serviceName);
     if (cloud !== 'both' && !allClouds.includes(cloud)) {
-      throw new Error(`Invalid cloud: ${cloud}. Available: ${allClouds.join(', ')}`);
+      throw new Error(
+        `Invalid cloud: ${cloud} for service ${serviceName}. Available: ${allClouds.join(', ')}`
+      );
     }
 
-    // Start async scan
-    await startScan(executionId, pattern, cloud, action, scanCount);
+    await startScan(executionId, serviceName, pattern, cloud, action, scanCount);
 
     logger.info('Redis SCAN started', {
       executionId,
+      service: serviceName,
       pattern,
       cloud,
       action,

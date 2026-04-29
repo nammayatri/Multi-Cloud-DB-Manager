@@ -114,6 +114,7 @@ export interface RedisCommandRequest {
   command: string;
   args: Record<string, any>;
   cloud: string;
+  service?: string; // defaults to 'main' if omitted
 }
 
 export interface RedisScanRequest {
@@ -121,6 +122,19 @@ export interface RedisScanRequest {
   cloud: string;
   action: 'preview' | 'delete';
   scanCount?: number;
+  service?: string;
+}
+
+// Returned by GET /api/redis/configuration — only identifiers, no hosts.
+export interface RedisServicePublic {
+  name: string;
+  label: string;
+  primary: { cloudName: string };
+  secondary: Array<{ cloudName: string }>;
+}
+
+export interface RedisConfiguration {
+  services: RedisServicePublic[];
 }
 
 export interface RedisCloudResult {

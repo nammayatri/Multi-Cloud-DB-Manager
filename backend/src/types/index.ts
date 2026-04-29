@@ -159,7 +159,22 @@ export interface RedisCloudConfig {
   port: number;
 }
 
+// One Redis "service" (e.g. main app cache, location tracking) — analog to a
+// database in databases.json. Each service has its own primary/secondary topology.
+export interface RedisServiceConfig {
+  name: string;            // 'main', 'location' — stable identifier used in API + URL
+  label: string;           // UI display: 'Main App Cache'
+  primary: RedisCloudConfig;
+  secondary: RedisCloudConfig[];
+}
+
 export interface RedisConfigJson {
+  services: RedisServiceConfig[];
+}
+
+// Legacy shape: { primary, secondary } at the top level. Auto-wrapped into the
+// new shape by the loader for backward compatibility with existing K8s configs.
+export interface LegacyRedisConfigJson {
   primary: RedisCloudConfig;
   secondary: RedisCloudConfig[];
 }
@@ -169,6 +184,7 @@ export interface RedisCommandRequest {
   command: string;
   args: Record<string, any>;
   cloud: string;
+  service?: string; // Defaults to 'main' if omitted (backward compat for old clients)
 }
 
 export interface RedisCloudResult {
@@ -191,6 +207,7 @@ export interface RedisScanRequest {
   cloud: string;
   action: 'preview' | 'delete';
   scanCount?: number;
+  service?: string; // Defaults to 'main' if omitted
 }
 
 export interface RedisScanProgress {

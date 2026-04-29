@@ -24,9 +24,15 @@ import SearchIcon from '@mui/icons-material/Search';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import StopIcon from '@mui/icons-material/Stop';
 import { useAppStore } from '../../store/appStore';
-import { redisAPI, schemaAPI } from '../../services/api';
+import { redisAPI } from '../../services/api';
 import toast from 'react-hot-toast';
-import type { RedisScanResponse, RedisScanProgress, DatabaseConfiguration } from '../../types';
+import type { RedisScanResponse, RedisScanProgress } from '../../types';
+
+interface ServiceOption {
+  name: string;
+  label: string;
+  clouds: string[];
+}
 
 const POLL_INTERVAL = 1000;
 
@@ -87,10 +93,12 @@ const phaseLabel = (p: RedisScanProgress, action: 'preview' | 'delete'): string 
 
 const RedisCacheClearer = () => {
   const user = useAppStore(s => s.user);
+  const selectedRedisService = useAppStore(s => s.selectedRedisService);
+  const setSelectedRedisService = useAppStore(s => s.setSelectedRedisService);
   const [pattern, setPattern] = useState('');
   const [scanCount, setScanCount] = useState('100000'); // default 100k, max 200k
   const [selectedCloud, setSelectedCloud] = useState('both');
-  const [cloudNames, setCloudNames] = useState<string[]>([]);
+  const [services, setServices] = useState<ServiceOption[]>([]);
   const [scanResult, setScanResult] = useState<RedisScanResponse | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(null);
@@ -98,21 +106,37 @@ const RedisCacheClearer = () => {
 
   const isReader = user?.role === 'READER';
 
-  // Fetch cloud names
+  // Clouds for currently-selected Redis service
+  const cloudNames = (services.find(s => s.name === selectedRedisService)?.clouds) || [];
+
+  // Fetch services + clouds from the dedicated Redis configuration endpoint
   useEffect(() => {
     const fetchConfig = async () => {
       try {
-        const config: DatabaseConfiguration = await schemaAPI.getConfiguration();
-        setCloudNames([
-          config.primary.cloudName,
-          ...config.secondary.map((s) => s.cloudName),
-        ]);
+        const cfg = await redisAPI.getConfiguration();
+        const opts: ServiceOption[] = (cfg.services || []).map(s => ({
+          name: s.name,
+          label: s.label,
+          clouds: [s.primary.cloudName, ...s.secondary.map(c => c.cloudName)],
+        }));
+        setServices(opts);
+        if (opts.length > 0 && !opts.find(o => o.name === selectedRedisService)) {
+          setSelectedRedisService(opts[0].name);
+        }
       } catch {
-        setCloudNames(['aws', 'gcp']);
+        setServices([{ name: 'main', label: 'Main', clouds: ['aws', 'gcp'] }]);
       }
     };
     fetchConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Snap selectedCloud back to 'both' when service changes and current cloud not in list
+  useEffect(() => {
+    if (selectedCloud !== 'both' && cloudNames.length > 0 && !cloudNames.includes(selectedCloud)) {
+      setSelectedCloud('both');
+    }
+  }, [cloudNames, selectedCloud]);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -171,6 +195,7 @@ const RedisCacheClearer = () => {
         cloud: selectedCloud,
         action,
         scanCount: Math.min(Math.max(count, 1), 200000),
+        service: selectedRedisService,
       });
 
       setCurrentExecutionId(executionId);
@@ -270,6 +295,20 @@ const RedisCacheClearer = () => {
             inputProps={{ min: 1, max: 200000 }}
             helperText="Max 200k"
           />
+
+          <FormControl sx={{ minWidth: 180 }} size="small">
+            <InputLabel>Service</InputLabel>
+            <Select
+              value={selectedRedisService}
+              label="Service"
+              onChange={(e) => setSelectedRedisService(e.target.value)}
+              disabled={isScanning || services.length <= 1}
+            >
+              {services.map((s) => (
+                <MenuItem key={s.name} value={s.name}>{s.label}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
 
           <FormControl sx={{ minWidth: 180 }} size="small">
             <InputLabel>Cloud</InputLabel>

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { RedisConfigJson } from '../types';
+import { RedisConfigJson, LegacyRedisConfigJson } from '../types';
 import logger from '../utils/logger';
 
 /**
@@ -46,13 +46,13 @@ function loadFromBase64Env(): RedisConfigJson | null {
 
     const jsonString = Buffer.from(base64Config, 'base64').toString('utf-8');
     const substituted = substituteEnvVars(jsonString);
-    const config: RedisConfigJson = JSON.parse(substituted);
+    const parsed = JSON.parse(substituted);
+    const config = normalizeConfig(parsed);
 
     validateConfig(config);
 
     logger.info('Redis configuration loaded from REDIS_CONFIGS env variable', {
-      primaryCloud: config.primary.cloudName,
-      secondaryClouds: config.secondary.length,
+      services: config.services.map(s => `${s.name}(${[s.primary.cloudName, ...s.secondary.map(x => x.cloudName)].join(',')})`),
     });
 
     return config;
@@ -69,14 +69,14 @@ function loadFromJsonFile(filePath: string): RedisConfigJson | null {
   try {
     const configContent = fs.readFileSync(filePath, 'utf-8');
     const substituted = substituteEnvVars(configContent);
-    const config: RedisConfigJson = JSON.parse(substituted);
+    const parsed = JSON.parse(substituted);
+    const config = normalizeConfig(parsed);
 
     validateConfig(config);
 
     logger.info('Redis configuration loaded successfully', {
       source: filePath,
-      primaryCloud: config.primary.cloudName,
-      secondaryClouds: config.secondary.length,
+      services: config.services.map(s => `${s.name}(${[s.primary.cloudName, ...s.secondary.map(x => x.cloudName)].join(',')})`),
     });
 
     return config;
@@ -84,6 +84,31 @@ function loadFromJsonFile(filePath: string): RedisConfigJson | null {
     logger.error('Failed to load Redis configuration from JSON:', error);
     throw new Error(`Invalid Redis configuration: ${error}`);
   }
+}
+
+/**
+ * Accept the new {services: [...]} shape OR auto-wrap the legacy {primary, secondary}
+ * shape into a single 'main' service for backward compatibility with old configs.
+ */
+function normalizeConfig(parsed: any): RedisConfigJson {
+  if (parsed && Array.isArray(parsed.services)) {
+    return parsed as RedisConfigJson;
+  }
+  if (parsed && parsed.primary && Array.isArray(parsed.secondary)) {
+    logger.info('Redis config uses legacy shape — auto-wrapping into single "main" service');
+    const legacy = parsed as LegacyRedisConfigJson;
+    return {
+      services: [
+        {
+          name: 'main',
+          label: 'Main',
+          primary: legacy.primary,
+          secondary: legacy.secondary,
+        },
+      ],
+    };
+  }
+  throw new Error('Redis config must have either {services: [...]} or {primary, secondary} top-level shape');
 }
 
 /**
@@ -122,17 +147,38 @@ function substituteEnvVars(content: string): string {
  * Validate the Redis configuration structure
  */
 function validateConfig(config: RedisConfigJson): void {
-  if (!config.primary || !config.primary.cloudName || !config.primary.host || !config.primary.port) {
-    throw new Error('Invalid Redis configuration: missing primary cloud configuration (cloudName, host, port required)');
+  if (!Array.isArray(config.services) || config.services.length === 0) {
+    throw new Error('Invalid Redis configuration: services array is required and must not be empty');
   }
 
-  if (!Array.isArray(config.secondary)) {
-    throw new Error('Invalid Redis configuration: secondary must be an array');
-  }
+  const seenServiceNames = new Set<string>();
+  for (const svc of config.services) {
+    if (!svc.name || !/^[a-z][a-z0-9_-]*$/i.test(svc.name)) {
+      throw new Error(`Invalid Redis service name: ${svc.name} (must be alphanumeric, _, -, starting with letter)`);
+    }
+    if (seenServiceNames.has(svc.name)) {
+      throw new Error(`Duplicate Redis service name: ${svc.name}`);
+    }
+    seenServiceNames.add(svc.name);
 
-  for (const sec of config.secondary) {
-    if (!sec.cloudName || !sec.host || !sec.port) {
-      throw new Error(`Invalid Redis configuration: missing required fields for secondary cloud ${sec.cloudName || 'unknown'}`);
+    if (!svc.label) {
+      throw new Error(`Redis service "${svc.name}" missing label`);
+    }
+    if (!svc.primary?.cloudName || !svc.primary?.host || !svc.primary?.port) {
+      throw new Error(`Redis service "${svc.name}" has invalid primary (cloudName, host, port required)`);
+    }
+    if (!Array.isArray(svc.secondary)) {
+      throw new Error(`Redis service "${svc.name}" secondary must be an array`);
+    }
+    const seenClouds = new Set<string>([svc.primary.cloudName]);
+    for (const sec of svc.secondary) {
+      if (!sec.cloudName || !sec.host || !sec.port) {
+        throw new Error(`Redis service "${svc.name}" has invalid secondary entry`);
+      }
+      if (seenClouds.has(sec.cloudName)) {
+        throw new Error(`Redis service "${svc.name}" has duplicate cloud "${sec.cloudName}"`);
+      }
+      seenClouds.add(sec.cloudName);
     }
   }
 

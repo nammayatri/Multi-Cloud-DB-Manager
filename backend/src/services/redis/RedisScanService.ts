@@ -52,6 +52,7 @@ export async function cancelScan(executionId: string): Promise<boolean> {
 
 export async function startScan(
   executionId: string,
+  serviceName: string,
   pattern: string,
   cloud: string,
   action: 'preview' | 'delete',
@@ -59,14 +60,12 @@ export async function startScan(
 ): Promise<void> {
   const pools = RedisManagerPools.getInstance();
 
-  // Determine which clouds to scan
-  const allClouds = pools.getAllCloudNames();
+  const allClouds = pools.getCloudsForService(serviceName);
   const cloudsToScan = cloud === 'both' ? allClouds : [cloud];
 
-  // Validate clouds
   for (const c of cloudsToScan) {
     if (!allClouds.includes(c)) {
-      throw new Error(`Invalid cloud: ${c}`);
+      throw new Error(`Invalid cloud: ${c} for service ${serviceName}`);
     }
   }
 
@@ -93,14 +92,14 @@ export async function startScan(
 
   await saveProgress(executionId, response);
 
-  // Process each cloud (don't await - fire and forget for async operation)
-  scanAllClouds(executionId, cloudsToScan, pattern, action, scanCount, response).catch((err) => {
+  scanAllClouds(executionId, serviceName, cloudsToScan, pattern, action, scanCount, response).catch((err) => {
     logger.error('Scan operation failed:', err);
   });
 }
 
 async function scanAllClouds(
   executionId: string,
+  serviceName: string,
   clouds: string[],
   pattern: string,
   action: 'preview' | 'delete',
@@ -108,10 +107,9 @@ async function scanAllClouds(
   response: RedisScanResponse
 ): Promise<void> {
   try {
-    // Process all clouds concurrently
     await Promise.all(
       clouds.map((cloudName) =>
-        scanCloud(executionId, cloudName, pattern, action, scanCount, response)
+        scanCloud(executionId, serviceName, cloudName, pattern, action, scanCount, response)
       )
     );
 
@@ -133,6 +131,7 @@ async function scanAllClouds(
 
 async function scanCloud(
   executionId: string,
+  serviceName: string,
   cloudName: string,
   pattern: string,
   action: 'preview' | 'delete',
@@ -143,8 +142,7 @@ async function scanCloud(
   const progress = response.clouds[cloudName];
 
   try {
-    // Get cluster master nodes
-    const masters = await pools.getClusterMasters(cloudName);
+    const masters = await pools.getClusterMasters(serviceName, cloudName);
     progress.nodesTotal = masters.length;
     await saveProgress(executionId, response);
 
@@ -231,7 +229,7 @@ async function scanCloud(
       progress.status = 'deleting';
       await saveProgress(executionId, response);
 
-      const clusterClient = await pools.getClient(cloudName);
+      const clusterClient = await pools.getClient(serviceName, cloudName);
 
       // Batch delete using UNLINK (async, non-blocking)
       for (let i = 0; i < allKeys.length; i += DELETE_BATCH_SIZE) {

@@ -67,6 +67,10 @@ interface AppState {
   selectedMode: string; // 'both' or cloud name
   setSelectedMode: (mode: string) => void;
 
+  // Redis service selection (mirrors selectedDatabase for the Redis tab)
+  selectedRedisService: string;
+  setSelectedRedisService: (service: string) => void;
+
   // Execution state
   isExecuting: boolean;
   setIsExecuting: (isExecuting: boolean) => void;
@@ -136,6 +140,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectedMode: 'both',
   setSelectedMode: (mode) => set({ selectedMode: mode }),
+
+  selectedRedisService: 'main',
+  setSelectedRedisService: (service) => set({ selectedRedisService: service }),
 
   // Execution
   isExecuting: false,

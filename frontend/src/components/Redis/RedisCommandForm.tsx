@@ -16,10 +16,16 @@ import {
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { useAppStore } from '../../store/appStore';
-import { redisAPI, schemaAPI } from '../../services/api';
+import { redisAPI } from '../../services/api';
 import { ALL_STRUCTURED_COMMANDS, RAW_COMMAND, getCommandDefinition } from './RedisCommandDefinitions';
 import toast from 'react-hot-toast';
-import type { RedisCommandResponse, RedisCommandDefinition, DatabaseConfiguration } from '../../types';
+import type { RedisCommandResponse, RedisCommandDefinition } from '../../types';
+
+interface ServiceOption {
+  name: string;
+  label: string;
+  clouds: string[];
+}
 
 interface RedisCommandFormProps {
   onResult: (result: RedisCommandResponse) => void;
@@ -30,12 +36,19 @@ const BLOCKED_KEY_RE = /^(\*{1,2}|\?)$/;
 
 const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
   const user = useAppStore(s => s.user);
+  const selectedRedisService = useAppStore(s => s.selectedRedisService);
+  const setSelectedRedisService = useAppStore(s => s.setSelectedRedisService);
   const [selectedCommand, setSelectedCommand] = useState('GET');
   const [selectedCloud, setSelectedCloud] = useState('both');
   const [args, setArgs] = useState<Record<string, string>>({});
   const [isExecuting, setIsExecuting] = useState(false);
-  const [cloudNames, setCloudNames] = useState<string[]>([]);
+  const [services, setServices] = useState<ServiceOption[]>([]);
   const [loadingConfig, setLoadingConfig] = useState(true);
+
+  // Clouds available for the currently-selected Redis service.
+  const cloudNames = useMemo(() => {
+    return services.find(s => s.name === selectedRedisService)?.clouds || [];
+  }, [services, selectedRedisService]);
 
   const isReader = user?.role === 'READER';
   const isMaster = user?.role === 'MASTER';
@@ -57,25 +70,39 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
     return availableCommands.find((c) => c.command === selectedCommand) || availableCommands[0];
   }, [selectedCommand, availableCommands]);
 
-  // Fetch cloud names from configuration
+  // Fetch Redis services + cloud topology from the dedicated endpoint
   useEffect(() => {
     const fetchConfig = async () => {
       try {
-        const config: DatabaseConfiguration = await schemaAPI.getConfiguration();
-        const clouds = [
-          config.primary.cloudName,
-          ...config.secondary.map((s) => s.cloudName),
-        ];
-        setCloudNames(clouds);
+        const cfg = await redisAPI.getConfiguration();
+        const opts: ServiceOption[] = (cfg.services || []).map(s => ({
+          name: s.name,
+          label: s.label,
+          clouds: [s.primary.cloudName, ...s.secondary.map(c => c.cloudName)],
+        }));
+        setServices(opts);
+        // If the persisted service no longer exists, fall back to the first one
+        if (opts.length > 0 && !opts.find(o => o.name === selectedRedisService)) {
+          setSelectedRedisService(opts[0].name);
+        }
       } catch (error) {
-        console.error('Failed to load configuration:', error);
-        setCloudNames(['aws', 'gcp']);
+        console.error('Failed to load Redis configuration:', error);
+        setServices([{ name: 'main', label: 'Main', clouds: ['aws', 'gcp'] }]);
       } finally {
         setLoadingConfig(false);
       }
     };
     fetchConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Snap selectedCloud back to 'both' if the user switches services and the
+  // previously chosen cloud isn't in the new service's cloud list.
+  useEffect(() => {
+    if (selectedCloud !== 'both' && cloudNames.length > 0 && !cloudNames.includes(selectedCloud)) {
+      setSelectedCloud('both');
+    }
+  }, [cloudNames, selectedCloud]);
 
   // Reset args when command changes
   useEffect(() => {
@@ -115,6 +142,7 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
         command: selectedCommand,
         args,
         cloud: selectedCloud,
+        service: selectedRedisService,
       });
       onResult(result);
       toast.success('Command executed');
@@ -174,6 +202,23 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
             sx={{ minWidth: 280 }}
             disabled={isExecuting}
           />
+
+          {/* Service Selector — which Redis cluster (main, location, ...) */}
+          <FormControl sx={{ minWidth: 180 }} size="small">
+            <InputLabel>Service</InputLabel>
+            <Select
+              value={selectedRedisService}
+              label="Service"
+              onChange={(e) => setSelectedRedisService(e.target.value)}
+              disabled={isExecuting || loadingConfig || services.length <= 1}
+            >
+              {services.map((s) => (
+                <MenuItem key={s.name} value={s.name}>
+                  {s.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
 
           {/* Cloud Selector */}
           <FormControl sx={{ minWidth: 180 }} size="small">

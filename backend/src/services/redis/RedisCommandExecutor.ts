@@ -358,23 +358,21 @@ export function isWriteCommand(command: string): boolean {
  * Parses the input into command + arguments and sends via sendCommand.
  */
 export async function executeRawCommand(
+  serviceName: string,
   cloudName: string,
   rawCommand: string
 ): Promise<RedisCloudResult> {
   const startTime = Date.now();
 
   try {
-    // Parse raw command into tokens (respecting quoted strings)
     const tokens = parseCommandTokens(rawCommand);
     if (tokens.length === 0) {
       return { success: false, error: 'Empty command', duration_ms: 0 };
     }
 
     const pools = RedisManagerPools.getInstance();
-    const client = await pools.getClient(cloudName);
+    const client = await pools.getClient(serviceName, cloudName);
 
-    // Redis cluster sendCommand signature: (firstKey, isReadonly, args)
-    // firstKey is used for slot routing, tokens[1] is typically the key
     const firstKey = tokens.length > 1 ? tokens[1] : undefined;
     const cmd = tokens[0].toUpperCase();
     const isReadonly = !WRITE_COMMAND_SET.has(cmd);
@@ -384,6 +382,7 @@ export async function executeRawCommand(
     const duration_ms = Date.now() - startTime;
 
     logger.info('Redis raw command executed', {
+      service: serviceName,
       cloud: cloudName,
       command: cmd,
       duration_ms,
@@ -394,6 +393,7 @@ export async function executeRawCommand(
     const duration_ms = Date.now() - startTime;
 
     logger.error('Redis raw command failed', {
+      service: serviceName,
       cloud: cloudName,
       rawCommand: rawCommand.substring(0, 200),
       error: error.message,
@@ -448,6 +448,7 @@ function parseCommandTokens(input: string): string[] {
 }
 
 export async function executeCommand(
+  serviceName: string,
   cloudName: string,
   command: string,
   args: Record<string, any>
@@ -467,12 +468,13 @@ export async function executeCommand(
 
   try {
     const pools = RedisManagerPools.getInstance();
-    const client = await pools.getClient(cloudName);
+    const client = await pools.getClient(serviceName, cloudName);
     const result = await definition.execute(client, args);
 
     const duration_ms = Date.now() - startTime;
 
     logger.info(`Redis command executed`, {
+      service: serviceName,
       cloud: cloudName,
       command: upperCommand,
       key: args.key,
@@ -488,6 +490,7 @@ export async function executeCommand(
     const duration_ms = Date.now() - startTime;
 
     logger.error(`Redis command failed`, {
+      service: serviceName,
       cloud: cloudName,
       command: upperCommand,
       key: args.key,

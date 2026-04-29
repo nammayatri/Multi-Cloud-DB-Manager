@@ -306,6 +306,11 @@ export const redisAPI = {
     const response = await api.get('/api/redis/history', { params: filter });
     return response.data.data;
   },
+
+  getConfiguration: async (): Promise<{ services: Array<{ name: string; label: string; primary: { cloudName: string }; secondary: Array<{ cloudName: string }> }> }> => {
+    const response = await api.get('/api/redis/configuration');
+    return response.data;
+  },
 };
 
 // ClickHouse API

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { executeRedisCommand, scanKeys, getScanStatus, cancelScan, getRedisHistory } from '../controllers/redis.controller';
+import { executeRedisCommand, scanKeys, getScanStatus, cancelScan, getRedisHistory, getRedisConfiguration } from '../controllers/redis.controller';
 import { isAuthenticated, validateRedisPermissions, requireRoles } from '../middleware/auth.middleware';
 import { validate, redisCommandSchema, redisScanSchema } from '../middleware/validation.middleware';
 import { Role } from '../constants/roles';
@@ -26,5 +26,9 @@ router.get('/scan/:id', requireRedisAccess, getScanStatus);
 
 // Get Redis operation history (write commands + SCAN deletes)
 router.get('/history', requireRedisAccess, getRedisHistory);
+
+// Get Redis services + clouds for the UI to render selectors.
+// All Redis-access roles can read — same gating as listing/scanning.
+router.get('/configuration', requireRedisAccess, getRedisConfiguration);
 
 export default router;

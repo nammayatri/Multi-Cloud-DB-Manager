@@ -197,7 +197,10 @@ const startServer = async () => {
     try {
       const redisPools = RedisManagerPools.getInstance();
       if (redisPools.isConfigured()) {
-        console.log('[STARTUP] Redis Manager configured with clouds:', redisPools.getAllCloudNames().join(', '));
+        const summary = redisPools.getServices()
+          .map(s => `${s.name}[${[s.primary.cloudName, ...s.secondary.map(c => c.cloudName)].join(',')}]`)
+          .join(' ');
+        console.log('[STARTUP] Redis Manager configured with services:', summary);
       } else {
         console.log('[STARTUP] Redis Manager not configured (no redis.json found)');
       }

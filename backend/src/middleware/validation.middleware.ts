@@ -42,6 +42,7 @@ export const redisCommandSchema = z.object({
   command: z.string().min(1, 'Command is required'),
   args: z.record(z.any()).default({}),
   cloud: z.string().min(1, 'Cloud is required'),
+  service: z.string().min(1).optional(), // Defaults to 'main' if omitted
 });
 
 // Redis SCAN schema
@@ -50,6 +51,7 @@ export const redisScanSchema = z.object({
   cloud: z.string().min(1, 'Cloud is required'),
   action: z.enum(['preview', 'delete']),
   scanCount: z.number().int().positive().max(200000).optional(),
+  service: z.string().min(1).optional(),
 });
 
 // CSV batch query execution schema

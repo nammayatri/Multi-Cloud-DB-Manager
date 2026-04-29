@@ -28,6 +28,7 @@ export const executeRedisCommand = async (
       user: user.email,
       command: request.command,
       cloud: request.cloud,
+      service: request.service || 'main',
     });
 
     const result = await redisManagerService.executeCommand(request, user.role || 'READER');
@@ -86,6 +87,7 @@ export const scanKeys = async (
       pattern: request.pattern,
       cloud: request.cloud,
       action: request.action,
+      service: request.service || 'main',
     });
 
     const { executionId } = await redisManagerService.startScan(request, user.role || 'READER');
@@ -174,6 +176,33 @@ export const getScanStatus = async (
     }
 
     res.json(status);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Return the configured Redis services + clouds shape for the UI to populate
+ * its Service / Cloud selectors. Hosts/ports are intentionally NOT exposed —
+ * frontend only needs identifiers.
+ */
+export const getRedisConfiguration = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const pools = RedisManagerPools.getInstance();
+    if (!pools.isConfigured()) {
+      return res.json({ services: [] });
+    }
+    const services = pools.getServices().map(s => ({
+      name: s.name,
+      label: s.label,
+      primary: { cloudName: s.primary.cloudName },
+      secondary: s.secondary.map(c => ({ cloudName: c.cloudName })),
+    }));
+    res.json({ services });
   } catch (error) {
     next(error);
   }
