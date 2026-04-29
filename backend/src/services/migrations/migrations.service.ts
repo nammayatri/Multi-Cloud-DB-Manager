@@ -368,6 +368,7 @@ export function getConfig(): {
   environments: Record<string, { label: string; databases: { name: string; label: string; database: string }[] }>;
   pathMapping: Array<{ path: string; database: string; defaultSchema: string; label: string }>;
   repoPath: string;
+  repoUrl?: string;
 } {
   const { migrations: config, environments } = loadConfig();
 
@@ -383,11 +384,13 @@ export function getConfig(): {
     };
   }
 
-  // repoPath is kept in the return type for internal use (controller needs it)
-  // but the controller should NOT expose it in API responses
+  // repoPath/repoUrl are kept in the return type for internal use (controller +
+  // background clone task) but the controller should NOT expose them in
+  // user-facing API responses.
   return {
     environments: safeEnvs,
     pathMapping: config.pathMapping,
     repoPath: config.repoPath,
+    repoUrl: config.repoUrl,
   };
 }

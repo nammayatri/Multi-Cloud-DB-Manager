@@ -156,12 +156,40 @@ const MigrationsContent = () => {
   const [isInit, setIsInit] = useState(false);
   const [initStatus, setInitStatus] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // null = haven't checked yet; otherwise structured status
+  const [repoStatus, setRepoStatus] = useState<import('../services/migrationsApi').RepoStatus | null>(null);
   const initRef = useRef(false);
 
   useEffect(() => {
     if (initRef.current) return;
     initRef.current = true;
+
+    const waitForRepo = async (): Promise<void> => {
+      const { migrationsAPI } = await import('../services/migrationsApi');
+      // Poll repo-status every 2s until READY (or ERROR — we surface that to the user)
+      for (;;) {
+        try {
+          const status = await migrationsAPI.getRepoStatus();
+          setRepoStatus(status);
+          if (status.state === 'READY' || status.state === 'ERROR') return;
+        } catch {
+          // transient — keep polling
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    };
+
     const init = async () => {
+      setInitStatus('Checking repository status...');
+      await waitForRepo();
+
+      // If clone errored, leave the user on the status screen — don't force a load that will 503.
+      const finalStatus = await (await import('../services/migrationsApi')).migrationsAPI.getRepoStatus();
+      if (finalStatus.state !== 'READY') {
+        setIsInit(true); // render error state via repoStatus
+        return;
+      }
+
       const now = Date.now();
       const needsSync = now - lastSyncTime > SYNC_COOLDOWN_MS;
 
@@ -175,7 +203,6 @@ const MigrationsContent = () => {
         await refreshRepo();
         lastSyncTime = Date.now();
       } else {
-        // Config already loaded, refs may be cached in store
         if (!useMigrationsStore.getState().refs) {
           setInitStatus('Loading refs...');
           await loadRefs();
@@ -197,11 +224,40 @@ const MigrationsContent = () => {
   };
 
   if (!isInit) {
+    // While the backend is cloning the NammaYatri repo on this pod, surface a
+    // clear "first-pod-startup" message instead of a blank spinner.
+    const cloning = repoStatus?.state === 'CLONING';
     return (
       <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 8, gap: 2 }}>
         <CircularProgress size={36} />
-        <Typography variant="body1" color="text.secondary">{initStatus}</Typography>
+        <Typography variant="body1" color="text.secondary">
+          {cloning ? 'Cloning NammaYatri repo on backend pod…' : initStatus}
+        </Typography>
+        {cloning && (
+          <Typography variant="caption" color="text.secondary" sx={{ maxWidth: 420, textAlign: 'center' }}>
+            This happens once per pod startup (1–3 min). The rest of the app is fully usable while this runs — only the Migrations tab waits on the clone.
+          </Typography>
+        )}
         <LinearProgress sx={{ width: 300 }} />
+      </Box>
+    );
+  }
+
+  // Clone errored — show actionable message + retry button.
+  if (repoStatus?.state === 'ERROR') {
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 8, gap: 2, px: 4 }}>
+        <Typography variant="h6" color="error">Repository clone failed</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 600, textAlign: 'center' }}>
+          {repoStatus.error || 'Unknown error'}
+        </Typography>
+        <Button variant="contained" startIcon={<RefreshIcon />} onClick={async () => {
+          setIsInit(false);
+          setRepoStatus(null);
+          initRef.current = false;
+          // re-trigger the init useEffect by toggling — easiest is reload.
+          window.location.reload();
+        }}>Retry</Button>
       </Box>
     );
   }

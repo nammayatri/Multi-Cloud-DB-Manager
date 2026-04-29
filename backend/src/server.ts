@@ -234,6 +234,23 @@ const startServer = async () => {
       console.log('[STARTUP] Schema initialization skipped (RUN_MIGRATIONS not set)');
     }
 
+    // Kick off the NammaYatri repo clone in the background — non-blocking.
+    // Replaces the K8s init container so the HTTP server starts immediately;
+    // Migration endpoints gate on the clone state until it's READY.
+    try {
+      const { getConfig: getMigrationsConfig } = await import('./services/migrations/migrations.service');
+      const { default: repoState } = await import('./services/migrations/repo-state.service');
+      const cfg = getMigrationsConfig();
+      console.log(`[STARTUP] Triggering NammaYatri repo clone in background → ${cfg.repoPath}`);
+      repoState.ensureCloned(cfg.repoPath, cfg.repoUrl).catch((err) => {
+        console.error('[STARTUP] Background clone failed:', err.message);
+      });
+    } catch (err: any) {
+      console.warn('[STARTUP] Skipping background clone (migrations config unavailable):', err.message);
+      // Pre-existing rebrand, swallow:
+      void err;
+    }
+
     // Start listening
     console.log('[STARTUP] Starting HTTP server...');
     app.listen(PORT, () => {

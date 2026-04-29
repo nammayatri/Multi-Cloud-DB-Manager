@@ -63,5 +63,21 @@ export interface PathMapping {
 
 export interface MigrationsConfig {
   repoPath: string;
+  // Optional clone URL — if present, the backend will auto-clone the repo into
+  // repoPath on startup (in the background). Allows dropping the K8s init container.
+  repoUrl?: string;
   pathMapping: PathMapping[];
+}
+
+// State for the background clone task. Migration endpoints gate on this so
+// users get a clear "still cloning" message instead of cryptic errors.
+export type RepoCloneState = 'NOT_STARTED' | 'CLONING' | 'READY' | 'ERROR';
+
+export interface RepoStatus {
+  state: RepoCloneState;
+  repoPath: string;
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+  message?: string;
 }
