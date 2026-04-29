@@ -1,6 +1,6 @@
 {
   "name": "dual-db-manager-backend",
-  "version": "2.0.53",
+  "version": "2.0.54",
   "description": "High-reliability dual database management backend",
   "main": "dist/server.js",
   "scripts": {
@@ -27,7 +27,7 @@
     "pg": "^8.11.3",
     "redis": "^4.6.12",
     "sql-formatter": "^15.1.1",
-    "uuid": "^14.0.0",
+    "uuid": "^9.0.1",
     "winston": "^3.11.0",
     "ws": "^8.16.0",
     "zod": "^3.22.4"
