@@ -2,6 +2,22 @@ import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 import * as migrationsService from '../services/migrations/migrations.service';
 import * as gitService from '../services/migrations/git.service';
+import repoState from '../services/migrations/repo-state.service';
+
+/**
+ * If the repo isn't ready yet, short-circuit with a 503 carrying structured
+ * status so the UI can render a clear "cloning…" overlay. Returns true if the
+ * response was already sent (caller should bail).
+ */
+function gateOnRepoReady(res: Response, repoPath: string): boolean {
+  if (repoState.isReady()) return false;
+  const status = repoState.getStatus(repoPath);
+  res.status(503).json({
+    error: 'Repo not ready',
+    repoStatus: status,
+  });
+  return true;
+}
 
 /**
  * GET /api/migrations/config
@@ -32,11 +48,31 @@ export const getRefs = async (
 ) => {
   try {
     const config = migrationsService.getConfig();
+    if (gateOnRepoReady(res, config.repoPath)) return;
     gitService.pullLatest(config.repoPath);
     const refs = gitService.getRecentRefs(config.repoPath);
     res.json({ success: true, ...refs });
   } catch (error: any) {
     logger.error('Failed to get git refs:', error);
+    next(error);
+  }
+};
+
+/**
+ * GET /api/migrations/repo-status
+ * Lightweight poll endpoint — UI uses this to decide whether to show the
+ * "cloning repo…" overlay or render the Migrations panel.
+ */
+export const getRepoStatus = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const config = migrationsService.getConfig();
+    res.json(repoState.getStatus(config.repoPath));
+  } catch (error: any) {
+    logger.error('Failed to get repo status:', error);
     next(error);
   }
 };
@@ -81,6 +117,9 @@ export const analyze = async (
       databaseFilter,
     });
 
+    const cfg = migrationsService.getConfig();
+    if (gateOnRepoReady(res, cfg.repoPath)) return;
+
     const result = await migrationsService.analyze(fromRef, toRef, environment, databaseFilter);
     res.json(result);
   } catch (error: any) {
@@ -91,7 +130,9 @@ export const analyze = async (
 
 /**
  * POST /api/migrations/refresh-repo
- * Runs git fetch --all --prune on the configured repo.
+ * Runs git fetch --all --prune on the configured repo. If the initial clone
+ * is still in progress, this returns the current clone status. If a previous
+ * clone errored, this triggers a fresh clone attempt.
  */
 export const refreshRepo = async (
   req: Request,
@@ -100,6 +141,17 @@ export const refreshRepo = async (
 ) => {
   try {
     const config = migrationsService.getConfig();
+
+    // If a prior clone errored, retry from scratch.
+    const status = repoState.getStatus(config.repoPath);
+    if (status.state === 'ERROR' || status.state === 'NOT_STARTED') {
+      repoState.retry(config.repoPath, config.repoUrl).catch(() => { /* logged inside */ });
+      res.json({ success: true, message: 'Clone retry triggered', repoStatus: repoState.getStatus(config.repoPath) });
+      return;
+    }
+
+    if (gateOnRepoReady(res, config.repoPath)) return;
+
     gitService.pullLatest(config.repoPath);
     res.json({ success: true, message: 'Repository refreshed (git fetch --all --prune)' });
   } catch (error: any) {
@@ -135,6 +187,7 @@ export const getFileContent = async (
 
     // Validate that the requested path is under a configured migration path
     const config = migrationsService.getConfig();
+    if (gateOnRepoReady(res, config.repoPath)) return;
     const isAllowedPath = config.pathMapping.some(
       (mapping) => filePath.startsWith(mapping.path + '/') || filePath === mapping.path
     );
