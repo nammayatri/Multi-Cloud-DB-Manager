@@ -168,6 +168,10 @@ export interface RedisServiceConfig {
   // False → standalone single-node server (createClient). LTS-style single-shard
   // ElastiCache / Memorystore instances reject CLUSTER NODES and must use this.
   clusterMode?: boolean;
+  // Standalone Redis only: which numbered logical database (0–15) to SELECT after
+  // connecting. NammaYatri's LTS uses db 1 for live data; default 0 otherwise.
+  // Ignored for cluster mode (cluster has no per-DB selection — only db 0 exists).
+  dbIndex?: number;
   primary: RedisCloudConfig;
   secondary: RedisCloudConfig[];
 }
