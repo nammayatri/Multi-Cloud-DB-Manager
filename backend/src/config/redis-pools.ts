@@ -1,5 +1,5 @@
 import { createCluster, createClient } from 'redis';
-import type { RedisClusterType } from 'redis';
+import type { RedisClusterType, RedisClientType } from 'redis';
 import { RedisConfigJson, RedisServiceConfig, RedisCloudConfig } from '../types';
 import { loadRedisConfig } from './redis-config-loader';
 import logger from '../utils/logger';
@@ -7,6 +7,10 @@ import logger from '../utils/logger';
 const keepAlive = parseInt(process.env.REDIS_KEEPALIVE_MS || '60000');
 
 type RedisClusterClient = RedisClusterType<any, any, any>;
+type RedisStandaloneClient = RedisClientType<any, any, any>;
+// Public client type — both cluster and standalone clients expose the same
+// command surface used by RedisCommandExecutor (sendCommand, get, set, scan, …).
+export type RedisAnyClient = RedisClusterClient | RedisStandaloneClient;
 
 interface ClusterMasterNode {
   id: string;
@@ -14,15 +18,20 @@ interface ClusterMasterNode {
   port: number;
 }
 
-// Internal map key combining service + cloud, e.g. "main:aws", "location:gcp".
 function key(serviceName: string, cloudName: string): string {
   return `${serviceName}:${cloudName}`;
+}
+
+// clusterMode defaults to true so existing services keep their current behavior
+// when the field is absent from config.
+function isClusterMode(svc: RedisServiceConfig): boolean {
+  return svc.clusterMode !== false;
 }
 
 class RedisManagerPools {
   private static instance: RedisManagerPools | null = null;
 
-  private clients: Map<string, RedisClusterClient> = new Map();
+  private clients: Map<string, RedisAnyClient> = new Map();
   private config: RedisConfigJson | null = null;
 
   private constructor() {
@@ -84,38 +93,52 @@ class RedisManagerPools {
     return sec;
   }
 
-  /** Lazily get a cluster client for a (service, cloud) pair. */
-  public async getClient(serviceName: string, cloudName: string): Promise<RedisClusterClient> {
+  /** Lazily get a Redis client for a (service, cloud) pair — cluster or standalone. */
+  public async getClient(serviceName: string, cloudName: string): Promise<RedisAnyClient> {
     const k = key(serviceName, cloudName);
     const existing = this.clients.get(k);
     if (existing) return existing;
 
+    const svc = this.getService(serviceName);
     const cloudConfig = this.resolveCloudConfig(serviceName, cloudName);
+    const cluster = isClusterMode(svc);
+    const mode = cluster ? 'cluster' : 'standalone';
 
     logger.info(
-      `Redis Manager: Connecting to ${k} cluster at ${cloudConfig.host}:${cloudConfig.port}`
+      `Redis Manager: Connecting to ${k} (${mode}) at ${cloudConfig.host}:${cloudConfig.port}`
     );
 
     let errorCount = 0;
-    const client = createCluster({
-      rootNodes: [{ url: `redis://${cloudConfig.host}:${cloudConfig.port}` }],
-      defaults: {
+    const reconnectStrategy = (retries: number) => {
+      if (retries >= 10) {
+        logger.error(
+          `Redis Manager [${k}]: giving up after ${retries} retries, will reconnect on next request`
+        );
+        this.clients.delete(k);
+        return new Error('Max retries reached');
+      }
+      return Math.min(500 * Math.pow(2, retries), 30000);
+    };
+
+    let client: RedisAnyClient;
+    if (cluster) {
+      client = createCluster({
+        rootNodes: [{ url: `redis://${cloudConfig.host}:${cloudConfig.port}` }],
+        defaults: {
+          socket: { connectTimeout: 10000, keepAlive, reconnectStrategy },
+        },
+      });
+    } else {
+      client = createClient({
         socket: {
+          host: cloudConfig.host,
+          port: cloudConfig.port,
           connectTimeout: 10000,
           keepAlive,
-          reconnectStrategy: (retries: number) => {
-            if (retries >= 10) {
-              logger.error(
-                `Redis Manager [${k}]: giving up after ${retries} retries, will reconnect on next request`
-              );
-              this.clients.delete(k);
-              return new Error('Max retries reached');
-            }
-            return Math.min(500 * Math.pow(2, retries), 30000);
-          },
+          reconnectStrategy,
         },
-      },
-    });
+      });
+    }
 
     client.on('error', (err: Error) => {
       errorCount++;
@@ -132,18 +155,33 @@ class RedisManagerPools {
     });
 
     await client.connect();
-    logger.info(`Redis Manager: Connected to ${k} cluster`);
+    logger.info(`Redis Manager: Connected to ${k} (${mode})`);
 
-    this.clients.set(k, client as RedisClusterClient);
-    return client as RedisClusterClient;
+    this.clients.set(k, client);
+    return client;
   }
 
-  /** Get cluster master nodes for a (service, cloud). */
+  /** True if a service uses standalone Redis (single-node) rather than cluster. */
+  public isStandalone(serviceName: string): boolean {
+    return !isClusterMode(this.getService(serviceName));
+  }
+
+  /**
+   * Get the set of nodes to scan for a (service, cloud).
+   * - Cluster mode: enumerate masters via CLUSTER NODES on the seed.
+   * - Standalone mode: a single virtual "node" pointing at the configured host.
+   */
   public async getClusterMasters(
     serviceName: string,
     cloudName: string
   ): Promise<ClusterMasterNode[]> {
+    const svc = this.getService(serviceName);
     const cloudConfig = this.resolveCloudConfig(serviceName, cloudName);
+
+    if (!isClusterMode(svc)) {
+      // Standalone: SCAN runs against the single configured host.
+      return [{ id: 'standalone', host: cloudConfig.host, port: cloudConfig.port }];
+    }
 
     const seedClient = createClient({
       socket: {
