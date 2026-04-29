@@ -114,13 +114,9 @@ export const validateRedisPermissions = (req: Request, res: Response, next: Next
     });
   }
 
-  // RELEASE_MANAGER has no Redis access — schema-change role only.
-  if (user.role === Role.RELEASE_MANAGER) {
-    return res.status(403).json({
-      error: 'Forbidden',
-      message: 'RELEASE_MANAGER does not have Redis access',
-    });
-  }
+  // RELEASE_MANAGER has Redis access at the USER tier (read + write + SCAN
+  // preview/delete). RAW commands stay gated to MASTER above. No further
+  // restrictions here — fall through to the structured-command checks.
 
   if (user.role === 'READER') {
     // Check for write commands
