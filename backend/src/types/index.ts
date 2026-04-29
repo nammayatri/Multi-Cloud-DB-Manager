@@ -164,6 +164,10 @@ export interface RedisCloudConfig {
 export interface RedisServiceConfig {
   name: string;            // 'main', 'location' — stable identifier used in API + URL
   label: string;           // UI display: 'Main App Cache'
+  // True (default) → connect via Redis Cluster client (createCluster).
+  // False → standalone single-node server (createClient). LTS-style single-shard
+  // ElastiCache / Memorystore instances reject CLUSTER NODES and must use this.
+  clusterMode?: boolean;
   primary: RedisCloudConfig;
   secondary: RedisCloudConfig[];
 }
