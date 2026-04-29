@@ -10,7 +10,7 @@ const router = Router();
 router.use(isAuthenticated);
 
 // Anyone with Redis access. CKH_MANAGER is denied (no Redis access by spec).
-const requireRedisAccess = requireRoles(Role.MASTER, Role.USER, Role.READER);
+const requireRedisAccess = requireRoles(Role.MASTER, Role.USER, Role.READER, Role.RELEASE_MANAGER);
 
 // Execute a Redis command
 router.post('/execute', validate(redisCommandSchema), validateRedisPermissions, executeRedisCommand);
