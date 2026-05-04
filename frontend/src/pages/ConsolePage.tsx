@@ -508,8 +508,9 @@ const ConsolePage = () => {
         {/* Main Area */}
         <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <Box sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-            {/* DB Manager View */}
-            {canSee('db') && (
+            {/* DB Manager View — always mounted so the Monaco editor instance
+                survives tab switches and role-state churn. Hidden via CSS for
+                roles that can't see it (canSee=false). */}
             <Box
               key="db-view"
               sx={{
@@ -519,7 +520,7 @@ const ConsolePage = () => {
                 pointerEvents: managerMode === 'db' ? 'auto' : 'none',
                 transition: 'opacity 0.3s ease',
                 flexGrow: managerMode === 'db' ? 1 : undefined,
-                display: 'flex',
+                display: canSee('db') ? 'flex' : 'none',
                 flexDirection: 'column',
                 overflow: 'hidden',
                 p: managerMode === 'db' ? 0 : 2,
@@ -548,10 +549,8 @@ const ConsolePage = () => {
                 )}
               </Grid>
             </Box>
-            )}
 
-            {/* Redis Manager View */}
-            {canSee('redis') && (
+            {/* Redis Manager View — always mounted (CSS-hidden when not allowed) */}
             <Box
               key="redis-view"
               sx={{
@@ -561,7 +560,7 @@ const ConsolePage = () => {
                 pointerEvents: managerMode === 'redis' ? 'auto' : 'none',
                 transition: 'opacity 0.3s ease',
                 flexGrow: managerMode === 'redis' ? 1 : undefined,
-                display: 'flex',
+                display: canSee('redis') ? 'flex' : 'none',
                 flexDirection: 'column',
                 overflow: 'hidden',
                 p: managerMode === 'redis' ? 0 : 2,
@@ -588,10 +587,8 @@ const ConsolePage = () => {
                 )}
               </Grid>
             </Box>
-            )}
 
-            {/* Batch Query Manager View */}
-            {canSee('batch') && (
+            {/* Batch Query Manager View — always mounted */}
             <Box
               key="batch-view"
               sx={{
@@ -601,7 +598,7 @@ const ConsolePage = () => {
                 pointerEvents: managerMode === 'batch' ? 'auto' : 'none',
                 transition: 'opacity 0.3s ease',
                 flexGrow: managerMode === 'batch' ? 1 : undefined,
-                display: 'flex',
+                display: canSee('batch') ? 'flex' : 'none',
                 flexDirection: 'column',
                 overflow: 'hidden',
                 p: managerMode === 'batch' ? 0 : 2,
@@ -614,10 +611,8 @@ const ConsolePage = () => {
                 </Stack>
               </Box>
             </Box>
-            )}
 
-            {/* DB Migrations View */}
-            {canSee('migrations') && (
+            {/* DB Migrations View — always mounted */}
             <Box
               key="migrations-view"
               sx={{
@@ -627,7 +622,7 @@ const ConsolePage = () => {
                 pointerEvents: managerMode === 'migrations' ? 'auto' : 'none',
                 transition: 'opacity 0.3s ease',
                 flexGrow: managerMode === 'migrations' ? 1 : undefined,
-                display: 'flex',
+                display: canSee('migrations') ? 'flex' : 'none',
                 flexDirection: 'column',
                 overflow: 'hidden',
                 p: managerMode === 'migrations' ? 0 : 2,
@@ -635,10 +630,8 @@ const ConsolePage = () => {
             >
               <MigrationsContent />
             </Box>
-            )}
 
-            {/* Clickhouse Manager View */}
-            {canSee('clickhouse') && (
+            {/* Clickhouse Manager View — always mounted */}
             <Box
               key="clickhouse-view"
               sx={{
@@ -648,7 +641,7 @@ const ConsolePage = () => {
                 pointerEvents: managerMode === 'clickhouse' ? 'auto' : 'none',
                 transition: 'opacity 0.3s ease',
                 flexGrow: managerMode === 'clickhouse' ? 1 : undefined,
-                display: 'flex',
+                display: canSee('clickhouse') ? 'flex' : 'none',
                 flexDirection: 'column',
                 overflow: 'hidden',
                 p: managerMode === 'clickhouse' ? 0 : 2,
@@ -677,7 +670,6 @@ const ConsolePage = () => {
                 )}
               </Grid>
             </Box>
-            )}
           </Box>
         </Box>
       </Box>

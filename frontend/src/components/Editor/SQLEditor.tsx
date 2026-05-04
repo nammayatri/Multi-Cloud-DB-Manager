@@ -22,6 +22,17 @@ const SQLEditor = () => {
   const handleEditorDidMount = (editorInstance: editor.IStandaloneCodeEditor) => {
     setEditorInstance(editorInstance);
 
+    // Multiple <SQLEditor> instances can be mounted at once (e.g. one in the
+    // DB Manager panel, one in the Clickhouse Manager panel — both panels
+    // stay in the DOM behind opacity:0 / display:none). They all share the
+    // same editorInstance slot in Zustand, so the last to mount silently
+    // wins. Make the *focused* editor the source of truth: whenever the user
+    // clicks/types into an editor it claims the slot back. getQueryToExecute
+    // therefore always reads the editor the user is actually using.
+    editorInstance.onDidFocusEditorWidget(() => {
+      setEditorInstance(editorInstance);
+    });
+
     // Cmd+Enter / Ctrl+Enter to execute query
     editorInstance.addAction({
       id: 'execute-query',
