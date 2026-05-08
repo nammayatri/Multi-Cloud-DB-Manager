@@ -331,4 +331,44 @@ export const clickhouseAPI = {
   },
 };
 
+// Shudhi (In-Memory Cache Management) API
+export const shudhiAPI = {
+  getStatus: async (): Promise<import('../types').ShudhiStatusResponse> => {
+    const response = await api.get('/api/shudhi/status');
+    return response.data;
+  },
+
+  /** Returns string[] of service names */
+  getServices: async (): Promise<string[]> => {
+    const response = await api.get('/api/shudhi/services');
+    return response.data.services ?? [];
+  },
+
+  /** Returns ShudhiPodInfo[] — { podName, sidecarUrl } */
+  getPods: async (service: string): Promise<import('../types').ShudhiPodInfo[]> => {
+    const response = await api.get('/api/shudhi/pods', { params: { service } });
+    return response.data.pods ?? [];
+  },
+
+  /** Returns ShudhiKeyEntry[] — { keyName, podName, keySchema?, ... } */
+  getKeys: async (service: string, pod?: string): Promise<import('../types').ShudhiKeyEntry[]> => {
+    const params: Record<string, string> = { service };
+    if (pod) params.pod = pod;
+    const response = await api.get('/api/shudhi/keys', { params });
+    return response.data.keys ?? [];
+  },
+
+  /** Get cached value from a specific pod. Body: { serviceName, podName, key } */
+  getValue: async (request: import('../types').ShudhiGetRequest): Promise<any> => {
+    const response = await api.post('/api/shudhi/get', request);
+    return response.data;
+  },
+
+  /** Refresh cache. Body: { serviceName, keyInfix? }. Returns { service, total, confirmed, pods } */
+  refreshCache: async (request: import('../types').ShudhiRefreshRequest): Promise<import('../types').ShudhiRefreshResponse> => {
+    const response = await api.post('/api/shudhi/refresh', request);
+    return response.data;
+  },
+};
+
 export default api;
