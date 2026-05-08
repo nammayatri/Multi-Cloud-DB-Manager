@@ -169,3 +169,56 @@ export interface RedisScanResponse {
   pattern: string;
   clouds: Record<string, RedisScanProgress>;
 }
+
+// Shudhi (In-Memory Cache Management) Types
+
+// GET /api/shudhi/pods — mirrors Shudhi's PodInfo { podName, sidecarUrl }
+export interface ShudhiPodInfo {
+  podName: string;
+  sidecarUrl: string;
+}
+
+// GET /api/shudhi/keys — mirrors Shudhi's key entry
+export interface ShudhiKeyEntry {
+  keyName: string;
+  podName: string;
+  keySchema?: any;
+  ttlInSeconds?: number;
+  registeredAt?: string;
+}
+
+// POST /api/shudhi/get — mirrors Shudhi's PodGetReq
+export interface ShudhiGetRequest {
+  serviceName: string;
+  podName: string;
+  key: string;
+}
+
+// POST /api/shudhi/refresh — mirrors Shudhi's RefreshReq
+export interface ShudhiRefreshRequest {
+  serviceName: string;
+  keyInfix?: string;
+}
+
+// POST /api/shudhi/refresh response
+export interface ShudhiPodAckResult {
+  podName: string;
+  success: boolean;
+  error?: string;
+}
+
+export interface ShudhiRefreshResponse {
+  service: string;
+  total: number;
+  confirmed: number;
+  pods: ShudhiPodAckResult[];
+}
+
+// GET /api/shudhi/status
+export interface ShudhiStatusResponse {
+  status: string;
+  shudhi: string;
+  redis?: boolean;
+  app?: boolean;
+  message?: string;
+}

@@ -24,6 +24,7 @@ import replicationRoutes from './routes/replication.routes';
 import redisRoutes from './routes/redis.routes';
 import clickhouseRoutes from './routes/clickhouse.routes';
 import migrationsRoutes from './routes/migrations.routes';
+import shudhiRoutes from './routes/shudhi.routes';
 import RedisManagerPools from './config/redis-pools';
 import ClickHouseClientManager from './config/clickhouse';
 
@@ -125,6 +126,8 @@ if (process.env.SYNC_TO_CLICKHOUSE !== 'false') {
 }
 app.use('/api/migrations', migrationsRoutes);
 console.log('[STARTUP] ✓ /api/migrations routes mounted');
+app.use('/api/shudhi', shudhiRoutes);
+console.log('[STARTUP] ✓ /api/shudhi routes mounted');
 
 // 404 handler
 app.use(notFoundHandler);

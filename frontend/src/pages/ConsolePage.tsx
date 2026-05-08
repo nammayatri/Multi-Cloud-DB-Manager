@@ -23,6 +23,7 @@ import MemoryIcon from '@mui/icons-material/Memory';
 import TableRowsIcon from '@mui/icons-material/TableRows';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import HubIcon from '@mui/icons-material/Hub';
+import CachedIcon from '@mui/icons-material/Cached';
 import { authAPI, schemaAPI } from '../services/api';
 import { Role } from '../constants/roles';
 import { useAppStore } from '../store/appStore';
@@ -43,11 +44,12 @@ import MigrationResultsView from '../components/Migrations/MigrationResultsView'
 import MigrationActionBar from '../components/Migrations/MigrationActionBar';
 import { useMigrationsStore } from '../store/migrationsStore';
 import type { QueryResponse, RedisCommandResponse } from '../types';
+import ShudhiPanel from '../components/Shudhi/ShudhiPanel';
 
 import CircularProgress from '@mui/material/CircularProgress';
 import LinearProgress from '@mui/material/LinearProgress';
 
-type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse';
+type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi';
 
 // Batch Query (CSV) — destructive arbitrary parametrized SQL, intentionally
 // withheld from RELEASE_MANAGER (schema-change scope, not data manipulation).
@@ -60,12 +62,16 @@ const REDIS_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER, Role.RELEASE_M
 // DB Manager / Migrations — schema work, fits RELEASE_MANAGER.
 const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER, Role.RELEASE_MANAGER];
 
+// Shudhi (In-Memory Cache Management) — same as Redis: all standard roles.
+const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+
 const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode; visibleTo: Role[] }> = [
   { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} />, visibleTo: REDIS_ROLES },
   { mode: 'batch', label: 'Batch Query', icon: <TableRowsIcon sx={{ fontSize: 18 }} />, visibleTo: BATCH_ROLES },
   { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.CKH_MANAGER] },
+  { mode: 'shudhi', label: 'Shudhi', icon: <CachedIcon sx={{ fontSize: 18 }} />, visibleTo: SHUDHI_ROLES },
 ];
 
 const tabsForRole = (role: Role | undefined) =>
@@ -432,6 +438,7 @@ const ConsolePage = () => {
               : managerMode === 'redis' ? 'Redis Manager'
               : managerMode === 'batch' ? 'Batch Query Manager'
               : managerMode === 'clickhouse' ? 'Clickhouse Manager'
+              : managerMode === 'shudhi' ? 'Shudhi — In-Memory Cache Manager'
               : 'DB Migration Verifier'}
           </Typography>
 
@@ -669,6 +676,29 @@ const ConsolePage = () => {
                   </Grid>
                 )}
               </Grid>
+            </Box>
+
+            {/* Shudhi (In-Memory Cache Management) View — always mounted */}
+            <Box
+              key="shudhi-view"
+              sx={{
+                position: managerMode === 'shudhi' ? 'relative' : 'absolute',
+                inset: managerMode === 'shudhi' ? undefined : 0,
+                opacity: managerMode === 'shudhi' ? 1 : 0,
+                pointerEvents: managerMode === 'shudhi' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'shudhi' ? 1 : undefined,
+                display: canSee('shudhi') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'shudhi' ? 0 : 2,
+              }}
+            >
+              <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
+                  <ShudhiPanel />
+                </Stack>
+              </Box>
             </Box>
           </Box>
         </Box>
