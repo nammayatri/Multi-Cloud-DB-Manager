@@ -1,0 +1,162 @@
+name: Build and Push Images
+
+# Builds the backend + frontend Docker images (linux/amd64) and pushes them to
+# the AWS ECR repositories for the UAT and Production accounts (IDs supplied via
+# repo Variables, see below).
+#
+# Triggers:
+#   - push to main            -> build + push to UAT only (safe default)
+#   - manual (workflow_dispatch) -> choose uat | prod | both
+#
+# Required repo configuration (Settings -> Secrets and variables -> Actions):
+#   Secrets:
+#     AWS_UAT_ROLE_ARN   - IAM role ARN (OIDC) allowed to push to the UAT ECR
+#     AWS_PROD_ROLE_ARN  - IAM role ARN (OIDC) allowed to push to the Prod ECR
+#   Variables (kept out of source to avoid leaking infra identifiers):
+#     UAT_ACCOUNT_ID     - AWS account ID hosting the UAT ECR repos
+#     PROD_ACCOUNT_ID    - AWS account ID hosting the Prod ECR repos
+#   (The role must trust this repo via GitHub OIDC and have ecr:* on the repos.)
+#
+# Image tags pushed: v<package.json version>, <short-sha>, and latest.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/build-and-push.yaml"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which environment(s) to push to"
+        required: true
+        default: "uat"
+        type: choice
+        options:
+          - uat
+          - prod
+          - both
+
+permissions:
+  id-token: write   # required for AWS OIDC
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  # Account IDs come from repo Variables — never hardcode infra identifiers in source.
+  UAT_ACCOUNT: ${{ vars.UAT_ACCOUNT_ID }}
+  PROD_ACCOUNT: ${{ vars.PROD_ACCOUNT_ID }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      push_uat: ${{ steps.targets.outputs.push_uat }}
+      push_prod: ${{ steps.targets.outputs.push_prod }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive image metadata
+        id: meta
+        run: |
+          VERSION="v$(node -p "require('./backend/package.json').version")"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Building version ${VERSION} ($(git rev-parse --short HEAD))"
+
+      - name: Resolve push targets
+        id: targets
+        run: |
+          TARGET="${{ github.event.inputs.target }}"
+          # push to main with no explicit input -> UAT only
+          if [ -z "$TARGET" ]; then TARGET="uat"; fi
+          case "$TARGET" in
+            uat)  echo "push_uat=true"  >> "$GITHUB_OUTPUT"; echo "push_prod=false" >> "$GITHUB_OUTPUT" ;;
+            prod) echo "push_uat=false" >> "$GITHUB_OUTPUT"; echo "push_prod=true"  >> "$GITHUB_OUTPUT" ;;
+            both) echo "push_uat=true"  >> "$GITHUB_OUTPUT"; echo "push_prod=true"  >> "$GITHUB_OUTPUT" ;;
+            *) echo "Unknown target: $TARGET" && exit 1 ;;
+          esac
+
+  build-and-push:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ---- UAT ----
+      - name: Configure AWS credentials (UAT)
+        if: needs.prepare.outputs.push_uat == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_UAT_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to UAT ECR
+        if: needs.prepare.outputs.push_uat == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push ${{ matrix.component }} to UAT
+        if: needs.prepare.outputs.push_uat == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          file: ./${{ matrix.component }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.UAT_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/dual-db-${{ matrix.component }}:${{ needs.prepare.outputs.version }}
+            ${{ env.UAT_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/dual-db-${{ matrix.component }}:${{ needs.prepare.outputs.short_sha }}
+            ${{ env.UAT_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/dual-db-${{ matrix.component }}:latest
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,scope=${{ matrix.component }},mode=max
+
+      # ---- Production ----
+      - name: Configure AWS credentials (Prod)
+        if: needs.prepare.outputs.push_prod == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Prod ECR
+        if: needs.prepare.outputs.push_prod == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push ${{ matrix.component }} to Prod
+        if: needs.prepare.outputs.push_prod == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          file: ./${{ matrix.component }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.PROD_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/dual-db-${{ matrix.component }}:${{ needs.prepare.outputs.version }}
+            ${{ env.PROD_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/dual-db-${{ matrix.component }}:${{ needs.prepare.outputs.short_sha }}
+            ${{ env.PROD_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/dual-db-${{ matrix.component }}:latest
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,scope=${{ matrix.component }},mode=max
+
+  summary:
+    needs: [prepare, build-and-push]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Report
+        run: |
+          {
+            echo "## Build & Push summary"
+            echo "- Version: \`${{ needs.prepare.outputs.version }}\` (\`${{ needs.prepare.outputs.short_sha }}\`)"
+            echo "- Pushed to UAT: \`${{ needs.prepare.outputs.push_uat }}\`"
+            echo "- Pushed to Prod: \`${{ needs.prepare.outputs.push_prod }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
