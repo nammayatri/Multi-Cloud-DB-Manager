@@ -1,6 +1,6 @@
 # Dependencies
 node_modules/
-package-lock.json
+# package-lock.json is intentionally tracked so CI `npm ci` builds are reproducible.
 yarn.lock
 
 # Environment
