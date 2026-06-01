@@ -351,9 +351,10 @@ export const shudhiAPI = {
   },
 
   /** Returns ShudhiKeyEntry[] — { keyName, podName, keySchema?, ... } */
-  getKeys: async (service: string, pod?: string): Promise<import('../types').ShudhiKeyEntry[]> => {
+  getKeys: async (service: string, pod?: string, pattern?: string): Promise<import('../types').ShudhiKeyEntry[]> => {
     const params: Record<string, string> = { service };
     if (pod) params.pod = pod;
+    if (pattern) params.pattern = pattern;
     const response = await api.get('/api/shudhi/keys', { params });
     return response.data.keys ?? [];
   },

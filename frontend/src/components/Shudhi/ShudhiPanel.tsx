@@ -61,6 +61,10 @@ const ShudhiPanel = () => {
   const [selectedPod, setSelectedPod] = useState('');
   const [selectedKey, setSelectedKey] = useState('');
 
+  // Key search
+  const [keyPattern, setKeyPattern] = useState('');
+  const [hasSearched, setHasSearched] = useState(false);
+
   // Value viewer
   const [cachedValue, setCachedValue] = useState<any>(null);
   const [valueLoading, setValueLoading] = useState(false);
@@ -121,6 +125,7 @@ const ShudhiPanel = () => {
     setSelectedKey('');
     setCachedValue(null);
     setRefreshResult(null);
+    setHasSearched(false);
 
     const loadPods = async () => {
       setLoadingPods(true);
@@ -136,27 +141,22 @@ const ShudhiPanel = () => {
     loadPods();
   }, [selectedService]);
 
-  // Load keys when service or pod changes.
-  // An empty selectedPod means "All pods" (a valid selection) — pass undefined so
-  // the backend returns keys across all pods. The panel is lazy-mounted (only when
-  // its tab is opened), so this no longer fires on initial page load.
-  useEffect(() => {
+  // Explicit key search handler. Keys load on demand (Search), not automatically —
+  // an empty selectedPod means "All pods" (passed through as undefined). The panel is
+  // also lazy-mounted (only when its tab is opened).
+  const handleSearchKeys = useCallback(async () => {
     if (!selectedService) return;
-
-    const loadKeys = async () => {
-      setLoadingKeys(true);
-      try {
-        const data = await shudhiAPI.getKeys(selectedService, selectedPod || undefined);
-        setKeys(data);
-      } catch {
-        // Keys might not be registered — that's OK
-        setKeys([]);
-      } finally {
-        setLoadingKeys(false);
-      }
-    };
-    loadKeys();
-  }, [selectedService, selectedPod]);
+    setLoadingKeys(true);
+    setHasSearched(true);
+    try {
+      const data = await shudhiAPI.getKeys(selectedService, selectedPod || undefined, keyPattern || undefined);
+      setKeys(data);
+    } catch {
+      setKeys([]);
+    } finally {
+      setLoadingKeys(false);
+    }
+  }, [selectedService, selectedPod, keyPattern]);
 
   const handleGetValue = async (keyName?: string) => {
     const targetKey = keyName || selectedKey;
@@ -293,12 +293,34 @@ const ShudhiPanel = () => {
 
           {/* Keys list */}
           <Box sx={{ flex: 1, overflow: 'auto', px: 1 }}>
-            <Typography variant="caption" color="text.secondary" sx={{ px: 1, pt: 1, display: 'block' }}>
-              Registered Keys ({keys.length}) {loadingKeys && <CircularProgress size={12} sx={{ ml: 1 }} />}
-            </Typography>
-            {keys.length === 0 && !loadingKeys && (
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1, pt: 1, pb: 0.5 }}>
+              <TextField
+                size="small"
+                placeholder="*searchString*"
+                value={keyPattern}
+                onChange={(e) => setKeyPattern(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSearchKeys();
+                  }
+                }}
+                sx={{ flex: 1 }}
+                disabled={!selectedService}
+              />
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<SearchIcon />}
+                onClick={handleSearchKeys}
+                disabled={!selectedService || loadingKeys}
+              >
+                {loadingKeys ? 'Searching...' : 'Search'}
+              </Button>
+            </Stack>
+            {keys.length === 0 && !loadingKeys && hasSearched && (
               <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 2, textAlign: 'center' }}>
-                {selectedService ? 'No registered keys' : 'Select a service'}
+                No registered keys
               </Typography>
             )}
             <List dense disablePadding>
