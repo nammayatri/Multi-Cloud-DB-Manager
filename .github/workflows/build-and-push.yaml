@@ -35,11 +35,10 @@ jobs:
       - name: Derive image metadata
         id: meta
         run: |
-          VERSION="v$(node -p "require('./${{ matrix.component }}/package.json').version")"
           REGISTRY_PATH="ghcr.io/${GITHUB_REPOSITORY,,}/dual-db-${{ matrix.component }}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "image=${REGISTRY_PATH}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          # First 6 characters of the commit SHA as the image tag.
+          echo "sha=${GITHUB_SHA:0:6}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -58,9 +57,7 @@ jobs:
           file: ./${{ matrix.component }}/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}
-            ${{ github.ref == 'refs/heads/main' && format('{0}:latest', steps.meta.outputs.image) || '' }}
+          # Tag the image with the git commit SHA only.
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,scope=${{ matrix.component }},mode=max
