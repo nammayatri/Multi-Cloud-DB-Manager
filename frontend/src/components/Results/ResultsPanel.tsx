@@ -17,8 +17,10 @@ import {
   Tab,
   Button,
   Collapse,
+  Snackbar,
 } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -34,6 +36,11 @@ const ResultsPanel = ({ result }: ResultsPanelProps) => {
   const [cloudTabs, setCloudTabs] = useState<Record<string, 'table' | 'json'>>({});
   const [collapsedStatements, setCollapsedStatements] = useState<Set<string>>(new Set());
   const [expandedClouds, setExpandedClouds] = useState<Record<string, boolean>>({});
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
+    open: false,
+    message: '',
+    severity: 'success',
+  });
 
   // Extract cloud results from QueryResponse (exclude 'id' and 'success' keys)
   const cloudResults = useMemo(() => {
@@ -101,6 +108,19 @@ const ResultsPanel = ({ result }: ResultsPanelProps) => {
       type: 'application/json;charset=utf-8',
     });
     saveAs(blob, filename);
+  };
+
+  const handleCopyToClipboard = async (data: any[]) => {
+    if (!navigator.clipboard) {
+      setSnackbar({ open: true, message: 'Clipboard not available in this browser', severity: 'error' });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+      setSnackbar({ open: true, message: 'Copied to clipboard!', severity: 'success' });
+    } catch {
+      setSnackbar({ open: true, message: 'Failed to copy', severity: 'error' });
+    }
   };
 
   const renderResultView = (
@@ -311,6 +331,14 @@ const ResultsPanel = ({ result }: ResultsPanelProps) => {
           >
             JSON
           </Button>
+          <Button
+            size="small"
+            startIcon={<ContentCopyIcon />}
+            onClick={() => handleCopyToClipboard(rows)}
+            disabled={!navigator.clipboard}
+          >
+            Copy
+          </Button>
         </Stack>
 
         {/* Tabs */}
@@ -422,6 +450,20 @@ const ResultsPanel = ({ result }: ResultsPanelProps) => {
           </Alert>
         )}
       </Stack>
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={3000}
+        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          severity={snackbar.severity}
+          onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Paper>
   );
 };
