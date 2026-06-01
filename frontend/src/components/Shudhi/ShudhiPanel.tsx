@@ -318,9 +318,9 @@ const ShudhiPanel = () => {
                 {loadingKeys ? 'Searching...' : 'Search'}
               </Button>
             </Stack>
-            {keys.length === 0 && !loadingKeys && hasSearched && (
+            {keys.length === 0 && !loadingKeys && (
               <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 2, textAlign: 'center' }}>
-                No registered keys
+                {hasSearched ? 'No registered keys' : 'Enter a pattern and press Search to find keys'}
               </Typography>
             )}
             <List dense disablePadding>
