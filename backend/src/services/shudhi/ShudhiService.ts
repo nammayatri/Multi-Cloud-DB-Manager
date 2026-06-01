@@ -123,10 +123,11 @@ class ShudhiService {
     return data.pods ?? [];
   }
 
-  /** Returns array of key entries for a service (optionally filtered by pod) */
-  async getKeys(service: string, pod?: string): Promise<ShudhiKeyEntry[]> {
+  /** Returns array of key entries for a service (optionally filtered by pod and pattern) */
+  async getKeys(service: string, pod?: string, pattern?: string): Promise<ShudhiKeyEntry[]> {
     let path = `/api/keys?service=${encodeURIComponent(service)}`;
     if (pod) path += `&pod=${encodeURIComponent(pod)}`;
+    if (pattern) path += `&pattern=${encodeURIComponent(pattern)}`;
     const data = await this.request<{ keys: ShudhiKeyEntry[] }>(path);
     return data.keys ?? [];
   }

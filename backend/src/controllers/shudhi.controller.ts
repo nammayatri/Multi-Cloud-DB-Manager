@@ -73,11 +73,15 @@ export const getKeys = async (
 ) => {
   try {
     ensureConfigured();
-    const { service, pod } = req.query;
+    const { service, pod, pattern } = req.query;
     if (!service || typeof service !== 'string') {
       throw new AppError('service query parameter is required', 400);
     }
-    const keys = await shudhiService.getKeys(service, pod as string | undefined);
+    const keys = await shudhiService.getKeys(
+      service,
+      pod as string | undefined,
+      pattern as string | undefined
+    );
     res.json({ keys });
   } catch (error) {
     next(error);
