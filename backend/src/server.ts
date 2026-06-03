@@ -9,6 +9,7 @@ import session from 'express-session';
 import RedisStore from 'connect-redis';
 import cors from 'cors';
 import helmet from 'helmet';
+import compression from 'compression';
 import DatabasePools from './config/database';
 import redisClient from './config/redis';
 import historyService from './services/history.service';
@@ -33,6 +34,11 @@ const PORT = process.env.PORT || 3000;
 
 // Trust proxy (for sessions behind load balancer)
 app.set('trust proxy', 1);
+
+// Gzip-compress all responses. JSON payloads (configuration, query results,
+// Shudhi key listings) are highly repetitive and shrink ~80-90%, so this is
+// applied before the routes. The threshold skips tiny responses.
+app.use(compression({ threshold: 1024 }));
 
 // Middleware
 // Use Helmet but disable CSP in production (Pomerium handles authentication redirects)

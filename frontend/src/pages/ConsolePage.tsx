@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -34,17 +34,27 @@ import ResultsPanel from '../components/Results/ResultsPanel';
 import QueryHistory from '../components/History/QueryHistory';
 import RedisCommandForm from '../components/Redis/RedisCommandForm';
 import RedisResultsPanel from '../components/Redis/RedisResultsPanel';
-import RedisCacheClearer from '../components/Redis/RedisCacheClearer';
 import RedisHistory from '../components/Redis/RedisHistory';
-import ClickhouseToolbar from '../components/Clickhouse/ClickhouseToolbar';
-import CsvBatchPanel from '../components/CsvBatch/CsvBatchPanel';
 import MigrationToolbar from '../components/Migrations/MigrationToolbar';
 import MigrationSummaryBar from '../components/Migrations/MigrationSummaryBar';
 import MigrationResultsView from '../components/Migrations/MigrationResultsView';
 import MigrationActionBar from '../components/Migrations/MigrationActionBar';
 import { useMigrationsStore } from '../store/migrationsStore';
 import type { QueryResponse, RedisCommandResponse } from '../types';
-import ShudhiPanel from '../components/Shudhi/ShudhiPanel';
+
+// Heavy tab panels are code-split: their JS only downloads when the tab is first
+// opened (pairs with the lazy-mount that defers their data fetches).
+const RedisCacheClearer = lazy(() => import('../components/Redis/RedisCacheClearer'));
+const ClickhouseToolbar = lazy(() => import('../components/Clickhouse/ClickhouseToolbar'));
+const CsvBatchPanel = lazy(() => import('../components/CsvBatch/CsvBatchPanel'));
+const ShudhiPanel = lazy(() => import('../components/Shudhi/ShudhiPanel'));
+
+// Fallback shown while a lazy panel chunk loads on first tab open.
+const panelLoader = (
+  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 6 }}>
+    <CircularProgress size={28} />
+  </Box>
+);
 
 import CircularProgress from '@mui/material/CircularProgress';
 import LinearProgress from '@mui/material/LinearProgress';
@@ -592,7 +602,7 @@ const ConsolePage = () => {
                           <RedisResultsPanel result={redisResult} />
                         </Box>
                       )}
-                      {visitedModes.has('redis') && <RedisCacheClearer />}
+                      {visitedModes.has('redis') && <Suspense fallback={panelLoader}><RedisCacheClearer /></Suspense>}
                     </Stack>
                   </Box>
                 </Grid>
@@ -623,7 +633,7 @@ const ConsolePage = () => {
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1 }}>
                   <DatabaseSelector onExecute={handleQueryExecute} compact />
-                  {visitedModes.has('batch') && <CsvBatchPanel />}
+                  {visitedModes.has('batch') && <Suspense fallback={panelLoader}><CsvBatchPanel /></Suspense>}
                 </Stack>
               </Box>
             </Box>
@@ -667,7 +677,7 @@ const ConsolePage = () => {
                 <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   <Box sx={{ overflowY: 'auto', flex: 1 }}>
                     <Stack spacing={2} sx={{ p: 1 }}>
-                      {visitedModes.has('clickhouse') && <ClickhouseToolbar onExecute={handleClickhouseExecute} />}
+                      {visitedModes.has('clickhouse') && <Suspense fallback={panelLoader}><ClickhouseToolbar onExecute={handleClickhouseExecute} /></Suspense>}
                       <Box sx={{ height: '400px' }}>
                         <SQLEditor />
                       </Box>
@@ -705,7 +715,7 @@ const ConsolePage = () => {
             >
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
-                  {visitedModes.has('shudhi') && <ShudhiPanel />}
+                  {visitedModes.has('shudhi') && <Suspense fallback={panelLoader}><ShudhiPanel /></Suspense>}
                 </Stack>
               </Box>
             </Box>
