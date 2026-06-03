@@ -267,10 +267,13 @@ const ShudhiPanel = () => {
 
             {/* Pod Selector */}
             <FormControl size="small" fullWidth>
-              <InputLabel>Pod</InputLabel>
+              <InputLabel shrink>Pod</InputLabel>
               <Select
                 value={selectedPod}
                 label="Pod"
+                displayEmpty
+                notched
+                renderValue={(v) => (v ? String(v) : 'All pods')}
                 onChange={(e) => {
                   setSelectedPod(e.target.value);
                   setCachedValue(null);
