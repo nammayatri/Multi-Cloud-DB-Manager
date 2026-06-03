@@ -307,6 +307,15 @@ const ConsolePage = () => {
   const setCurrentQuery = useAppStore(s => s.setCurrentQuery);
   const managerMode = useAppStore(s => s.managerMode);
   const setManagerMode = useAppStore(s => s.setManagerMode);
+  // Lazy-mount secondary tab panels: a panel only mounts once its tab has been
+  // visited, so panels like Shudhi (which fetches a large key set) don't fire
+  // their data requests on initial page load while another tab is active. The
+  // default tab is mounted from the start; once visited, panels stay mounted so
+  // the cross-fade transition between tabs keeps working without refetch storms.
+  const [visitedModes, setVisitedModes] = useState<Set<ManagerMode>>(() => new Set([managerMode]));
+  useEffect(() => {
+    setVisitedModes(prev => (prev.has(managerMode) ? prev : new Set(prev).add(managerMode)));
+  }, [managerMode]);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [currentResult, setCurrentResult] = useState<QueryResponse | null>(null);
   const [redisResult, setRedisResult] = useState<RedisCommandResponse | null>(null);
@@ -583,7 +592,7 @@ const ConsolePage = () => {
                           <RedisResultsPanel result={redisResult} />
                         </Box>
                       )}
-                      <RedisCacheClearer />
+                      {visitedModes.has('redis') && <RedisCacheClearer />}
                     </Stack>
                   </Box>
                 </Grid>
@@ -614,7 +623,7 @@ const ConsolePage = () => {
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1 }}>
                   <DatabaseSelector onExecute={handleQueryExecute} compact />
-                  <CsvBatchPanel />
+                  {visitedModes.has('batch') && <CsvBatchPanel />}
                 </Stack>
               </Box>
             </Box>
@@ -635,7 +644,7 @@ const ConsolePage = () => {
                 p: managerMode === 'migrations' ? 0 : 2,
               }}
             >
-              <MigrationsContent />
+              {visitedModes.has('migrations') && <MigrationsContent />}
             </Box>
 
             {/* Clickhouse Manager View — always mounted */}
@@ -658,7 +667,7 @@ const ConsolePage = () => {
                 <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   <Box sx={{ overflowY: 'auto', flex: 1 }}>
                     <Stack spacing={2} sx={{ p: 1 }}>
-                      <ClickhouseToolbar onExecute={handleClickhouseExecute} />
+                      {visitedModes.has('clickhouse') && <ClickhouseToolbar onExecute={handleClickhouseExecute} />}
                       <Box sx={{ height: '400px' }}>
                         <SQLEditor />
                       </Box>
@@ -696,7 +705,7 @@ const ConsolePage = () => {
             >
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
-                  <ShudhiPanel />
+                  {visitedModes.has('shudhi') && <ShudhiPanel />}
                 </Stack>
               </Box>
             </Box>

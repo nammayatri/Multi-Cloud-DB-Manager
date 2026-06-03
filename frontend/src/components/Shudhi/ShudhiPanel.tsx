@@ -136,9 +136,14 @@ const ShudhiPanel = () => {
     loadPods();
   }, [selectedService]);
 
-  // Load keys when service or pod changes
+  // Load keys when service or pod changes.
+  // Require a pod: fetching keys for a whole service (no pod) returns the entire
+  // key set (tens of MB) and is never what the user wants on first render.
   useEffect(() => {
-    if (!selectedService) return;
+    if (!selectedService || !selectedPod) {
+      setKeys([]);
+      return;
+    }
 
     const loadKeys = async () => {
       setLoadingKeys(true);
