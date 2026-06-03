@@ -17,6 +17,9 @@ export interface ShudhiKeyEntry {
   keySchema?: any;
   ttlInSeconds?: number;
   registeredAt?: string;
+  // Populated only for the "All pods" view: every pod this key is present on
+  // (the deduped entry collapses the per-pod duplicates the sidecar returns).
+  pods?: string[];
 }
 
 // Matches Shudhi's PodGetReq struct
@@ -129,7 +132,24 @@ class ShudhiService {
     if (pod) path += `&pod=${encodeURIComponent(pod)}`;
     if (pattern) path += `&pattern=${encodeURIComponent(pattern)}`;
     const data = await this.request<{ keys: ShudhiKeyEntry[] }>(path);
-    return data.keys ?? [];
+    const keys = data.keys ?? [];
+
+    // Single-pod view: entries are already unique per key.
+    if (pod) return keys;
+
+    // "All pods" view: the sidecar returns the same key once per pod. Collapse to
+    // one entry per keyName, aggregating every pod the key is present on so the UI
+    // can show all pods while listing each distinct key only once.
+    const byKey = new Map<string, ShudhiKeyEntry>();
+    for (const k of keys) {
+      const existing = byKey.get(k.keyName);
+      if (existing) {
+        if (k.podName && !existing.pods!.includes(k.podName)) existing.pods!.push(k.podName);
+      } else {
+        byKey.set(k.keyName, { ...k, pods: k.podName ? [k.podName] : [] });
+      }
+    }
+    return Array.from(byKey.values()).map((k) => ({ ...k, pods: k.pods!.slice().sort() }));
   }
 
   /** Get cached value from a specific pod */

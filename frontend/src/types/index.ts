@@ -185,6 +185,8 @@ export interface ShudhiKeyEntry {
   keySchema?: any;
   ttlInSeconds?: number;
   registeredAt?: string;
+  // Populated only in the "All pods" view: every pod this (deduped) key is present on.
+  pods?: string[];
 }
 
 // POST /api/shudhi/get — mirrors Shudhi's PodGetReq
