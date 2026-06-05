@@ -4,6 +4,7 @@ import { executeCommand, isWriteCommand, executeRawCommand } from './RedisComman
 import { startScan, getScanStatus as getScanStatusFromStore, cancelScan as cancelScanInStore } from './RedisScanService';
 import { RedisCommandRequest, RedisCommandResponse, RedisScanRequest, RedisScanResponse } from '../../types';
 import logger from '../../utils/logger';
+import { isSuperRole } from '../../constants/roles';
 
 // Max raw command length to prevent memory exhaustion
 const MAX_RAW_COMMAND_LENGTH = 10000;
@@ -81,8 +82,8 @@ class RedisManagerService {
 
     // Handle RAW command — MASTER only
     if (upperCommand === 'RAW') {
-      if (userRole !== 'MASTER') {
-        throw new Error('Only MASTER role can execute raw Redis commands');
+      if (!isSuperRole(userRole)) {
+        throw new Error('Only MASTER or ADMIN role can execute raw Redis commands');
       }
 
       const rawCmd = String(args.rawCommand || '').trim();

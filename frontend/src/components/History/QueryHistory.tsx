@@ -29,6 +29,7 @@ import { historyAPI, authAPI, schemaAPI } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
 import type { QueryExecution, DatabaseInfo } from '../../types';
+import { isSuperRole } from '../../constants/roles';
 
 const ITEMS_PER_PAGE = 20;
 
@@ -58,7 +59,7 @@ const QueryHistory = ({ database }: QueryHistoryProps = {}) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
-  const isMaster = user?.role === 'MASTER';
+  const isMaster = isSuperRole(user?.role);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Derive unique users from current history page

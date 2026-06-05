@@ -24,6 +24,7 @@ import { format } from 'date-fns';
 import { redisAPI } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
+import { isSuperRole } from '../../constants/roles';
 
 const ITEMS_PER_PAGE = 20;
 
@@ -44,7 +45,7 @@ const RedisHistory = () => {
   const [history, setHistory] = useState<RedisHistoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const isMaster = user?.role === 'MASTER';
+  const isMaster = isSuperRole(user?.role);
 
   const loadHistory = async () => {
     setLoading(true);

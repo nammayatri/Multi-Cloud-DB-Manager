@@ -10,7 +10,7 @@ const router = Router();
 router.use(isAuthenticated);
 
 // All roles except CKH_MANAGER can access Shudhi
-const requireShudhiAccess = requireRoles(Role.MASTER, Role.USER, Role.READER, Role.RELEASE_MANAGER);
+const requireShudhiAccess = requireRoles(Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER);
 
 // Validation schemas — match Shudhi's Go structs
 const shudhiGetSchema = z.object({
@@ -40,6 +40,6 @@ router.get('/keys', requireShudhiAccess, getKeys);
 router.post('/get', requireShudhiAccess, validate(shudhiGetSchema), getValue);
 
 // Refresh (invalidate) cache — write operation, READER excluded
-router.post('/refresh', requireRoles(Role.MASTER, Role.USER, Role.RELEASE_MANAGER), validate(shudhiRefreshSchema), refreshCache);
+router.post('/refresh', requireRoles(Role.MASTER, Role.ADMIN, Role.USER, Role.RELEASE_MANAGER), validate(shudhiRefreshSchema), refreshCache);
 
 export default router;

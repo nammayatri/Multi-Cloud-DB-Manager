@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import historyService from '../services/history.service';
 import { QueryHistoryFilter } from '../types';
+import { isSuperRole } from '../constants/roles';
 
 /**
  * Get query history
@@ -16,7 +17,7 @@ export const getHistory = async (
     // MASTER sees all users' history by default, can filter by specific user
     // Non-MASTER users always see only their own history
     let userId: string | undefined;
-    if ((user as any).role === 'MASTER') {
+    if (isSuperRole((user as any).role)) {
       // MASTER can optionally filter by a specific user_id
       userId = req.query.user_id as string | undefined;
     } else {

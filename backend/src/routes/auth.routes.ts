@@ -30,7 +30,8 @@ router.get('/me', isAuthenticated, getCurrentUser);
 console.log('[AUTH ROUTES] Registering POST /logout route');
 router.post('/logout', isAuthenticated, logout);
 
-// MASTER-only routes
+// User-administration routes — exclusively MASTER. ADMIN matches MASTER for
+// query execution but must NOT manage user access levels.
 console.log('[AUTH ROUTES] Registering POST /activate route (MASTER only)');
 router.post('/activate', isAuthenticated, requireMaster, activateUsers);
 

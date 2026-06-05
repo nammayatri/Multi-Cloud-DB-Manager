@@ -6,6 +6,7 @@ import historyService from '../services/history.service';
 import logger from '../utils/logger';
 import { AppError } from '../middleware/error.middleware';
 import { RedisCommandRequest, RedisScanRequest } from '../types';
+import { isSuperRole } from '../constants/roles';
 
 /**
  * Execute a Redis command
@@ -221,7 +222,7 @@ export const getRedisHistory = async (
     const { limit, offset, user_id } = req.query;
 
     const history = await historyService.getRedisHistory({
-      user_id: user.role === 'MASTER' && user_id ? String(user_id) : undefined,
+      user_id: isSuperRole(user.role) && user_id ? String(user_id) : undefined,
       limit: limit ? parseInt(String(limit), 10) : 20,
       offset: offset ? parseInt(String(offset), 10) : 0,
     });

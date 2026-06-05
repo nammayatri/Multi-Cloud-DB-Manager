@@ -20,6 +20,7 @@ import { redisAPI } from '../../services/api';
 import { ALL_STRUCTURED_COMMANDS, RAW_COMMAND, getCommandDefinition } from './RedisCommandDefinitions';
 import toast from 'react-hot-toast';
 import type { RedisCommandResponse, RedisCommandDefinition } from '../../types';
+import { isSuperRole } from '../../constants/roles';
 
 interface ServiceOption {
   name: string;
@@ -51,7 +52,7 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
   }, [services, selectedRedisService]);
 
   const isReader = user?.role === 'READER';
-  const isMaster = user?.role === 'MASTER';
+  const isMaster = isSuperRole(user?.role);
   const commandDef = getCommandDefinition(selectedCommand);
   const isWriteCommand = commandDef?.isWrite ?? false;
   const isRawCommand = selectedCommand === 'RAW';
