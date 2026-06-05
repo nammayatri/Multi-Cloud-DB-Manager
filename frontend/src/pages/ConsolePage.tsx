@@ -469,7 +469,7 @@ const ConsolePage = () => {
           <Box sx={{ flexGrow: 1 }} />
 
           <Stack direction="row" spacing={2} alignItems="center">
-            {user.role === 'MASTER' && (
+            {user.role === 'ADMIN' && (
               <Button
                 color="inherit"
                 startIcon={<PeopleIcon />}

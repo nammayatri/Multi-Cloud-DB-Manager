@@ -55,9 +55,9 @@ const UsersPage = () => {
         const currentUser = await authAPI.getCurrentUser();
         setUser(currentUser);
 
-        // Only MASTER can access this page
-        if (currentUser.role !== 'MASTER') {
-          toast.error('Access denied. MASTER role required.');
+        // Only ADMIN can access this page
+        if (currentUser.role !== 'ADMIN') {
+          toast.error('Access denied. ADMIN role required.');
           navigate('/');
           return;
         }
@@ -147,7 +147,7 @@ const UsersPage = () => {
     }
   };
 
-  if (!user || user.role !== 'MASTER') {
+  if (!user || user.role !== 'ADMIN') {
     return <Box>Loading...</Box>;
   }
 

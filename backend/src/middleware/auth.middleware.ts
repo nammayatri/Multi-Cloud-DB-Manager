@@ -57,6 +57,13 @@ export const requireRoles =
 export const requireMaster = requireRoles(Role.MASTER);
 
 /**
+ * User-administration gate: exclusively ADMIN.
+ * ADMIN holds everything MASTER does PLUS user-access management;
+ * MASTER no longer manages users.
+ */
+export const requireAdmin = requireRoles(Role.ADMIN);
+
+/**
  * Middleware to check if user can execute write queries
  * MASTER and USER can write, READER cannot
  */

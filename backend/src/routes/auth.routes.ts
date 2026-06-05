@@ -11,7 +11,7 @@ import {
   listUsers,
   searchUsers
 } from '../controllers/auth.controller';
-import { isAuthenticated, requireMaster } from '../middleware/auth.middleware';
+import { isAuthenticated, requireAdmin } from '../middleware/auth.middleware';
 
 console.log('[AUTH ROUTES] Loading auth routes...');
 const router = Router();
@@ -30,25 +30,25 @@ router.get('/me', isAuthenticated, getCurrentUser);
 console.log('[AUTH ROUTES] Registering POST /logout route');
 router.post('/logout', isAuthenticated, logout);
 
-// User-administration routes — exclusively MASTER. ADMIN matches MASTER for
-// query execution but must NOT manage user access levels.
-console.log('[AUTH ROUTES] Registering POST /activate route (MASTER only)');
-router.post('/activate', isAuthenticated, requireMaster, activateUsers);
+// User-administration routes — exclusively ADMIN. ADMIN has everything MASTER
+// does plus user-access management; MASTER no longer manages users.
+console.log('[AUTH ROUTES] Registering POST /activate route (ADMIN only)');
+router.post('/activate', isAuthenticated, requireAdmin, activateUsers);
 
-console.log('[AUTH ROUTES] Registering POST /deactivate route (MASTER only)');
-router.post('/deactivate', isAuthenticated, requireMaster, deactivateUsers);
+console.log('[AUTH ROUTES] Registering POST /deactivate route (ADMIN only)');
+router.post('/deactivate', isAuthenticated, requireAdmin, deactivateUsers);
 
-console.log('[AUTH ROUTES] Registering POST /change-role route (MASTER only)');
-router.post('/change-role', isAuthenticated, requireMaster, changeUserRole);
+console.log('[AUTH ROUTES] Registering POST /change-role route (ADMIN only)');
+router.post('/change-role', isAuthenticated, requireAdmin, changeUserRole);
 
-console.log('[AUTH ROUTES] Registering POST /delete route (MASTER only)');
-router.post('/delete', isAuthenticated, requireMaster, deleteUser);
+console.log('[AUTH ROUTES] Registering POST /delete route (ADMIN only)');
+router.post('/delete', isAuthenticated, requireAdmin, deleteUser);
 
-console.log('[AUTH ROUTES] Registering GET /users/search route (MASTER only)');
-router.get('/users/search', isAuthenticated, requireMaster, searchUsers);
+console.log('[AUTH ROUTES] Registering GET /users/search route (ADMIN only)');
+router.get('/users/search', isAuthenticated, requireAdmin, searchUsers);
 
-console.log('[AUTH ROUTES] Registering GET /users route (MASTER only)');
-router.get('/users', isAuthenticated, requireMaster, listUsers);
+console.log('[AUTH ROUTES] Registering GET /users route (ADMIN only)');
+router.get('/users', isAuthenticated, requireAdmin, listUsers);
 
 console.log('[AUTH ROUTES] Auth routes configured');
 export default router;

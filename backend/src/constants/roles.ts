@@ -1,8 +1,9 @@
 export const Role = {
   MASTER: 'MASTER',
-  // ADMIN: identical execution powers to MASTER (queries, Redis, ClickHouse,
-  // batch, history visibility). The ONLY difference: user-access management
-  // (activate/deactivate/change role/delete) remains exclusively MASTER.
+  // ADMIN: everything MASTER can do (queries, Redis, ClickHouse, batch,
+  // history visibility) PLUS user-access management (activate/deactivate/
+  // change role/delete). MASTER retains full execution powers but does NOT
+  // manage users.
   ADMIN: 'ADMIN',
   USER: 'USER',
   READER: 'READER',
