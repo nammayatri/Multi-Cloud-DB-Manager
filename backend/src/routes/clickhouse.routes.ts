@@ -5,7 +5,7 @@ import { validate, clickhouseQuerySchema } from '../middleware/validation.middle
 import { Role } from '../constants/roles';
 
 const router = Router();
-const requireChWriter = requireRoles(Role.MASTER, Role.CKH_MANAGER);
+const requireChWriter = requireRoles(Role.MASTER, Role.ADMIN, Role.CKH_MANAGER);
 
 // GET /api/clickhouse/status — any authenticated user can check health
 router.get('/status', isAuthenticated, getStatus);

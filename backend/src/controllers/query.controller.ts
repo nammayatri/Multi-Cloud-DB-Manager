@@ -6,6 +6,7 @@ import DatabasePools from '../config/database';
 import logger from '../utils/logger';
 import { AppError } from '../middleware/error.middleware';
 import { QueryRequest } from '../types';
+import { isSuperRole } from '../constants/roles';
 import bcrypt from 'bcryptjs';
 
 /**
@@ -30,9 +31,9 @@ export const executeQuery = async (
     const requiresPasswordVerification = queryService.requiresPasswordVerification(queryRequest.query);
 
     if (requiresPasswordVerification) {
-      // Only MASTER users can execute these queries
-      if (user.role !== 'MASTER') {
-        throw new AppError('Only MASTER users can execute ALTER/DROP queries', 403);
+      // Only MASTER/ADMIN users can execute these queries
+      if (!isSuperRole(user.role)) {
+        throw new AppError('Only MASTER or ADMIN users can execute ALTER/DROP queries', 403);
       }
 
       // Verify password
@@ -194,8 +195,8 @@ export const cancelQuery = async (
       throw new AppError('Execution not found', 404);
     }
 
-    // Authorization: Only allow cancelling own executions or MASTER users
-    if (status.userId && status.userId !== user.id && user.role !== 'MASTER') {
+    // Authorization: Only allow cancelling own executions or MASTER/ADMIN users
+    if (status.userId && status.userId !== user.id && !isSuperRole(user.role)) {
       throw new AppError('You can only cancel your own queries', 403);
     }
 

@@ -123,8 +123,8 @@ const QueryWarningDialog = ({
         {requiresPassword && (
           <Box sx={{ mt: 3 }}>
             <Alert severity="error" sx={{ mb: 2 }}>
-              <strong>MASTER Authentication Required</strong><br />
-              This query requires password verification. Only MASTER users can execute ALTER/DROP queries.
+              <strong>Password Verification Required</strong><br />
+              This query requires password verification. Only MASTER or ADMIN users can execute these queries.
             </Alert>
             <TextField
               fullWidth

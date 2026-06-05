@@ -25,6 +25,8 @@ import replicationRoutes from './routes/replication.routes';
 import redisRoutes from './routes/redis.routes';
 import clickhouseRoutes from './routes/clickhouse.routes';
 import migrationsRoutes from './routes/migrations.routes';
+import { getConfig as getMigrationsConfig } from './services/migrations/migrations.service';
+import repoState from './services/migrations/repo-state.service';
 import shudhiRoutes from './routes/shudhi.routes';
 import RedisManagerPools from './config/redis-pools';
 import ClickHouseClientManager from './config/clickhouse';
@@ -247,11 +249,9 @@ const startServer = async () => {
     // Replaces the K8s init container so the HTTP server starts immediately;
     // Migration endpoints gate on the clone state until it's READY.
     try {
-      const { getConfig: getMigrationsConfig } = await import('./services/migrations/migrations.service');
-      const { default: repoState } = await import('./services/migrations/repo-state.service');
       const cfg = getMigrationsConfig();
       console.log(`[STARTUP] Triggering NammaYatri repo clone in background → ${cfg.repoPath}`);
-      repoState.ensureCloned(cfg.repoPath, cfg.repoUrl).catch((err) => {
+      repoState.ensureCloned(cfg.repoPath, cfg.repoUrl).catch((err: Error) => {
         console.error('[STARTUP] Background clone failed:', err.message);
       });
     } catch (err: any) {

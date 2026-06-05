@@ -24,7 +24,7 @@ import TableRowsIcon from '@mui/icons-material/TableRows';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import HubIcon from '@mui/icons-material/Hub';
 import CachedIcon from '@mui/icons-material/Cached';
-import { authAPI, schemaAPI } from '../services/api';
+import { authAPI, schemaAPI, toastNonApiError } from '../services/api';
 import { Role } from '../constants/roles';
 import { useAppStore } from '../store/appStore';
 import toast from 'react-hot-toast';
@@ -41,6 +41,8 @@ import MigrationResultsView from '../components/Migrations/MigrationResultsView'
 import MigrationActionBar from '../components/Migrations/MigrationActionBar';
 import { useMigrationsStore } from '../store/migrationsStore';
 import type { QueryResponse, RedisCommandResponse } from '../types';
+import CircularProgress from '@mui/material/CircularProgress';
+import LinearProgress from '@mui/material/LinearProgress';
 
 // Heavy tab panels are code-split: their JS only downloads when the tab is first
 // opened (pairs with the lazy-mount that defers their data fetches).
@@ -56,31 +58,29 @@ const panelLoader = (
   </Box>
 );
 
-import CircularProgress from '@mui/material/CircularProgress';
-import LinearProgress from '@mui/material/LinearProgress';
 
 type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi';
 
 // Batch Query (CSV) — destructive arbitrary parametrized SQL, intentionally
 // withheld from RELEASE_MANAGER (schema-change scope, not data manipulation).
-const BATCH_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER];
+const BATCH_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER];
 
 // Redis Manager — RELEASE_MANAGER joins the standard tier (USER-equivalent
 // read + write + SCAN preview/delete; RAW stays MASTER-only at the route gate).
-const REDIS_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+const REDIS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
 
 // DB Manager / Migrations — schema work, fits RELEASE_MANAGER.
-const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
 
 // Shudhi (In-Memory Cache Management) — same as Redis: all standard roles.
-const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
 
 const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode; visibleTo: Role[] }> = [
   { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} />, visibleTo: REDIS_ROLES },
   { mode: 'batch', label: 'Batch Query', icon: <TableRowsIcon sx={{ fontSize: 18 }} />, visibleTo: BATCH_ROLES },
   { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
-  { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.CKH_MANAGER] },
+  { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN, Role.CKH_MANAGER] },
   { mode: 'shudhi', label: 'Shudhi', icon: <CachedIcon sx={{ fontSize: 18 }} />, visibleTo: SHUDHI_ROLES },
 ];
 
@@ -376,7 +376,7 @@ const ConsolePage = () => {
       navigate('/login');
       toast.success('Logged out successfully');
     } catch (error) {
-      toast.error('Logout failed');
+      toastNonApiError(error, 'Logout failed');
     }
   };
 
@@ -389,7 +389,7 @@ const ConsolePage = () => {
       // Trigger a re-render by updating a state or force refresh the page
       window.location.reload();
     } catch (error) {
-      toast.error('Failed to refresh configuration');
+      toastNonApiError(error, 'Failed to refresh configuration');
     } finally {
       setRefreshingConfig(false);
     }
@@ -469,7 +469,7 @@ const ConsolePage = () => {
           <Box sx={{ flexGrow: 1 }} />
 
           <Stack direction="row" spacing={2} alignItems="center">
-            {user.role === 'MASTER' && (
+            {user.role === 'ADMIN' && (
               <Button
                 color="inherit"
                 startIcon={<PeopleIcon />}

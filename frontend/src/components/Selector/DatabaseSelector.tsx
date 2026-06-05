@@ -27,7 +27,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
 import InfoIcon from '@mui/icons-material/Info';
 import { useAppStore } from '../../store/appStore';
-import { queryAPI, schemaAPI } from '../../services/api';
+import { queryAPI, schemaAPI, toastNonApiError } from '../../services/api';
 import toast from 'react-hot-toast';
 import type { QueryResponse, DatabaseConfiguration, DatabaseInfo } from '../../types';
 import QueryWarningDialog from '../Dialog/QueryWarningDialog';
@@ -156,7 +156,7 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
       }
     } catch (error) {
       console.error('Failed to load database configuration:', error);
-      toast.error('Failed to load database configuration');
+      toastNonApiError(error, 'Failed to load database configuration');
 
       // Fallback to hardcoded options
       setDatabaseOptions([
@@ -318,7 +318,7 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
       setIsExecuting(false);
       setCurrentExecutionId(null);
       setExecutionProgress(null);
-      toast.error('Failed to get execution status');
+      toastNonApiError(error, 'Failed to get execution status');
     }
   };
 
@@ -374,11 +374,27 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
         setExecutionProgress(null);
         return;
       }
-      // Toast is already shown by the axios interceptor in api.ts;
-      // only fall back here if the response carried no error payload.
-      if (!errMsg) {
-        toast.error('Failed to execute query');
+      // Safety net: the backend demands password verification for this query but
+      // our client-side detection didn't prompt for one (rule drift). Re-open the
+      // warning dialog with a password field so the user can retry, instead of
+      // dead-ending on an error toast.
+      if (errMsg.includes('Password verification required')) {
+        setCurrentWarning({
+          type: 'danger',
+          title: 'Password Required',
+          message: 'This query contains a sensitive operation that requires your password to execute.',
+          affectedStatements: [],
+          requiresPassword: true,
+        });
+        setShowWarningDialog(true);
+        setPendingExecution(true);
+        setIsExecuting(false);
+        setCurrentExecutionId(null);
+        setExecutionProgress(null);
+        return;
       }
+      // The axios interceptor already toasts API errors.
+      toastNonApiError(error, 'Failed to execute query');
       setIsExecuting(false);
       setCurrentExecutionId(null);
       setExecutionProgress(null);
@@ -392,7 +408,8 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
       await queryAPI.cancel(currentExecutionId);
       // Don't show toast here - wait for the actual cancellation status from polling
     } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Failed to cancel query');
+      // The axios interceptor already toasts API errors.
+      toastNonApiError(error, 'Failed to cancel query');
     }
   };
 

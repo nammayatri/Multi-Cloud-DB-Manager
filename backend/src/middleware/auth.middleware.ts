@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
-import { Role } from '../constants/roles';
+import { Role, isSuperRole } from '../constants/roles';
 import QueryValidator from '../services/query/QueryValidator';
 
 /**
@@ -57,6 +57,13 @@ export const requireRoles =
 export const requireMaster = requireRoles(Role.MASTER);
 
 /**
+ * User-administration gate: exclusively ADMIN.
+ * ADMIN holds everything MASTER does PLUS user-access management;
+ * MASTER no longer manages users.
+ */
+export const requireAdmin = requireRoles(Role.ADMIN);
+
+/**
  * Middleware to check if user can execute write queries
  * MASTER and USER can write, READER cannot
  */
@@ -93,15 +100,15 @@ export const validateRedisPermissions = (req: Request, res: Response, next: Next
   const { command } = req.body;
   const upperCmd = command ? String(command).toUpperCase() : '';
 
-  // RAW commands — only MASTER
-  if (upperCmd === 'RAW' && user.role !== 'MASTER') {
-    logger.warn('Non-MASTER attempted Redis RAW command', {
+  // RAW commands — only MASTER/ADMIN
+  if (upperCmd === 'RAW' && !isSuperRole(user.role)) {
+    logger.warn('Unprivileged role attempted Redis RAW command', {
       username: user.username,
       role: user.role,
     });
     return res.status(403).json({
       error: 'Forbidden',
-      message: 'Only MASTER role can execute raw Redis commands',
+      message: 'Only MASTER or ADMIN role can execute raw Redis commands',
     });
   }
 
@@ -176,9 +183,10 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
 
   const trimmedQuery = query.trim().toUpperCase();
 
-  // MASTER can do anything
-  if (user.role === 'MASTER') {
-    logger.info('MASTER executing query', {
+  // MASTER and ADMIN can run anything (ADMIN differs from MASTER only in
+  // user-access management, which is gated at the auth routes).
+  if (isSuperRole(user.role)) {
+    logger.info(`${user.role} executing query`, {
       username: user.username,
       query: query.substring(0, 100),
     });
@@ -244,35 +252,50 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
     });
   }
 
-  // For USER: Only allow specific operations
+  // For USER: only allow specific operations
   if (user.role === 'USER') {
-    // Operations that USER is allowed to do
+    // Operations that USER/ADMIN are allowed to run
     const userAllowedPatterns = [
       /^\s*SELECT/i,
-      /^\s*WITH.*SELECT/i,  // CTEs with SELECT
+      /^\s*WITH[\s\S]*SELECT/i, // CTEs with SELECT ([\s\S] so multi-line CTEs match)
       /^\s*INSERT/i,
       /^\s*UPDATE/i,
       /^\s*ALTER\s+TABLE/i,
       /^\s*CREATE\s+TABLE/i,
       /^\s*CREATE\s+INDEX/i,
+      // EXPLAIN restricted to read statements — EXPLAIN ANALYZE on a write
+      // statement actually executes the write.
+      /^\s*EXPLAIN(\s+\([^)]*\)|\s+ANALYZE|\s+VERBOSE)*\s+(SELECT|WITH)/i,
+      /^\s*(BEGIN|COMMIT|ROLLBACK)\b/i,
     ];
 
-    // Check if query matches any allowed pattern
-    const isAllowed = userAllowedPatterns.some(pattern => pattern.test(query));
+    // Validate EVERY statement, not just the query as a whole — otherwise a
+    // disallowed statement can hide behind an allowed one
+    // (e.g. "SELECT 1; DELETE FROM t").
+    let statements: string[];
+    try {
+      statements = QueryValidator.splitStatements(query);
+    } catch {
+      statements = [query];
+    }
 
-    if (!isAllowed) {
-      // Check what they tried to do
+    const disallowed = statements.find(
+      stmt => !userAllowedPatterns.some(pattern => pattern.test(stmt))
+    );
+
+    if (disallowed) {
+      // Identify what they tried to do (first keyword of the offending statement)
+      const upperStmt = disallowed.trim().toUpperCase();
       let attemptedOperation = 'Unknown';
-      if (trimmedQuery.includes('DELETE')) attemptedOperation = 'DELETE';
-      else if (trimmedQuery.includes('DROP')) attemptedOperation = 'DROP';
-      else if (trimmedQuery.includes('TRUNCATE')) attemptedOperation = 'TRUNCATE';
-      else if (trimmedQuery.includes('GRANT')) attemptedOperation = 'GRANT';
-      else if (trimmedQuery.includes('REVOKE')) attemptedOperation = 'REVOKE';
-      else if (trimmedQuery.includes('CREATE DATABASE')) attemptedOperation = 'CREATE DATABASE';
-      else if (trimmedQuery.includes('CREATE SCHEMA')) attemptedOperation = 'CREATE SCHEMA';
-      else if (trimmedQuery.includes('CREATE INDEX')) attemptedOperation = 'CREATE INDEX';
+      if (upperStmt.startsWith('DELETE')) attemptedOperation = 'DELETE';
+      else if (upperStmt.startsWith('DROP')) attemptedOperation = 'DROP';
+      else if (upperStmt.startsWith('TRUNCATE')) attemptedOperation = 'TRUNCATE';
+      else if (upperStmt.startsWith('GRANT')) attemptedOperation = 'GRANT';
+      else if (upperStmt.startsWith('REVOKE')) attemptedOperation = 'REVOKE';
+      else if (upperStmt.startsWith('CREATE DATABASE')) attemptedOperation = 'CREATE DATABASE';
+      else if (upperStmt.startsWith('CREATE SCHEMA')) attemptedOperation = 'CREATE SCHEMA';
 
-      logger.warn('USER attempted unauthorized operation', {
+      logger.warn(`${user.role} attempted unauthorized operation`, {
         username: user.username,
         operation: attemptedOperation,
         query: query.substring(0, 100),
@@ -280,13 +303,13 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
 
       return res.status(403).json({
         error: 'Forbidden',
-        message: `USER role can only execute: SELECT, INSERT, UPDATE, ALTER TABLE, CREATE TABLE, CREATE INDEX. ${attemptedOperation} requires MASTER role.`,
+        message: `${user.role} role can only execute: SELECT, INSERT, UPDATE, ALTER TABLE, CREATE TABLE, CREATE INDEX. ${attemptedOperation} requires MASTER role.`,
         allowedOperations: ['SELECT', 'INSERT', 'UPDATE', 'ALTER TABLE', 'CREATE TABLE', 'CREATE INDEX'],
-        yourRole: 'USER',
+        yourRole: user.role,
       });
     }
 
-    // USER can proceed with allowed operations
+    // All statements allowed — proceed
     return next();
   }
 
@@ -321,8 +344,18 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
         });
       }
     }
+
+    return next();
   }
 
-  // READER restrictions (already handled above, but keep for clarity)
-  next();
+  // Fail closed: every role must be explicitly handled above. An unknown role
+  // must never fall through to full query access.
+  logger.warn('Query attempt by unhandled role — denying', {
+    username: user.username,
+    role: user.role,
+  });
+  return res.status(403).json({
+    error: 'Forbidden',
+    message: `Role ${user.role} does not have query access`,
+  });
 };

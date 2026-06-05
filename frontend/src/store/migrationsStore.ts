@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { AnalysisResult, MigrationsConfigResponse, RefsResponse } from '../types/migrations';
 import { migrationsAPI } from '../services/migrationsApi';
 import toast from 'react-hot-toast';
+import { toastNonApiError } from '../services/api';
 
 type StatusFilter = 'all' | 'applied' | 'pending' | 'manual_check' | 'error';
 
@@ -198,8 +199,8 @@ export const useMigrationsStore = create<MigrationsState>((set, get) => ({
         config,
         environment: envKeys.length > 0 ? envKeys[0] : '',
       });
-    } catch {
-      toast.error('Failed to load migrations config');
+    } catch (error) {
+      toastNonApiError(error, 'Failed to load migrations config');
     }
   },
 
@@ -207,8 +208,8 @@ export const useMigrationsStore = create<MigrationsState>((set, get) => ({
     try {
       const refs = await migrationsAPI.getRefs();
       set({ refs });
-    } catch {
-      toast.error('Failed to load git refs');
+    } catch (error) {
+      toastNonApiError(error, 'Failed to load git refs');
     }
   },
 
@@ -256,8 +257,8 @@ export const useMigrationsStore = create<MigrationsState>((set, get) => ({
       // Reload refs after refresh
       const refs = await migrationsAPI.getRefs();
       set({ refs });
-    } catch {
-      toast.error('Failed to refresh repository');
+    } catch (error) {
+      toastNonApiError(error, 'Failed to refresh repository');
     }
   },
 }));

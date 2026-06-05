@@ -35,18 +35,38 @@ api.interceptors.response.use(
         window.location.href = '/login';
       }
     } else if (!isAuthForm) {
-      // Show error toast for non-auth-form endpoints
-      if (error.response?.data?.error) {
-        toast.error(error.response.data.error);
-      } else if (error.response?.data?.message) {
-        toast.error(error.response.data.message);
+      // Show one toast per failed API call. Server messages are crafted to be
+      // user-facing, but guard the UX: truncate long ones, and never surface a
+      // raw 5xx body (could be an unsanitized internal error).
+      const status: number | undefined = error.response?.status;
+      const serverMsg: string = (error.response?.data?.error || error.response?.data?.message || '').trim();
+      const MAX_TOAST_LEN = 220;
+      let msg: string;
+      if (serverMsg && (status === undefined || status < 500)) {
+        msg = serverMsg.length > MAX_TOAST_LEN ? `${serverMsg.slice(0, MAX_TOAST_LEN - 1)}…` : serverMsg;
+      } else if (status && status >= 500) {
+        msg = 'Server error — please retry or check the server logs';
       } else {
-        toast.error('An unexpected error occurred');
+        msg = 'An unexpected error occurred';
       }
+      toast.error(msg);
     }
     return Promise.reject(error);
   }
 );
+
+/**
+ * The response interceptor above already shows a toast for every failed API
+ * call (the server's error message, or a generic fallback). Use this in catch
+ * blocks around API calls so only NON-API failures (e.g. runtime errors in a
+ * response handler) produce a toast — otherwise the user sees the same error
+ * twice.
+ */
+export const toastNonApiError = (error: unknown, fallback: string) => {
+  if (!(error as { isAxiosError?: boolean })?.isAxiosError) {
+    toast.error(fallback);
+  }
+};
 
 // Auth API
 export const authAPI = {

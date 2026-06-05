@@ -26,7 +26,7 @@ import CircleIcon from '@mui/icons-material/Circle';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
-import { shudhiAPI } from '../../services/api';
+import { shudhiAPI, toastNonApiError } from '../../services/api';
 import toast from 'react-hot-toast';
 import type {
   ShudhiPodInfo,
@@ -60,6 +60,8 @@ const ShudhiPanel = () => {
   const [selectedService, setSelectedService] = useState('');
   const [selectedPod, setSelectedPod] = useState('');
   const [selectedKey, setSelectedKey] = useState('');
+  // Client-side filter over the loaded keys list
+  const [keyFilter, setKeyFilter] = useState('');
 
   // Value viewer
   const [cachedValue, setCachedValue] = useState<any>(null);
@@ -105,8 +107,8 @@ const ShudhiPanel = () => {
       if (data.length > 0 && !selectedService) {
         setSelectedService(data[0]);
       }
-    } catch {
-      toast.error('Failed to load Shudhi services');
+    } catch (error) {
+      toastNonApiError(error, 'Failed to load Shudhi services');
     } finally {
       setLoadingServices(false);
     }
@@ -119,6 +121,7 @@ const ShudhiPanel = () => {
     setSelectedPod('');
     setKeys([]);
     setSelectedKey('');
+    setKeyFilter('');
     setCachedValue(null);
     setRefreshResult(null);
 
@@ -127,8 +130,8 @@ const ShudhiPanel = () => {
       try {
         const data = await shudhiAPI.getPods(selectedService);
         setPods(data);
-      } catch {
-        toast.error('Failed to load pods');
+      } catch (error) {
+        toastNonApiError(error, 'Failed to load pods');
       } finally {
         setLoadingPods(false);
       }
@@ -173,8 +176,8 @@ const ShudhiPanel = () => {
         key: targetKey,
       });
       setCachedValue(result);
-    } catch {
-      toast.error('Failed to get cached value');
+    } catch (error) {
+      toastNonApiError(error, 'Failed to get cached value');
     } finally {
       setValueLoading(false);
     }
@@ -194,14 +197,19 @@ const ShudhiPanel = () => {
       });
       setRefreshResult(result);
       toast.success(`Cache refreshed: ${result.confirmed}/${result.total} pods confirmed`);
-    } catch {
-      toast.error('Cache refresh failed');
+    } catch (error) {
+      toastNonApiError(error, 'Cache refresh failed');
     } finally {
       setRefreshing(false);
     }
   };
 
   const isReader = user?.role === 'READER';
+
+  // Case-insensitive substring filter over the loaded keys.
+  const filteredKeys = keyFilter
+    ? keys.filter((k) => k.keyName.toLowerCase().includes(keyFilter.toLowerCase()))
+    : keys;
 
   if (connStatus === 'not_configured') {
     return (
@@ -293,16 +301,25 @@ const ShudhiPanel = () => {
 
           {/* Keys list */}
           <Box sx={{ flex: 1, overflow: 'auto', px: 1 }}>
+            <TextField
+              size="small"
+              fullWidth
+              placeholder="Search keys…"
+              value={keyFilter}
+              onChange={(e) => setKeyFilter(e.target.value)}
+              sx={{ mt: 1, px: 1 }}
+              InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 18, mr: 0.5, color: 'text.secondary' }} /> }}
+            />
             <Typography variant="caption" color="text.secondary" sx={{ px: 1, pt: 1, display: 'block' }}>
-              Registered Keys ({keys.length}) {loadingKeys && <CircularProgress size={12} sx={{ ml: 1 }} />}
+              Registered Keys ({filteredKeys.length}{keyFilter ? ` of ${keys.length}` : ''}) {loadingKeys && <CircularProgress size={12} sx={{ ml: 1 }} />}
             </Typography>
-            {keys.length === 0 && !loadingKeys && (
+            {filteredKeys.length === 0 && !loadingKeys && (
               <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 2, textAlign: 'center' }}>
-                {selectedService ? 'No registered keys' : 'Select a service'}
+                {!selectedService ? 'Select a service' : keyFilter ? 'No keys match the search' : 'No registered keys'}
               </Typography>
             )}
             <List dense disablePadding>
-              {keys.map((k, idx) => (
+              {filteredKeys.map((k, idx) => (
                 <ListItemButton
                   key={`${k.keyName}-${k.podName}-${idx}`}
                   selected={selectedKey === k.keyName}
