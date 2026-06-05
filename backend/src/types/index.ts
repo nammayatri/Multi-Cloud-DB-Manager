@@ -247,5 +247,12 @@ declare global {
       picture?: string;
       role?: Role;
     }
+    // Explicitly add `user` to Request rather than relying on @types/passport's
+    // augmentation being resolved — some toolchains (newer TS versions in IDEs)
+    // fail to pick it up transitively, producing "Property 'user' does not exist
+    // on type 'Request'". Merges cleanly with @types/passport's declaration.
+    interface Request {
+      user?: User;
+    }
   }
 }

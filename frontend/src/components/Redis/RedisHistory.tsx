@@ -21,7 +21,7 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import PersonIcon from '@mui/icons-material/Person';
 import { format } from 'date-fns';
-import { redisAPI } from '../../services/api';
+import { redisAPI, toastNonApiError } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
 import { isSuperRole } from '../../constants/roles';
@@ -57,7 +57,7 @@ const RedisHistory = () => {
       });
       setHistory(data);
     } catch (error) {
-      toast.error('Failed to load Redis history');
+      toastNonApiError(error, 'Failed to load Redis history');
     } finally {
       setLoading(false);
     }

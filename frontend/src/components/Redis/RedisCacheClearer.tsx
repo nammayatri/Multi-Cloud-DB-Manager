@@ -24,7 +24,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import StopIcon from '@mui/icons-material/Stop';
 import { useAppStore } from '../../store/appStore';
-import { redisAPI } from '../../services/api';
+import { redisAPI, toastNonApiError } from '../../services/api';
 import toast from 'react-hot-toast';
 import type { RedisScanResponse, RedisScanProgress } from '../../types';
 
@@ -175,7 +175,7 @@ const RedisCacheClearer = () => {
       stopPolling();
       setIsScanning(false);
       setCurrentExecutionId(null);
-      toast.error('Failed to get scan status');
+      toastNonApiError(error, 'Failed to get scan status');
     }
   };
 
@@ -207,7 +207,7 @@ const RedisCacheClearer = () => {
     } catch (error: any) {
       setIsScanning(false);
       setCurrentExecutionId(null);
-      toast.error(error.response?.data?.error || 'Failed to start scan');
+      toastNonApiError(error, 'Failed to start scan');
     }
   };
 
@@ -218,7 +218,7 @@ const RedisCacheClearer = () => {
       await redisAPI.cancelScan(currentExecutionId);
       // Don't stop polling here — wait for the scan to report 'cancelled' status
     } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Failed to cancel scan');
+      toastNonApiError(error, 'Failed to cancel scan');
     }
   };
 

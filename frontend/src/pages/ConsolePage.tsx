@@ -24,7 +24,7 @@ import TableRowsIcon from '@mui/icons-material/TableRows';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import HubIcon from '@mui/icons-material/Hub';
 import CachedIcon from '@mui/icons-material/Cached';
-import { authAPI, schemaAPI } from '../services/api';
+import { authAPI, schemaAPI, toastNonApiError } from '../services/api';
 import { Role } from '../constants/roles';
 import { useAppStore } from '../store/appStore';
 import toast from 'react-hot-toast';
@@ -376,7 +376,7 @@ const ConsolePage = () => {
       navigate('/login');
       toast.success('Logged out successfully');
     } catch (error) {
-      toast.error('Logout failed');
+      toastNonApiError(error, 'Logout failed');
     }
   };
 
@@ -389,7 +389,7 @@ const ConsolePage = () => {
       // Trigger a re-render by updating a state or force refresh the page
       window.location.reload();
     } catch (error) {
-      toast.error('Failed to refresh configuration');
+      toastNonApiError(error, 'Failed to refresh configuration');
     } finally {
       setRefreshingConfig(false);
     }

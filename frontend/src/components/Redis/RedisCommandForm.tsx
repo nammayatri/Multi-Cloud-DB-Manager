@@ -16,7 +16,7 @@ import {
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { useAppStore } from '../../store/appStore';
-import { redisAPI } from '../../services/api';
+import { redisAPI, toastNonApiError } from '../../services/api';
 import { ALL_STRUCTURED_COMMANDS, RAW_COMMAND, getCommandDefinition } from './RedisCommandDefinitions';
 import toast from 'react-hot-toast';
 import type { RedisCommandResponse, RedisCommandDefinition } from '../../types';
@@ -148,7 +148,7 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
       onResult(result);
       toast.success('Command executed');
     } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Command execution failed');
+      toastNonApiError(error, 'Command execution failed');
     } finally {
       setIsExecuting(false);
     }

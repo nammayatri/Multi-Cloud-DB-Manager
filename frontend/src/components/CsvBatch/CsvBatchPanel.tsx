@@ -35,7 +35,7 @@ import VisibilityIcon from '@mui/icons-material/Visibility';
 import DownloadIcon from '@mui/icons-material/Download';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
-import { csvBatchAPI, schemaAPI } from '../../services/api';
+import { csvBatchAPI, schemaAPI, toastNonApiError } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
 
@@ -264,7 +264,7 @@ const CsvBatchPanel = () => {
       stopPolling();
       setStatus('cancelled');
     } catch (err) {
-      toast.error('Failed to cancel');
+      toastNonApiError(err, 'Failed to cancel');
     }
   };
 

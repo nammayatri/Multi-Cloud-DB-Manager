@@ -25,7 +25,7 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import PersonIcon from '@mui/icons-material/Person';
 import { format } from 'date-fns';
-import { historyAPI, authAPI, schemaAPI } from '../../services/api';
+import { historyAPI, authAPI, schemaAPI, toastNonApiError } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
 import type { QueryExecution, DatabaseInfo } from '../../types';
@@ -139,7 +139,7 @@ const QueryHistory = ({ database }: QueryHistoryProps = {}) => {
         setTotalCount((currentPage - 1) * ITEMS_PER_PAGE + history.length);
       }
     } catch (error) {
-      toast.error('Failed to load history');
+      toastNonApiError(error, 'Failed to load history');
     } finally {
       setLoading(false);
     }

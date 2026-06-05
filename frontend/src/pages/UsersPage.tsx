@@ -25,7 +25,7 @@ import {
 import LogoutIcon from '@mui/icons-material/Logout';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import DeleteIcon from '@mui/icons-material/Delete';
-import { authAPI } from '../services/api';
+import { authAPI, toastNonApiError } from '../services/api';
 import { useAppStore } from '../store/appStore';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
@@ -78,7 +78,7 @@ const UsersPage = () => {
       const response = await authAPI.listUsers();
       setUsers(response.users);
     } catch (error) {
-      toast.error('Failed to load users');
+      toastNonApiError(error, 'Failed to load users');
     } finally {
       setLoading(false);
     }
@@ -92,7 +92,7 @@ const UsersPage = () => {
       navigate('/login');
       toast.success('Logged out successfully');
     } catch (error) {
-      toast.error('Logout failed');
+      toastNonApiError(error, 'Logout failed');
     }
   };
 
@@ -102,7 +102,7 @@ const UsersPage = () => {
       toast.success(`User ${username} activated`);
       await fetchUsers();
     } catch (error) {
-      toast.error('Failed to activate user');
+      toastNonApiError(error, 'Failed to activate user');
     }
   };
 
@@ -116,7 +116,7 @@ const UsersPage = () => {
       toast.success(`User ${username} deactivated`);
       await fetchUsers();
     } catch (error) {
-      toast.error('Failed to deactivate user');
+      toastNonApiError(error, 'Failed to deactivate user');
     }
   };
 
@@ -130,7 +130,7 @@ const UsersPage = () => {
       toast.success(`User ${username} role changed to ${newRole}`);
       await fetchUsers();
     } catch (error) {
-      toast.error('Failed to change user role');
+      toastNonApiError(error, 'Failed to change user role');
     }
   };
 
@@ -143,7 +143,7 @@ const UsersPage = () => {
       toast.success(`User ${username} deleted`);
       await fetchUsers();
     } catch (error) {
-      toast.error('Failed to delete user');
+      toastNonApiError(error, 'Failed to delete user');
     }
   };
 

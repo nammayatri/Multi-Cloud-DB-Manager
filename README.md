@@ -68,8 +68,9 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 │ Dynamic configuration              │ Add clouds and databases via JSON — zero code changes    │
 │ Async query engine                 │ Non‑blocking execution with progress + cancellation      │
 │ Multi‑statement support            │ Batches separated by ';' with per‑statement results      │
-│ Role‑based access                  │ MASTER / USER / READER with granular SQL control         │
-│ Password‑protected ops             │ DROP, TRUNCATE, DELETE, ALTER require MASTER password    │
+│ Role‑based access                  │ MASTER / ADMIN / USER / READER / CKH_MANAGER /           │
+│                                    │ RELEASE_MANAGER with granular SQL control                │
+│ Password‑protected ops             │ DROP, TRUNCATE, DELETE, ALTER need MASTER/ADMIN password │
 │ Query history & audit              │ Full execution log with filtering and pagination         │
 │ Env variable substitution          │ ${VAR_NAME} in config for secure credential management   │
 └────────────────────────────────────┴──────────────────────────────────────────────────────────┘
@@ -121,13 +122,13 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 | **Read‑only safety** | Triple protection: read replica host + read‑only user + pool‑level `default_transaction_read_only=on` |
 | **Auto repo sync** | Init container clones repo; `git fetch` on page load with 5‑min cooldown |
 
-### User Management <sub>— MASTER only</sub>
+### User Management <sub>— ADMIN only</sub>
 
 | | |
 |---|---|
-| **User registration** | Self‑service signup, requires MASTER activation |
+| **User registration** | Self‑service signup, requires ADMIN activation |
 | **Activate / deactivate** | Enable or disable user accounts |
-| **Role assignment** | Promote or demote between MASTER / USER / READER |
+| **Role assignment** | Promote or demote between MASTER / ADMIN / USER / READER / CKH_MANAGER / RELEASE_MANAGER |
 | **User search** | Search by username, name, or email |
 | **User deletion** | Remove accounts (cannot delete MASTER users) |
 
@@ -137,29 +138,38 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 
 ## ◈ Role permissions
 
+There are six roles. **ADMIN** has everything MASTER has *plus* user-access
+management; **MASTER** retains full execution powers but does **not** manage
+users. **RELEASE_MANAGER** is scoped to safe schema changes; **CKH_MANAGER** is
+ClickHouse-only.
+
 <table>
 <thead>
 <tr>
   <th align="left">Operation</th>
+  <th align="center">ADMIN</th>
   <th align="center">MASTER</th>
   <th align="center">USER</th>
   <th align="center">READER</th>
+  <th align="center">RELEASE_MANAGER</th>
+  <th align="center">CKH_MANAGER</th>
 </tr>
 </thead>
 <tbody>
-<tr><td>SELECT</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
-<tr><td>INSERT / UPDATE</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>CREATE TABLE / INDEX</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>ALTER TABLE (ADD)</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>DELETE</td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>DROP / TRUNCATE</td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>ALTER DROP</td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>GRANT / REVOKE</td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>Redis READ commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
-<tr><td>Redis WRITE commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>Redis SCAN / KEYS</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>User management</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>Cancel any user's query</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>SELECT</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
+<tr><td>INSERT / UPDATE</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>CREATE TABLE / INDEX</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓ <sub>CONCURRENTLY</sub></td><td align="center">—</td></tr>
+<tr><td>ALTER TABLE (ADD)</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
+<tr><td>DELETE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>DROP / TRUNCATE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>ALTER DROP</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>GRANT / REVOKE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>Redis READ commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
+<tr><td>Redis WRITE commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
+<tr><td>Redis RAW commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>ClickHouse queries</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td></tr>
+<tr><td>Cancel any user's query</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td><strong>User management</strong></td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
 </tbody>
 </table>
 
@@ -359,13 +369,18 @@ Open → **http://localhost:5173**
 ### 5 · Create your first admin
 
 1. Register a new account via the login page
-2. Promote yourself to MASTER:
+2. Promote yourself to ADMIN (the user-management role — also has full
+   query powers; available roles: MASTER, ADMIN, USER, READER,
+   CKH_MANAGER, RELEASE_MANAGER):
 
    ```sql
    UPDATE dual_db_manager.users
-   SET role = 'MASTER', is_active = true
+   SET role = 'ADMIN', is_active = true
    WHERE username = 'your-username';
    ```
+
+   > Run migrations `001`–`004` first (`backend/migrations/`) — `004` adds
+   > the ADMIN role to the `users.role` CHECK constraint.
 3. Log out and log back in. You now have full access.
 
 <br />
