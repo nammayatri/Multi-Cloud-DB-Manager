@@ -275,10 +275,13 @@ const ShudhiPanel = () => {
 
             {/* Pod Selector */}
             <FormControl size="small" fullWidth>
-              <InputLabel>Pod</InputLabel>
+              <InputLabel shrink>Pod</InputLabel>
               <Select
                 value={selectedPod}
                 label="Pod"
+                displayEmpty
+                notched
+                renderValue={(v) => (v ? String(v) : 'All pods')}
                 onChange={(e) => {
                   setSelectedPod(e.target.value);
                   setCachedValue(null);
@@ -319,24 +322,31 @@ const ShudhiPanel = () => {
               </Typography>
             )}
             <List dense disablePadding>
-              {filteredKeys.map((k, idx) => (
-                <ListItemButton
-                  key={`${k.keyName}-${k.podName}-${idx}`}
-                  selected={selectedKey === k.keyName}
-                  onClick={() => {
-                    setSelectedKey(k.keyName);
-                    if (selectedPod) handleGetValue(k.keyName);
-                  }}
-                  sx={{ borderRadius: 1, my: 0.25 }}
-                >
-                  <ListItemText
-                    primary={k.keyName}
-                    secondary={k.podName ? `pod: ${k.podName}` : undefined}
-                    primaryTypographyProps={{ variant: 'body2', fontFamily: 'monospace', fontSize: '0.8rem' }}
-                    secondaryTypographyProps={{ variant: 'caption', fontSize: '0.7rem' }}
-                  />
-                </ListItemButton>
-              ))}
+              {filteredKeys.map((k, idx) => {
+                // "All pods" entries are deduped and carry the full pod list; a
+                // single-pod entry just shows its one pod.
+                const podLabel = k.pods && k.pods.length
+                  ? `${k.pods.length} pod${k.pods.length > 1 ? 's' : ''}: ${k.pods.join(', ')}`
+                  : k.podName ? `pod: ${k.podName}` : undefined;
+                return (
+                  <ListItemButton
+                    key={`${k.keyName}-${k.podName}-${idx}`}
+                    selected={selectedKey === k.keyName}
+                    onClick={() => {
+                      setSelectedKey(k.keyName);
+                      if (selectedPod) handleGetValue(k.keyName);
+                    }}
+                    sx={{ borderRadius: 1, my: 0.25 }}
+                  >
+                    <ListItemText
+                      primary={k.keyName}
+                      secondary={podLabel}
+                      primaryTypographyProps={{ variant: 'body2', fontFamily: 'monospace', fontSize: '0.8rem' }}
+                      secondaryTypographyProps={{ variant: 'caption', fontSize: '0.7rem' }}
+                    />
+                  </ListItemButton>
+                );
+              })}
             </List>
           </Box>
         </Paper>
