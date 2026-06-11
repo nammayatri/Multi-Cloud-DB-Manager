@@ -747,3 +747,71 @@ Secondary clouds: 1
 - ✅ Restart backend after configuration changes
 
 For more information, see the [main README](../README.md).
+
+## System Configs Manager Configuration
+
+The System Configs manager edits Namma Yatri `system_configs` rows (the `Tables` KV config) through the NY dashboard's `runQuery` API, with reads/verification pinned to a local Postgres pool. It is entirely optional — without configuration the app boots normally and `/api/system-configs/targets` reports `configured: false`.
+
+### File Locations (priority order)
+
+1. `SYSTEM_CONFIGS_CONFIG` environment variable (base64-encoded JSON)
+2. Kubernetes mount at `/config/system-configs.json`
+3. Local file at `backend/config/system-configs.json`
+
+### File Structure
+
+See `backend/config/system-configs.example.json`:
+
+```json
+{
+  "targets": {
+    "rider": {
+      "label": "Rider (atlas_app)",
+      "schema": "atlas_app",
+      "dashboardBaseUrl": "https://dashboard.example.com/api",
+      "pathPrefix": "bap",
+      "merchantShortId": "NAMMA_YATRI",
+      "city": "Bangalore",
+      "email": "${SC_RIDER_DASHBOARD_EMAIL}",
+      "password": "${SC_RIDER_DASHBOARD_PASSWORD}",
+      "readPool": { "cloud": "cloud1", "database": "bap" }
+    },
+    "driver": {
+      "label": "Driver (atlas_driver_offer_bpp)",
+      "schema": "atlas_driver_offer_bpp",
+      "dashboardBaseUrl": "https://dashboard.example.com/api",
+      "pathPrefix": "bpp/driver-offer",
+      "merchantShortId": "NAMMA_YATRI_PARTNER",
+      "city": "Bangalore",
+      "email": "${SC_DRIVER_DASHBOARD_EMAIL}",
+      "password": "${SC_DRIVER_DASHBOARD_PASSWORD}",
+      "readPool": { "cloud": "cloud1", "database": "bpp" }
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `schema` | Postgres schema holding `system_configs` (`atlas_app` / `atlas_driver_offer_bpp`) |
+| `dashboardBaseUrl` | NY dashboard base URL (login + runQuery) |
+| `pathPrefix` | `bap` for rider, `bpp/driver-offer` for driver |
+| `merchantShortId`, `city` | Raw runQuery path segments (e.g. `NAMMA_YATRI`, `Bangalore`) |
+| `email`, `password` | Dashboard service-account credentials — always use env placeholders |
+| `readPool` | `{ cloud, database }` pointing at an entry in `databases.json`; used for key listing, existence checks, and post-write verification |
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `SYSTEM_CONFIGS_CONFIG` | Optional base64-encoded JSON config (overrides files) |
+| `SC_RIDER_DASHBOARD_EMAIL` / `SC_RIDER_DASHBOARD_PASSWORD` | Rider dashboard service account |
+| `SC_DRIVER_DASHBOARD_EMAIL` / `SC_DRIVER_DASHBOARD_PASSWORD` | Driver dashboard service account |
+
+`${VAR}` and `${SECRET:name:key}` substitution works the same as in `databases.json` / `redis.json`. If a placeholder remains unresolved, that target is disabled with a warning (the rest of the app is unaffected). If a target's `readPool` doesn't match a pool in `databases.json`, that target is also disabled.
+
+### Behavior Notes
+
+- All `/api/system-configs` routes are MASTER/ADMIN only; `/execute` additionally re-verifies the manager's own password (bcrypt).
+- Dashboard tokens are cached per target (login is rate-limited per email); a 401 triggers exactly one re-login + retry.
+- Updates are audited in `query_history` with `database_name='system-configs'` and `execution_mode=<rider|driver>`, including old value, new value, and verification status.

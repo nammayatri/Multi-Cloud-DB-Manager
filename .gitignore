@@ -9,6 +9,7 @@
 backend/config/databases.json
 backend/config/redis.json
 backend/config/clickhouse.json
+backend/config/system-configs.json
 !backend/config/databases.example.json
 !backend/config/databases.local.json
 

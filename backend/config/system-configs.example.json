@@ -1,0 +1,32 @@
+{
+  "targets": {
+    "rider": {
+      "label": "Rider (atlas_app)",
+      "schema": "atlas_app",
+      "dashboardBaseUrl": "https://dashboard.example.com/api",
+      "pathPrefix": "bap",
+      "merchantShortId": "NAMMA_YATRI",
+      "city": "Bangalore",
+      "email": "${SC_RIDER_DASHBOARD_EMAIL}",
+      "password": "${SC_RIDER_DASHBOARD_PASSWORD}",
+      "readPool": {
+        "cloud": "cloud1",
+        "database": "bap"
+      }
+    },
+    "driver": {
+      "label": "Driver (atlas_driver_offer_bpp)",
+      "schema": "atlas_driver_offer_bpp",
+      "dashboardBaseUrl": "https://dashboard.example.com/api",
+      "pathPrefix": "bpp/driver-offer",
+      "merchantShortId": "NAMMA_YATRI_PARTNER",
+      "city": "Bangalore",
+      "email": "${SC_DRIVER_DASHBOARD_EMAIL}",
+      "password": "${SC_DRIVER_DASHBOARD_PASSWORD}",
+      "readPool": {
+        "cloud": "cloud1",
+        "database": "bpp"
+      }
+    }
+  }
+}

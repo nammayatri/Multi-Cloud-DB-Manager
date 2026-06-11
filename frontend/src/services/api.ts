@@ -25,20 +25,35 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const url = error.config?.url || '';
+    const status: number | undefined = error.response?.status;
     // Let login/register callers handle their own errors (no redirect, no toast)
     const isAuthForm = url.includes('/auth/login') || url.includes('/auth/register');
+    // /api/system-configs/execute returns 401 { error: 'Invalid password' } for
+    // a wrong manager password — a per-request verification failure, NOT an
+    // expired session. The panel surfaces it inside its confirm dialog, so skip
+    // both redirect and toast. Match the exact contract message: a session-expiry
+    // 401 on the same route says 'Unauthorized' and must still redirect to /login.
+    const isPasswordVerify401 =
+      status === 401 &&
+      url.includes('/api/system-configs/execute') &&
+      error.response?.data?.error === 'Invalid password';
+    // Same route, 502 (dashboard call failed) / 503 (manager not configured):
+    // the bodies are crafted user-facing messages, but the generic policy below
+    // masks all 5xx bodies. The panel surfaces these inline in its dialog, so
+    // skip the toast here.
+    const isSystemConfigsServerErr =
+      (status === 502 || status === 503) && url.includes('/api/system-configs/execute');
 
-    if (error.response?.status === 401 && !isAuthForm) {
+    if (status === 401 && !isAuthForm && !isPasswordVerify401) {
       // Expired session — redirect to login (deduplicated)
       if (!isRedirecting) {
         isRedirecting = true;
         window.location.href = '/login';
       }
-    } else if (!isAuthForm) {
+    } else if (!isAuthForm && !isPasswordVerify401 && !isSystemConfigsServerErr) {
       // Show one toast per failed API call. Server messages are crafted to be
       // user-facing, but guard the UX: truncate long ones, and never surface a
       // raw 5xx body (could be an unsanitized internal error).
-      const status: number | undefined = error.response?.status;
       const serverMsg: string = (error.response?.data?.error || error.response?.data?.message || '').trim();
       const MAX_TOAST_LEN = 220;
       let msg: string;

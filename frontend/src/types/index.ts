@@ -222,3 +222,60 @@ export interface ShudhiStatusResponse {
   app?: boolean;
   message?: string;
 }
+
+// System Configs Manager Types (all routes under /api/system-configs)
+
+export type SystemConfigTarget = 'rider' | 'driver';
+
+export interface SystemConfigTargetInfo {
+  key: SystemConfigTarget;
+  label: string;
+  schema: string;
+}
+
+// GET /api/system-configs/targets
+// configured:false means the backend config file is missing — the panel shows
+// a friendly empty state instead of an error.
+export interface SystemConfigTargetsResponse {
+  configured: boolean;
+  targets: SystemConfigTargetInfo[];
+}
+
+// GET /api/system-configs/keys
+export interface SystemConfigKeysResponse {
+  keys: string[];
+}
+
+// GET /api/system-configs/config
+export interface SystemConfigResponse {
+  id: string;
+  exists: boolean;
+  configValue: string | null;
+}
+
+// POST /api/system-configs/validate
+export interface SystemConfigValidateResponse {
+  valid: boolean;
+  errors: string[];
+}
+
+// POST /api/system-configs/execute request body
+export interface SystemConfigExecuteRequest {
+  target: SystemConfigTarget;
+  id: string;
+  configValue: string;
+  password: string;
+}
+
+// POST /api/system-configs/execute response.
+// verified: 'verified' = applied & read back successfully; 'pending' = the
+// dashboard accepted the write but the read replica hasn't caught up yet.
+export interface SystemConfigExecuteResponse {
+  success: true;
+  target: SystemConfigTarget;
+  id: string;
+  operation: 'UPDATE';
+  durationMs: number;
+  verified: 'verified' | 'pending';
+  oldValue: string | null;
+}
