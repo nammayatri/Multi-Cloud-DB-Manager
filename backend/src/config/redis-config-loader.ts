@@ -112,9 +112,11 @@ function normalizeConfig(parsed: any): RedisConfigJson {
 }
 
 /**
- * Substitute ${VAR_NAME} placeholders with environment variables
+ * Substitute ${VAR_NAME} placeholders with environment variables.
+ * Also supports ${SECRET:name:key} Kubernetes secret references.
+ * Exported for reuse by other config loaders (e.g. system-configs).
  */
-function substituteEnvVars(content: string): string {
+export function substituteEnvVars(content: string): string {
   return content.replace(/\$\{([^}]+)\}/g, (match, varName) => {
     // Check if it's a Kubernetes secret reference
     if (varName.startsWith('SECRET:')) {

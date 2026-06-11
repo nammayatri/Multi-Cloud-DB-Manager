@@ -349,6 +349,73 @@ class HistoryService {
     }
   }
 
+  /**
+   * Save a System Configs dashboard write to history (stored in query_history
+   * with database_name='system-configs', execution_mode=<target>).
+   *
+   * This app is the only record of WHICH HUMAN changed prod config (the
+   * Namma Yatri side sees one shared service account), so callers must AWAIT
+   * this — never fire-and-forget. A failure is logged loudly but does not
+   * throw: the dashboard write already happened, and failing the request
+   * would mislead the user into re-applying it.
+   *
+   * Retrieval: rows show up in getHistory() (which only excludes 'redis') and
+   * can be filtered with schema='system-configs' via the existing endpoint.
+   */
+  public async saveSystemConfigOperation(
+    userId: string,
+    target: string,
+    details: {
+      schema: string;
+      configId: string;
+      oldValue: string | null;
+      newValue: string;
+      durationMs: number;
+      verified: 'verified' | 'pending';
+      dashboardStatus: number;
+    }
+  ): Promise<void> {
+    // Must NOT start with SELECT/WITH/EXPLAIN/SHOW — saveQueryExecution's
+    // read-only skip and any consumers keying off the first word stay correct.
+    const queryStr = `SYSTEM_CONFIG UPDATE ${details.schema}.system_configs SET config_value WHERE id='${details.configId}'`;
+
+    // Every top-level value of cloud_results must be a per-cloud result object
+    // with a 'success' flag (matches saveQueryExecution/saveRedisOperation) —
+    // the History UI and getHistory's success filters rely on that shape.
+    const cloudResults = {
+      dashboard: {
+        success: true,
+        status: details.dashboardStatus,
+        duration_ms: details.durationMs,
+        oldValue: details.oldValue,
+        newValue: details.newValue,
+        verified: details.verified,
+      },
+    };
+
+    const sql = `
+      INSERT INTO dual_db_manager.query_history (
+        user_id, query, database_name, execution_mode, cloud_results
+      ) VALUES ($1, $2, $3, $4, $5)
+    `;
+
+    try {
+      await this.dbPools.history.query(sql, [
+        userId,
+        queryStr,
+        'system-configs',
+        target,
+        JSON.stringify(cloudResults),
+      ]);
+      logger.info('System config operation saved to history', { target, configId: details.configId });
+    } catch (error) {
+      logger.error(
+        `AUDIT FAILURE: system config update for id='${details.configId}' (target=${target}) succeeded on the dashboard but could not be recorded in query_history:`,
+        error
+      );
+    }
+  }
+
   // Note: findOrCreateUser is no longer needed as we use the users table directly from auth
 }
 

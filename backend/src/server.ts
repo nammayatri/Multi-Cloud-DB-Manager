@@ -28,6 +28,8 @@ import migrationsRoutes from './routes/migrations.routes';
 import { getConfig as getMigrationsConfig } from './services/migrations/migrations.service';
 import repoState from './services/migrations/repo-state.service';
 import shudhiRoutes from './routes/shudhi.routes';
+import systemConfigsRoutes from './routes/system-configs.routes';
+import SystemConfigsConfig from './config/system-configs-config-loader';
 import RedisManagerPools from './config/redis-pools';
 import ClickHouseClientManager from './config/clickhouse';
 
@@ -136,6 +138,8 @@ app.use('/api/migrations', migrationsRoutes);
 console.log('[STARTUP] ✓ /api/migrations routes mounted');
 app.use('/api/shudhi', shudhiRoutes);
 console.log('[STARTUP] ✓ /api/shudhi routes mounted');
+app.use('/api/system-configs', systemConfigsRoutes);
+console.log('[STARTUP] ✓ /api/system-configs routes mounted');
 
 // 404 handler
 app.use(notFoundHandler);
@@ -217,6 +221,19 @@ const startServer = async () => {
       }
     } catch (error) {
       console.warn('[STARTUP] Redis Manager initialization warning:', error);
+    }
+
+    // Initialize System Configs manager (optional — disabled if no system-configs.json found)
+    try {
+      const systemConfigs = SystemConfigsConfig.getInstance();
+      if (systemConfigs.isConfigured()) {
+        const targets = systemConfigs.getAvailableTargets().map(t => `${t.key}(${t.schema})`).join(' ');
+        console.log('[STARTUP] System Configs manager configured with targets:', targets);
+      } else {
+        console.log('[STARTUP] System Configs manager not configured (no system-configs.json found)');
+      }
+    } catch (error) {
+      console.warn('[STARTUP] System Configs manager initialization warning:', error);
     }
 
     // Initialize ClickHouse client (optional — disabled if no clickhouse.json or SYNC_TO_CLICKHOUSE=false)

@@ -237,6 +237,44 @@ export interface RedisScanResponse {
   clouds: Record<string, RedisScanProgress>;
 }
 
+// System Configs Manager (Namma Yatri dashboard runQuery proxy)
+export type SystemConfigTargetKey = 'rider' | 'driver';
+
+export interface SystemConfigReadPoolRef {
+  cloud: string;    // Cloud name from databases.json (e.g., "cloud1")
+  database: string; // Database name from databases.json (e.g., "bap", "bpp")
+}
+
+export interface SystemConfigTargetJson {
+  label: string;            // UI display: "Rider (atlas_app)"
+  schema: string;           // 'atlas_app' | 'atlas_driver_offer_bpp'
+  dashboardBaseUrl: string; // Namma Yatri dashboard base URL
+  pathPrefix: string;       // 'bap' | 'bpp/driver-offer'
+  merchantShortId: string;  // Raw path segment, e.g. 'NAMMA_YATRI'
+  city: string;             // Raw path segment, e.g. 'Bangalore'
+  email: string;            // Dashboard service-account credentials (env-substituted)
+  password: string;
+  readPool: SystemConfigReadPoolRef; // Postgres pool used for key listing + read-back verify
+}
+
+export interface SystemConfigsConfigJson {
+  targets: Partial<Record<SystemConfigTargetKey, SystemConfigTargetJson>>;
+}
+
+export interface SystemConfigExecuteRequest {
+  target: SystemConfigTargetKey;
+  id: string;
+  configValue: string; // Raw serialized config — travels verbatim end-to-end
+  password: string;    // Manager's own password, bcrypt re-verified
+}
+
+export interface SystemConfigExecuteResult {
+  oldValue: string | null;
+  verified: 'verified' | 'pending';
+  durationMs: number;
+  dashboardStatus: number;
+}
+
 declare global {
   namespace Express {
     interface User {

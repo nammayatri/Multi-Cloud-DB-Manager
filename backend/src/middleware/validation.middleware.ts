@@ -71,6 +71,20 @@ export const clickhouseQuerySchema = z.object({
   query: z.string().min(1, 'Query cannot be empty'),
 });
 
+// System Configs: validate a config value against the Tables type
+export const systemConfigValidateSchema = z.object({
+  target: z.enum(['rider', 'driver']),
+  configValue: z.string().min(1, 'configValue is required'),
+});
+
+// System Configs: execute an UPDATE through the dashboard
+export const systemConfigExecuteSchema = z.object({
+  target: z.enum(['rider', 'driver']),
+  id: z.string().min(1, 'id is required'),
+  configValue: z.string().min(1, 'configValue is required'),
+  password: z.string().min(1, 'Password is required'),
+});
+
 // Query history filter schema
 export const queryHistorySchema = z.object({
   database: z.string().optional(), // Filter by database name

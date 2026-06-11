@@ -24,6 +24,7 @@ import TableRowsIcon from '@mui/icons-material/TableRows';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import HubIcon from '@mui/icons-material/Hub';
 import CachedIcon from '@mui/icons-material/Cached';
+import SettingsSuggestIcon from '@mui/icons-material/SettingsSuggest';
 import { authAPI, schemaAPI, toastNonApiError } from '../services/api';
 import { Role } from '../constants/roles';
 import { useAppStore } from '../store/appStore';
@@ -50,6 +51,7 @@ const RedisCacheClearer = lazy(() => import('../components/Redis/RedisCacheClear
 const ClickhouseToolbar = lazy(() => import('../components/Clickhouse/ClickhouseToolbar'));
 const CsvBatchPanel = lazy(() => import('../components/CsvBatch/CsvBatchPanel'));
 const ShudhiPanel = lazy(() => import('../components/Shudhi/ShudhiPanel'));
+const SystemConfigsPanel = lazy(() => import('../components/SystemConfigs/SystemConfigsPanel'));
 
 // Fallback shown while a lazy panel chunk loads on first tab open.
 const panelLoader = (
@@ -59,7 +61,7 @@ const panelLoader = (
 );
 
 
-type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi';
+type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'sysconfigs';
 
 // Batch Query (CSV) — destructive arbitrary parametrized SQL, intentionally
 // withheld from RELEASE_MANAGER (schema-change scope, not data manipulation).
@@ -75,6 +77,11 @@ const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Rol
 // Shudhi (In-Memory Cache Management) — same as Redis: all standard roles.
 const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
 
+// System Configs — direct production config mutation via the ops dashboard
+// (runQuery, password-verified). MASTER/ADMIN only; the backend routes enforce
+// the same gate.
+const SYSTEMCONFIGS_ROLES: Role[] = [Role.MASTER, Role.ADMIN];
+
 const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode; visibleTo: Role[] }> = [
   { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} />, visibleTo: REDIS_ROLES },
@@ -82,6 +89,7 @@ const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNod
   { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN, Role.CKH_MANAGER] },
   { mode: 'shudhi', label: 'Shudhi', icon: <CachedIcon sx={{ fontSize: 18 }} />, visibleTo: SHUDHI_ROLES },
+  { mode: 'sysconfigs', label: 'System Configs', icon: <SettingsSuggestIcon sx={{ fontSize: 18 }} />, visibleTo: SYSTEMCONFIGS_ROLES },
 ];
 
 const tabsForRole = (role: Role | undefined) =>
@@ -458,6 +466,7 @@ const ConsolePage = () => {
               : managerMode === 'batch' ? 'Batch Query Manager'
               : managerMode === 'clickhouse' ? 'Clickhouse Manager'
               : managerMode === 'shudhi' ? 'Shudhi — In-Memory Cache Manager'
+              : managerMode === 'sysconfigs' ? 'System Configs Manager'
               : 'DB Migration Verifier'}
           </Typography>
 
@@ -716,6 +725,29 @@ const ConsolePage = () => {
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
                   {visitedModes.has('shudhi') && <Suspense fallback={panelLoader}><ShudhiPanel /></Suspense>}
+                </Stack>
+              </Box>
+            </Box>
+
+            {/* System Configs View — always mounted (CSS-hidden when not allowed) */}
+            <Box
+              key="sysconfigs-view"
+              sx={{
+                position: managerMode === 'sysconfigs' ? 'relative' : 'absolute',
+                inset: managerMode === 'sysconfigs' ? undefined : 0,
+                opacity: managerMode === 'sysconfigs' ? 1 : 0,
+                pointerEvents: managerMode === 'sysconfigs' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'sysconfigs' ? 1 : undefined,
+                display: canSee('sysconfigs') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'sysconfigs' ? 0 : 2,
+              }}
+            >
+              <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
+                  {visitedModes.has('sysconfigs') && <Suspense fallback={panelLoader}><SystemConfigsPanel /></Suspense>}
                 </Stack>
               </Box>
             </Box>
