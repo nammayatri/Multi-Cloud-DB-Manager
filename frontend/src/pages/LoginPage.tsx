@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -12,6 +12,7 @@ import {
   Tab,
   InputAdornment,
   IconButton,
+  CircularProgress,
 } from '@mui/material';
 import { Visibility, VisibilityOff } from '@mui/icons-material';
 import { authAPI } from '../services/api';
@@ -24,6 +25,29 @@ const LoginPage = () => {
   const [tab, setTab] = useState<'login' | 'register'>('login');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  // Don't show the login form until we've checked for an existing session —
+  // otherwise an already-authenticated user (valid cookie, e.g. a fresh tab)
+  // lands on the login form even though they're still logged in.
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    authAPI
+      .getCurrentUser()
+      .then((user) => {
+        if (cancelled) return;
+        // Already authenticated — skip the form and go straight to the app.
+        setUser(user);
+        navigate('/', { replace: true });
+      })
+      .catch(() => {
+        // 401 / network — no valid session; show the login form.
+        if (!cancelled) setCheckingSession(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, setUser]);
 
   // Form fields
   const [username, setUsername] = useState('');
@@ -82,6 +106,16 @@ const LoginPage = () => {
       setLoading(false);
     }
   };
+
+  // While probing for an existing session, show a spinner instead of the form so
+  // an already-logged-in user never sees a login-form flash.
+  if (checkingSession) {
+    return (
+      <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
 
   return (
     <Box
