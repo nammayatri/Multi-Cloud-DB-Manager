@@ -25,8 +25,14 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const url = error.config?.url || '';
-    // Let login/register callers handle their own errors (no redirect, no toast)
-    const isAuthForm = url.includes('/auth/login') || url.includes('/auth/register');
+    // Let login/register callers handle their own errors (no redirect, no toast).
+    // /auth/me is the session probe: its callers (LoginPage, ConsolePage) decide
+    // what to do with a 401 themselves — auto-redirecting here would loop the
+    // LoginPage probe (401 → /login → mount → probe → 401 → …).
+    const isAuthForm =
+      url.includes('/auth/login') ||
+      url.includes('/auth/register') ||
+      url.includes('/auth/me');
 
     if (error.response?.status === 401 && !isAuthForm) {
       // Expired session — redirect to login (deduplicated)
