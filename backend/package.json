@@ -49,7 +49,7 @@
     "@typescript-eslint/parser": "^8.56.1",
     "eslint": "^8.56.0",
     "nodemon": "^3.0.2",
-    "tsx": "^4.7.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.3.3",
     "vitest": "^4.0.18"
   }
