@@ -60,8 +60,11 @@ const ShudhiPanel = () => {
   const [selectedService, setSelectedService] = useState('');
   const [selectedPod, setSelectedPod] = useState('');
   const [selectedKey, setSelectedKey] = useState('');
-  // Client-side filter over the loaded keys list
+  // Client-side filter over the loaded keys list. `keyFilter` tracks the input
+  // for instant typing feedback; `debouncedFilter` is what actually drives the
+  // (potentially expensive) filter + re-render.
   const [keyFilter, setKeyFilter] = useState('');
+  const [debouncedFilter, setDebouncedFilter] = useState('');
 
   // Value viewer
   const [cachedValue, setCachedValue] = useState<any>(null);
@@ -122,6 +125,7 @@ const ShudhiPanel = () => {
     setKeys([]);
     setSelectedKey('');
     setKeyFilter('');
+    setDebouncedFilter('');
     setCachedValue(null);
     setRefreshResult(null);
 
@@ -160,6 +164,13 @@ const ShudhiPanel = () => {
     };
     loadKeys();
   }, [selectedService, selectedPod]);
+
+  // Debounce the search input so filtering/re-rendering only runs after the user
+  // pauses typing (200ms), not on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedFilter(keyFilter), 200);
+    return () => clearTimeout(t);
+  }, [keyFilter]);
 
   const handleGetValue = async (keyName?: string) => {
     const targetKey = keyName || selectedKey;
@@ -206,10 +217,20 @@ const ShudhiPanel = () => {
 
   const isReader = user?.role === 'READER';
 
-  // Case-insensitive substring filter over the loaded keys.
-  const filteredKeys = keyFilter
-    ? keys.filter((k) => k.keyName.toLowerCase().includes(keyFilter.toLowerCase()))
+  // Case-insensitive substring filter over the loaded keys. We filter on a
+  // debounced value (see effect below) so typing doesn't re-run the filter and
+  // re-render the whole list on every keystroke when there are many keys.
+  const filteredKeys = debouncedFilter
+    ? keys.filter((k) => k.keyName.toLowerCase().includes(debouncedFilter.toLowerCase()))
     : keys;
+
+  // Cap how many rows we actually render. A service can register thousands of
+  // keys; mounting one MUI row per key (no list virtualization) freezes the
+  // browser. Rendering a bounded slice keeps the UI responsive — the search box
+  // is the way to reach keys past the cap.
+  const RENDER_CAP = 200;
+  const visibleKeys = filteredKeys.slice(0, RENDER_CAP);
+  const hiddenCount = filteredKeys.length - visibleKeys.length;
 
   if (connStatus === 'not_configured') {
     return (
@@ -314,7 +335,7 @@ const ShudhiPanel = () => {
               InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 18, mr: 0.5, color: 'text.secondary' }} /> }}
             />
             <Typography variant="caption" color="text.secondary" sx={{ px: 1, pt: 1, display: 'block' }}>
-              Registered Keys ({filteredKeys.length}{keyFilter ? ` of ${keys.length}` : ''}) {loadingKeys && <CircularProgress size={12} sx={{ ml: 1 }} />}
+              Registered Keys ({filteredKeys.length}{debouncedFilter ? ` of ${keys.length}` : ''}) {loadingKeys && <CircularProgress size={12} sx={{ ml: 1 }} />}
             </Typography>
             {filteredKeys.length === 0 && !loadingKeys && (
               <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 2, textAlign: 'center' }}>
@@ -322,7 +343,7 @@ const ShudhiPanel = () => {
               </Typography>
             )}
             <List dense disablePadding>
-              {filteredKeys.map((k, idx) => {
+              {visibleKeys.map((k, idx) => {
                 // "All pods" entries are deduped and carry the full pod list; a
                 // single-pod entry just shows its one pod.
                 const podLabel = k.pods && k.pods.length
@@ -348,6 +369,11 @@ const ShudhiPanel = () => {
                 );
               })}
             </List>
+            {hiddenCount > 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1, py: 1, display: 'block', fontStyle: 'italic' }}>
+                Showing first {RENDER_CAP} of {filteredKeys.length} — type in the search box to narrow down.
+              </Typography>
+            )}
           </Box>
         </Paper>
 
