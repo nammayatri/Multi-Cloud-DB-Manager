@@ -55,10 +55,10 @@ export const getSchemas = async (
 ) => {
   try {
     const { database } = req.params; // 'primary' or 'secondary' (legacy) or database name
-    const { cloud } = req.query; // 'aws' or 'gcp' (default to 'aws')
+    const { cloud } = req.query;
 
     const dbPools = DatabasePools.getInstance();
-    const cloudProvider = (cloud as string) || 'aws';
+    const cloudProvider = (cloud as string) || dbPools.getCloudConfig().primaryCloud || 'gcp';
 
     // Try to get schema info directly by cloud and database name
     let schemaInfo = dbPools.getSchemaInfo(cloudProvider, database);
