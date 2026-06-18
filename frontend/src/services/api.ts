@@ -167,7 +167,7 @@ export const schemaAPI = {
   // Get full database configuration
   getConfiguration: async (): Promise<DatabaseConfiguration> => {
     const cacheKey = 'database_configuration';
-    const cacheTTL = 1000 * 60 * 60; // 1 hour
+    const cacheTTL = 1000 * 60 * 60;
 
     // Check cache first
     const cached = localStorage.getItem(cacheKey);
@@ -189,7 +189,18 @@ export const schemaAPI = {
 
     // Fetch from API
     configInFlight = api.get('/api/schemas/configuration').then(response => {
-      // Cache the result
+      try {
+        const existing = localStorage.getItem(cacheKey);
+        if (existing) {
+          const { data: old } = JSON.parse(existing);
+          if (old?.primary?.cloudName !== response.data?.primary?.cloudName) {
+            Object.keys(localStorage)
+              .filter(k => k.startsWith('schemas_'))
+              .forEach(k => localStorage.removeItem(k));
+          }
+        }
+      } catch (_) { }
+
       localStorage.setItem(cacheKey, JSON.stringify({
         data: response.data,
         timestamp: Date.now()
@@ -202,9 +213,9 @@ export const schemaAPI = {
     return configInFlight;
   },
 
-  getSchemas: async (database: 'primary' | 'secondary', cloud: 'aws' | 'gcp' = 'aws'): Promise<{ schemas: string[]; default: string }> => {
-    const cacheKey = `schemas_${database}_${cloud}`;
-    const cacheTTL = 1000 * 60 * 60; // 1 hour
+  getSchemas: async (database: 'primary' | 'secondary', cloud?: 'aws' | 'gcp'): Promise<{ schemas: string[]; default: string }> => {
+    const cacheKey = `schemas_${database}_${cloud ?? 'default'}`;
+    const cacheTTL = 1000 * 60 * 60;
 
     // Check cache first
     const cached = localStorage.getItem(cacheKey);
@@ -260,7 +271,7 @@ export const csvBatchAPI = {
   getStatus: async (executionId: string): Promise<{
     executionId: string;
     status: 'running' | 'completed' | 'failed' | 'cancelled';
-    result?: { csvBatch?: any; [key: string]: any };
+    result?: { csvBatch?: any;[key: string]: any };
     error?: string;
     progress?: { currentStatement: number; totalStatements: number };
     startTime: number;
