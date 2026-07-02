@@ -54,10 +54,22 @@ class ClickHouseClientManager {
 
     /**
      * Execute a raw DDL or query string against ClickHouse.
+     * If ZooKeeper configuration is missing (e.g., local single-node test),
+     * rewrites DDL to non-replicated standard MergeTree engines and drops ON CLUSTER.
      */
     public async exec(query: string): Promise<void> {
         logger.debug('CH exec:', { query: query.slice(0, 200) });
-        await this.client.exec({ query });
+        try {
+            await this.client.exec({ query });
+        } catch (err: any) {
+            if (err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
+                const rewritten = rewriteQueryForLocal(query);
+                logger.info('Retrying DDL exec with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
+                await this.client.exec({ query: rewritten });
+                return;
+            }
+            throw err;
+        }
     }
 
     /**
@@ -65,8 +77,18 @@ class ClickHouseClientManager {
      */
     public async query<T = Record<string, unknown>>(query: string): Promise<T[]> {
         logger.debug('CH query:', { query: query.slice(0, 200) });
-        const result = await this.client.query({ query, format: 'JSONEachRow' });
-        return result.json<T>();
+        try {
+            const result = await this.client.query({ query, format: 'JSONEachRow' });
+            return result.json<T>();
+        } catch (err: any) {
+            if (err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
+                const rewritten = rewriteQueryForLocal(query);
+                logger.info('Retrying query with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
+                const result = await this.client.query({ query: rewritten, format: 'JSONEachRow' });
+                return result.json<T>();
+            }
+            throw err;
+        }
     }
 
     /**
@@ -78,9 +100,20 @@ class ClickHouseClientManager {
         meta: Array<{ name: string; type: string }>;
     }> {
         logger.debug('CH queryWithMeta:', { query: query.slice(0, 200) });
-        const result = await this.client.query({ query, format: 'JSON' });
-        const json = await result.json<any>();
-        return { rows: json.data ?? [], meta: json.meta ?? [] };
+        try {
+            const result = await this.client.query({ query, format: 'JSON' });
+            const json = await result.json<any>();
+            return { rows: json.data ?? [], meta: json.meta ?? [] };
+        } catch (err: any) {
+            if (err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
+                const rewritten = rewriteQueryForLocal(query);
+                logger.info('Retrying queryWithMeta with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
+                const result = await this.client.query({ query: rewritten, format: 'JSON' });
+                const json = await result.json<any>();
+                return { rows: json.data ?? [], meta: json.meta ?? [] };
+            }
+            throw err;
+        }
     }
 
     /**
@@ -101,4 +134,43 @@ class ClickHouseClientManager {
     }
 }
 
+/**
+ * Helper to rewrite clustered/replicated DDLs to run locally without ZooKeeper.
+ */
+function rewriteQueryForLocal(query: string): string {
+    // 1. Remove ON CLUSTER '<cluster>'
+    let rewritten = query.replace(/\s+ON\s+CLUSTER\s+'[^']+'/gi, '');
+    rewritten = rewritten.replace(/\s+ON\s+CLUSTER\s+"[^"]+"/gi, '');
+    rewritten = rewritten.replace(/\s+ON\s+CLUSTER\s+\S+/gi, '');
+
+    // 2. Replace ReplicatedReplacingMergeTree(...) with ReplacingMergeTree(date)
+    rewritten = rewritten.replace(
+        /ENGINE\s*=\s*ReplicatedReplacingMergeTree\s*\([^,]+,\s*[^,]+,\s*([^)]+)\)/gi,
+        'ENGINE = ReplacingMergeTree($1)'
+    );
+
+    // 3. Replace ReplicatedMergeTree(...) with MergeTree()
+    rewritten = rewritten.replace(
+        /ENGINE\s*=\s*ReplicatedMergeTree\s*\([^,]+,\s*[^)]+\)/gi,
+        'ENGINE = MergeTree()'
+    );
+
+    // 4. Replace GRANT ON CLUSTER ...
+    rewritten = rewritten.replace(
+        /GRANT\s+ON\s+CLUSTER\s+'[^']+'\s+/gi,
+        'GRANT '
+    );
+    rewritten = rewritten.replace(
+        /GRANT\s+ON\s+CLUSTER\s+"[^"]+"\s+/gi,
+        'GRANT '
+    );
+    rewritten = rewritten.replace(
+        /GRANT\s+ON\s+CLUSTER\s+\S+\s+/gi,
+        'GRANT '
+    );
+
+    return rewritten;
+}
+
 export default ClickHouseClientManager;
+

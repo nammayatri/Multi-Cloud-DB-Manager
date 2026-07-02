@@ -1,5 +1,15 @@
 import { Router } from 'express';
-import { getStatus, manualSync, executeQuery } from '../controllers/clickhouse.controller';
+import {
+    getStatus,
+    manualSync,
+    executeQuery,
+    listSyncableTables,
+    syncTableColumns,
+    createTable,
+    startBackfill,
+    getBackfillStatus,
+    cancelBackfill,
+} from '../controllers/clickhouse.controller';
 import { isAuthenticated, requireRoles } from '../middleware/auth.middleware';
 import { validate, clickhouseQuerySchema } from '../middleware/validation.middleware';
 import { Role } from '../constants/roles';
@@ -15,5 +25,23 @@ router.post('/sync', isAuthenticated, requireChWriter, manualSync);
 
 // POST /api/clickhouse/query — MASTER + CKH_MANAGER (ad-hoc query execution)
 router.post('/query', isAuthenticated, requireChWriter, validate(clickhouseQuerySchema), executeQuery);
+
+// GET /api/clickhouse/tables — list PG tables and their CH sync status
+router.get('/tables', isAuthenticated, requireChWriter, listSyncableTables);
+
+// POST /api/clickhouse/sync-columns — sync missing columns for an existing CH table
+router.post('/sync-columns', isAuthenticated, requireChWriter, syncTableColumns);
+
+// POST /api/clickhouse/create-table — create a new CH table from PG schema
+router.post('/create-table', isAuthenticated, requireChWriter, createTable);
+
+// POST /api/clickhouse/backfill — start an async data backfill job
+router.post('/backfill', isAuthenticated, requireChWriter, startBackfill);
+
+// GET /api/clickhouse/backfill/:id — poll backfill job status
+router.get('/backfill/:id', isAuthenticated, requireChWriter, getBackfillStatus);
+
+// POST /api/clickhouse/backfill/:id/cancel — cancel a running backfill
+router.post('/backfill/:id/cancel', isAuthenticated, requireChWriter, cancelBackfill);
 
 export default router;

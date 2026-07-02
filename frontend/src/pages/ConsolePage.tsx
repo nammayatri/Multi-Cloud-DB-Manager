@@ -673,28 +673,25 @@ const ConsolePage = () => {
                 p: managerMode === 'clickhouse' ? 0 : 2,
               }}
             >
-              <Grid container spacing={2} sx={{ flexGrow: 1, overflow: 'hidden' }}>
-                <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  <Box sx={{ overflowY: 'auto', flex: 1 }}>
-                    <Stack spacing={2} sx={{ p: 1 }}>
-                      {visitedModes.has('clickhouse') && <Suspense fallback={panelLoader}><ClickhouseToolbar onExecute={handleClickhouseExecute} /></Suspense>}
-                      <Box sx={{ height: '400px' }}>
-                        <SQLEditor />
-                      </Box>
-                      {clickhouseResult && (
-                        <Box ref={clickhouseResultsPanelRef}>
-                          <ResultsPanel result={clickhouseResult} />
+              {visitedModes.has('clickhouse') && (
+                <Suspense fallback={panelLoader}>
+                  <ClickhouseToolbar
+                    onExecute={handleClickhouseExecute}
+                    queryEditor={
+                      <Stack spacing={2}>
+                        <Box sx={{ height: '400px' }}>
+                          <SQLEditor />
                         </Box>
-                      )}
-                    </Stack>
-                  </Box>
-                </Grid>
-                {showHistory && (
-                  <Grid item xs={12} md={4} sx={{ height: '100%' }}>
-                    <QueryHistory database="clickhouse" />
-                  </Grid>
-                )}
-              </Grid>
+                        {clickhouseResult && (
+                          <Box ref={clickhouseResultsPanelRef}>
+                            <ResultsPanel result={clickhouseResult} />
+                          </Box>
+                        )}
+                      </Stack>
+                    }
+                  />
+                </Suspense>
+              )}
             </Box>
 
             {/* Shudhi (In-Memory Cache Management) View — always mounted */}
