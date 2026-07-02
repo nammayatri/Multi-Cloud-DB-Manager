@@ -200,10 +200,12 @@ export class ClickHouseDDLBuilder {
         }
         lines.push(`ORDER BY ${orderBy}`);
 
-        if (dateTimeCol) {
+        if (dateTimeCol && !this.isNullable(dateTimeCol.chType)) {
             lines.push(`TTL ${dateTimeCol.name} + toIntervalDay(730)`);
         }
-        lines.push(`SETTINGS index_granularity = 8192`);
+        lines.push(`SETTINGS index_granularity = 8192, allow_nullable_key = 1`);
+
+
 
         return lines.join('\n');
     }

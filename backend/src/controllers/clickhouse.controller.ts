@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import ClickHouseClientManager from '../config/clickhouse';
 import clickHouseSyncService from '../services/clickhouse/ClickHouseSyncService';
+import clickHouseBackfillService from '../services/clickhouse/ClickHouseBackfillService';
 import historyService from '../services/history.service';
 import DatabasePools from '../config/database';
 import logger from '../utils/logger';
@@ -17,6 +18,28 @@ const READ_ONLY_RE = /^(SELECT|WITH|SHOW|DESCRIBE|EXPLAIN)\b/i;
 function stripLeadingSqlComments(s: string): string {
     return s.replace(/^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/|\s+)+/g, '');
 }
+
+// ──────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────
+
+/** Resolve the primary-cloud pool for a given database name. */
+function getPrimaryPool(database: string) {
+    const dbPools = DatabasePools.getInstance();
+    const cloudConfig = dbPools.getCloudConfig();
+    return dbPools.getPoolByName(cloudConfig.primaryCloud, database);
+}
+
+/** Get all primary databases with their default schemas. */
+function getPrimaryDatabases() {
+    const dbPools = DatabasePools.getInstance();
+    const cloudConfig = dbPools.getCloudConfig();
+    return cloudConfig.primaryDatabases; // Array of DatabaseInfo
+}
+
+// ──────────────────────────────────────────────
+// Existing endpoints (unchanged)
+// ──────────────────────────────────────────────
 
 /**
  * GET /api/clickhouse/status
@@ -54,9 +77,6 @@ export async function getStatus(req: Request, res: Response): Promise<void> {
 /**
  * POST /api/clickhouse/sync
  * Body: { sql: string, database: string, schema?: string }
- *
- * Manually trigger ClickHouse sync for a given SQL statement + PG database.
- * Useful for backfilling a table that was created before the sync feature was added.
  */
 export async function manualSync(req: Request, res: Response): Promise<void> {
     const { sql, database, schema } = req.body as {
@@ -70,11 +90,7 @@ export async function manualSync(req: Request, res: Response): Promise<void> {
         return;
     }
 
-    const dbPools = DatabasePools.getInstance();
-    const cloudConfig = dbPools.getCloudConfig();
-
-    // Use primary cloud pool for the given database
-    const pool = dbPools.getPoolByName(cloudConfig.primaryCloud, database);
+    const pool = getPrimaryPool(database);
     if (!pool) {
         res.status(404).json({ error: `Database '${database}' not found in primary cloud` });
         return;
@@ -94,13 +110,6 @@ export async function manualSync(req: Request, res: Response): Promise<void> {
 /**
  * POST /api/clickhouse/query
  * Body: { query: string }
- *
- * Run an arbitrary ClickHouse statement. SELECT/WITH/SHOW/DESCRIBE/EXPLAIN
- * use the JSON format and return rows + column metadata; everything else
- * is treated as DDL/DML and executed via client.exec.
- *
- * Writes are recorded in dual_db_manager.query_history with
- * database_name='clickhouse'; reads are skipped by historyService.
  */
 export async function executeQuery(req: Request, res: Response): Promise<void> {
     const ch = ClickHouseClientManager.getInstance();
@@ -114,8 +123,6 @@ export async function executeQuery(req: Request, res: Response): Promise<void> {
     const executionId = randomUUID();
     const startedAt = Date.now();
     const trimmed = query.trim();
-    // Strip leading comments before keyword detection so a SELECT preceded by
-    // `-- ...` or `/* ... */` is correctly classified as a read.
     const forKeyword = stripLeadingSqlComments(trimmed);
     const isRead = READ_ONLY_RE.test(forKeyword);
     const command = forKeyword.split(/\s+/)[0]?.toUpperCase() ?? 'UNKNOWN';
@@ -182,15 +189,272 @@ export async function executeQuery(req: Request, res: Response): Promise<void> {
                 response as any,
             );
         } catch {
-            // intentional: history failure must not mask the original error
+            // intentional
         }
 
-        // Match the PG path: an executed-but-failed query is a 200 with
-        // success: false in the body, so the global axios interceptor
-        // doesn't toast "An unexpected error occurred" on top of the
-        // toolbar's own error UI. 5xx is reserved for infra failures
-        // (CH unreachable / not configured) which are handled above.
-        logger.error('CH query failed', { error: err.message, user: user?.username });
+        logger.error('CH query failed', { error: err.message, user: (user as any)?.username });
         res.status(200).json(response);
     }
+}
+
+// ──────────────────────────────────────────────
+// NEW: Column Sync endpoints
+// ──────────────────────────────────────────────
+
+/**
+ * GET /api/clickhouse/tables
+ *
+ * Lists all tables across primary PG databases and cross-checks against CH.
+ * Returns one row per table with:
+ *   - pgDatabase, pgSchema, table
+ *   - inCH: boolean
+ *   - chDatabase: string (same as pgSchema per convention)
+ *   - pgColumnCount, chColumnCount, missingColumns
+ */
+export async function listSyncableTables(req: Request, res: Response): Promise<void> {
+    const ch = ClickHouseClientManager.getInstance();
+    if (!ch) {
+        res.json({ tables: [] });
+        return;
+    }
+
+    const databases = getPrimaryDatabases();
+    const dbPools = DatabasePools.getInstance();
+    const cloudConfig = dbPools.getCloudConfig();
+
+    const results: Array<{
+        pgDatabase: string;
+        pgSchema: string;
+        table: string;
+        chDatabase: string;
+        inCH: boolean;
+        pgColumnCount: number;
+        chColumnCount: number;
+        missingColumns: number;
+    }> = [];
+
+    for (const db of databases) {
+        const pool = dbPools.getPoolByName(cloudConfig.primaryCloud, db.databaseName);
+        if (!pool) continue;
+
+        // Get all user tables across all schemas in this DB
+        try {
+            const { rows: pgTables } = await pool.query(`
+                SELECT table_schema, table_name
+                FROM information_schema.tables
+                WHERE table_type = 'BASE TABLE'
+                  AND table_schema NOT IN ('pg_catalog','information_schema','pg_toast')
+                ORDER BY table_schema, table_name
+            `);
+
+            for (const pgTable of pgTables) {
+                const pgSchema = pgTable.table_schema as string;
+                const table = pgTable.table_name as string;
+                const chDatabase = pgSchema; // convention: pgSchema = chDb
+
+                // Count PG columns
+                const { rows: pgCols } = await pool.query(
+                    `SELECT COUNT(*) AS cnt FROM information_schema.columns
+                     WHERE table_schema = $1 AND table_name = $2`,
+                    [pgSchema, table],
+                );
+                const pgColumnCount = parseInt(pgCols[0]?.cnt ?? '0', 10);
+
+                // Check CH
+                let inCH = false;
+                let chColumnCount = 0;
+                try {
+                    const chCols = await ch.query<{ name: string; type: string }>(
+                        `SELECT name, type FROM system.columns
+                         WHERE database = '${chDatabase}' AND table = '${table}'
+                         ORDER BY position`,
+                    );
+                    inCH = chCols.length > 0;
+                    chColumnCount = chCols.length;
+                } catch {
+                    // CH not reachable for this db — treat as missing
+                }
+
+                // Sentinel column `date` is added by DDLBuilder and not in PG — exclude from diff
+                const effectiveChCount = inCH ? Math.max(0, chColumnCount - 1) : 0;
+                const missingColumns = inCH ? Math.max(0, pgColumnCount - effectiveChCount) : 0;
+
+                results.push({
+                    pgDatabase: db.databaseName,
+                    pgSchema,
+                    table,
+                    chDatabase,
+                    inCH,
+                    pgColumnCount,
+                    chColumnCount: effectiveChCount,
+                    missingColumns,
+                });
+            }
+        } catch (err: any) {
+            logger.warn(`listSyncableTables: failed to query ${db.databaseName}`, { error: err.message });
+        }
+    }
+
+    res.json({ tables: results });
+}
+
+/**
+ * POST /api/clickhouse/sync-columns
+ * Body: { pgDatabase: string, pgSchema: string, table: string }
+ *
+ * Syncs missing columns from PG → CH (ALTER + rebuild queue+MV).
+ */
+export async function syncTableColumns(req: Request, res: Response): Promise<void> {
+    const { pgDatabase, pgSchema, table } = req.body as {
+        pgDatabase: string;
+        pgSchema: string;
+        table: string;
+    };
+
+    if (!pgDatabase || !pgSchema || !table) {
+        res.status(400).json({ error: 'pgDatabase, pgSchema, and table are required' });
+        return;
+    }
+
+    const pool = getPrimaryPool(pgDatabase);
+    if (!pool) {
+        res.status(404).json({ error: `Database '${pgDatabase}' not found in primary cloud` });
+        return;
+    }
+
+    try {
+        const result = await clickHouseSyncService.syncColumnsFromPg(pgDatabase, pgSchema, table, pool);
+        res.json(result);
+    } catch (err: any) {
+        logger.error('CH sync-columns failed', { error: err.message, table });
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
+
+/**
+ * POST /api/clickhouse/create-table
+ * Body: { pgDatabase: string, pgSchema: string, table: string }
+ *
+ * Creates a brand-new table in CH from PG schema (main + queue + MV).
+ */
+export async function createTable(req: Request, res: Response): Promise<void> {
+    const { pgDatabase, pgSchema, table } = req.body as {
+        pgDatabase: string;
+        pgSchema: string;
+        table: string;
+    };
+
+    if (!pgDatabase || !pgSchema || !table) {
+        res.status(400).json({ error: 'pgDatabase, pgSchema, and table are required' });
+        return;
+    }
+
+    const pool = getPrimaryPool(pgDatabase);
+    if (!pool) {
+        res.status(404).json({ error: `Database '${pgDatabase}' not found in primary cloud` });
+        return;
+    }
+
+    try {
+        const result = await clickHouseSyncService.createTableFromPg(pgDatabase, pgSchema, table, pool);
+        res.json(result);
+    } catch (err: any) {
+        logger.error('CH create-table failed', { error: err.message, table });
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
+
+// ──────────────────────────────────────────────
+// NEW: Backfill endpoints
+// ──────────────────────────────────────────────
+
+/**
+ * POST /api/clickhouse/backfill
+ * Body: { pgDatabase, pgSchema, table, chDatabase, fromDate, toDate }
+ *
+ * Starts an async backfill job. Returns { backfillId }.
+ */
+export async function startBackfill(req: Request, res: Response): Promise<void> {
+    const { pgDatabase, pgSchema, table, chDatabase, fromDate, toDate } = req.body as {
+        pgDatabase: string;
+        pgSchema: string;
+        table: string;
+        chDatabase: string;
+        fromDate: string;
+        toDate: string;
+    };
+
+    if (!pgDatabase || !pgSchema || !table || !chDatabase || !fromDate || !toDate) {
+        res.status(400).json({ error: 'pgDatabase, pgSchema, table, chDatabase, fromDate, toDate are all required' });
+        return;
+    }
+
+    // Validate dates
+    const from = new Date(fromDate);
+    const to = new Date(toDate);
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+        res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+        return;
+    }
+    if (from >= to) {
+        res.status(400).json({ error: 'fromDate must be before toDate' });
+        return;
+    }
+
+    const pool = getPrimaryPool(pgDatabase);
+    if (!pool) {
+        res.status(404).json({ error: `Database '${pgDatabase}' not found in primary cloud` });
+        return;
+    }
+
+    const ch = ClickHouseClientManager.getInstance();
+    if (!ch) {
+        res.status(503).json({ error: 'ClickHouse not configured' });
+        return;
+    }
+
+    const job = clickHouseBackfillService.startBackfill(
+        { pgDatabase, pgSchema, table, chDatabase, fromDate, toDate },
+        pool,
+    );
+
+    logger.info('Backfill started', { id: job.id, table, from: fromDate, to: toDate });
+    res.json({ backfillId: job.id, status: job.status });
+}
+
+/**
+ * GET /api/clickhouse/backfill/:id
+ * Returns current status of a backfill job.
+ */
+export async function getBackfillStatus(req: Request, res: Response): Promise<void> {
+    const { id } = req.params;
+    const job = clickHouseBackfillService.getStatus(id);
+
+    if (!job) {
+        res.status(404).json({ error: `Backfill job '${id}' not found` });
+        return;
+    }
+
+    res.json(job);
+}
+
+/**
+ * POST /api/clickhouse/backfill/:id/cancel
+ * Requests cancellation of a running backfill job.
+ */
+export async function cancelBackfill(req: Request, res: Response): Promise<void> {
+    const { id } = req.params;
+    const ok = clickHouseBackfillService.cancel(id);
+
+    if (!ok) {
+        const job = clickHouseBackfillService.getStatus(id);
+        if (!job) {
+            res.status(404).json({ error: `Backfill job '${id}' not found` });
+        } else {
+            res.status(409).json({ error: `Backfill job is already ${job.status}` });
+        }
+        return;
+    }
+
+    res.json({ success: true, message: 'Cancellation requested — job will stop at the next chunk boundary' });
 }

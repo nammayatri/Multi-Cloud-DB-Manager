@@ -1,16 +1,31 @@
-import { useEffect, useState } from 'react';
-import { Box, Button, Chip, Paper, Stack, Tooltip, Typography } from '@mui/material';
+import { useEffect, useState, lazy, Suspense } from 'react';
+import {
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Paper,
+  Stack,
+  Tab,
+  Tabs,
+  Tooltip,
+  Typography,
+} from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import CircleIcon from '@mui/icons-material/Circle';
+import SyncIcon from '@mui/icons-material/Sync';
+import BackupIcon from '@mui/icons-material/Backup';
+import CodeIcon from '@mui/icons-material/Code';
 import { useAppStore } from '../../store/appStore';
 import { clickhouseAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 import type { QueryResponse } from '../../types';
 
-interface ClickhouseToolbarProps {
-  onExecute: (response: QueryResponse) => void;
-}
+// Heavy panels: loaded lazily so they don't block the initial render
+const ColumnSyncPanel = lazy(() => import('./ColumnSyncPanel'));
+const BackfillPanel = lazy(() => import('./BackfillPanel'));
 
+type ChTab = 'query' | 'sync' | 'backfill';
 type ChStatus = 'unknown' | 'ok' | 'error' | 'disabled';
 
 const statusColor: Record<ChStatus, 'default' | 'success' | 'error' | 'warning'> = {
@@ -20,7 +35,18 @@ const statusColor: Record<ChStatus, 'default' | 'success' | 'error' | 'warning'>
   disabled: 'warning',
 };
 
-const ClickhouseToolbar = ({ onExecute }: ClickhouseToolbarProps) => {
+const panelLoader = (
+  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 8 }}>
+    <CircularProgress size={28} />
+  </Box>
+);
+
+interface ClickhouseToolbarProps {
+  onExecute: (response: QueryResponse) => void;
+  queryEditor?: React.ReactNode;
+}
+
+const ClickhouseToolbar = ({ onExecute, queryEditor }: ClickhouseToolbarProps) => {
   const isExecuting = useAppStore(s => s.isExecuting);
   const setIsExecuting = useAppStore(s => s.setIsExecuting);
   const getQueryToExecute = useAppStore(s => s.getQueryToExecute);
@@ -29,12 +55,16 @@ const ClickhouseToolbar = ({ onExecute }: ClickhouseToolbarProps) => {
 
   const [status, setStatus] = useState<ChStatus>('unknown');
   const [statusDetail, setStatusDetail] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<ChTab>('query');
+  const [visitedTabs, setVisitedTabs] = useState<Set<ChTab>>(new Set(['query']));
+
+  // ── CH health check ──
 
   useEffect(() => {
     let cancelled = false;
     clickhouseAPI
       .getStatus()
-      .then((s) => {
+      .then(s => {
         if (cancelled) return;
         const next: ChStatus =
           s.status === 'ok' ? 'ok' : s.status === 'disabled' ? 'disabled' : 'error';
@@ -44,10 +74,10 @@ const ClickhouseToolbar = ({ onExecute }: ClickhouseToolbarProps) => {
       .catch(() => {
         if (!cancelled) setStatus('error');
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
+
+  // ── Query execution ──
 
   const handleExecute = async () => {
     const query = getQueryToExecute().trim();
@@ -76,12 +106,9 @@ const ClickhouseToolbar = ({ onExecute }: ClickhouseToolbarProps) => {
     }
   };
 
-  // Wire Cmd+Enter from SQLEditor. Gated on managerMode so each tab's toolbar
-  // only owns the slot when its panel is active. Identity-checked cleanup
-  // releases the slot only if we're still the current owner — avoids
-  // clobbering a sibling that has already reclaimed.
+  // Wire Cmd+Enter from SQLEditor when on the query tab
   useEffect(() => {
-    if (managerMode !== 'clickhouse') return;
+    if (managerMode !== 'clickhouse' || activeTab !== 'query') return;
     executeRef.current = handleExecute;
     return () => {
       if (executeRef.current === handleExecute) {
@@ -90,40 +117,115 @@ const ClickhouseToolbar = ({ onExecute }: ClickhouseToolbarProps) => {
     };
   });
 
+  // ── Tab switch ──
+
+  const handleTabChange = (_: React.SyntheticEvent, val: ChTab) => {
+    setActiveTab(val);
+    setVisitedTabs(prev => new Set(prev).add(val));
+  };
+
+  // ── Render ──
+
   return (
-    <Paper elevation={1} sx={{ p: 1.5 }}>
-      <Stack direction="row" alignItems="center" spacing={2}>
-        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-          ClickHouse
-        </Typography>
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      {/* Header bar */}
+      <Paper elevation={1} sx={{ px: 2, py: 1 }}>
+        <Stack direction="row" alignItems="center" spacing={2}>
+          <Typography variant="subtitle2" fontWeight={700}>
+            ClickHouse Manager
+          </Typography>
 
-        <Tooltip title={statusDetail || status}>
-          <Chip
-            size="small"
-            color={statusColor[status]}
-            icon={<CircleIcon sx={{ fontSize: 10 }} />}
-            label={
-              status === 'ok' ? 'connected' :
-              status === 'disabled' ? 'disabled' :
-              status === 'error' ? 'unreachable' : 'checking…'
-            }
-            variant="outlined"
-          />
-        </Tooltip>
+          <Tooltip title={statusDetail || status}>
+            <Chip
+              size="small"
+              color={statusColor[status]}
+              icon={<CircleIcon sx={{ fontSize: 10 }} />}
+              label={
+                status === 'ok' ? 'connected' :
+                status === 'disabled' ? 'disabled' :
+                status === 'error' ? 'unreachable' : 'checking…'
+              }
+              variant="outlined"
+            />
+          </Tooltip>
 
-        <Box sx={{ flexGrow: 1 }} />
+          <Box flexGrow={1} />
 
-        <Button
-          variant="contained"
-          color="primary"
-          startIcon={<PlayArrowIcon />}
-          onClick={handleExecute}
-          disabled={isExecuting || status === 'disabled'}
-        >
-          {isExecuting ? 'Executing…' : 'Execute (⌘↵)'}
-        </Button>
-      </Stack>
-    </Paper>
+          {/* Tabs */}
+          <Tabs
+            value={activeTab}
+            onChange={handleTabChange}
+            textColor="primary"
+            indicatorColor="primary"
+            sx={{ minHeight: 36 }}
+          >
+            <Tab
+              value="query"
+              label="Query"
+              icon={<CodeIcon sx={{ fontSize: 16 }} />}
+              iconPosition="start"
+              sx={{ minHeight: 36, py: 0.5, fontSize: 13 }}
+            />
+            <Tab
+              value="sync"
+              label="Column Sync"
+              icon={<SyncIcon sx={{ fontSize: 16 }} />}
+              iconPosition="start"
+              sx={{ minHeight: 36, py: 0.5, fontSize: 13 }}
+              disabled={status === 'disabled'}
+            />
+            <Tab
+              value="backfill"
+              label="Data Backfill"
+              icon={<BackupIcon sx={{ fontSize: 16 }} />}
+              iconPosition="start"
+              sx={{ minHeight: 36, py: 0.5, fontSize: 13 }}
+              disabled={status === 'disabled'}
+            />
+          </Tabs>
+
+          <Box flexGrow={1} />
+
+          {/* Execute button — only on Query tab */}
+          {activeTab === 'query' && (
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={<PlayArrowIcon />}
+              onClick={handleExecute}
+              disabled={isExecuting || status === 'disabled'}
+              size="small"
+            >
+              {isExecuting ? 'Executing…' : 'Execute (⌘↵)'}
+            </Button>
+          )}
+        </Stack>
+      </Paper>
+
+      {/* Panel content */}
+      <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
+        {/* Query tab content */}
+        {activeTab === 'query' && (
+          <Box sx={{ p: 1 }}>
+            {queryEditor}
+          </Box>
+        )}
+
+        {/* Column Sync tab */}
+        {activeTab === 'sync' && visitedTabs.has('sync') && (
+          <Suspense fallback={panelLoader}>
+            <ColumnSyncPanel />
+          </Suspense>
+        )}
+
+        {/* Data Backfill tab */}
+        {activeTab === 'backfill' && visitedTabs.has('backfill') && (
+          <Suspense fallback={panelLoader}>
+            <BackfillPanel />
+          </Suspense>
+        )}
+      </Box>
+    </Box>
   );
 };
 
