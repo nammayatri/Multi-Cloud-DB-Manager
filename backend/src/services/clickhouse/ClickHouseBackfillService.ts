@@ -41,6 +41,13 @@ export interface BackfillStartParams {
     toDate: string;     // ISO date string: "2024-12-31"
 }
 
+/** Strict identifier allowlist — anything reaching a raw SQL string (chDatabase, table) must match this. */
+export const CH_IDENTIFIER_RE = /^[a-zA-Z0-9_]+$/;
+
+/** Per-chunk PG fetch timeout — overrides the shared pool's default `statement_timeout`
+ *  since backfill queries routinely scan far more data than interactive queries. */
+const BACKFILL_STATEMENT_TIMEOUT_MS = 5 * 60 * 1000;
+
 // ──────────────────────────────────────────────
 // Date helpers
 // ──────────────────────────────────────────────
@@ -136,17 +143,26 @@ async function fetchChunk(
     start: Date,
     end: Date,
 ): Promise<Record<string, unknown>[]> {
-    if (!dateCol) {
-        // No date column: full table in one chunk (called once)
-        const { rows } = await pool.query(`SELECT * FROM "${schema}"."${table}"`);
+    // Use a dedicated client so we can raise statement_timeout for this query only —
+    // the shared pgPool's default (30s) is tuned for interactive queries, not full-table backfill scans.
+    const client = await pool.connect();
+    try {
+        await client.query(`SET statement_timeout = ${BACKFILL_STATEMENT_TIMEOUT_MS}`);
+        if (!dateCol) {
+            // No date column: full table in one chunk (called once)
+            const { rows } = await client.query(`SELECT * FROM "${schema}"."${table}"`);
+            return rows;
+        }
+        const { rows } = await client.query(
+            `SELECT * FROM "${schema}"."${table}"
+             WHERE "${dateCol}" >= $1 AND "${dateCol}" < $2`,
+            [start, end],
+        );
         return rows;
+    } finally {
+        await client.query('SET statement_timeout = DEFAULT').catch(() => {});
+        client.release();
     }
-    const { rows } = await pool.query(
-        `SELECT * FROM "${schema}"."${table}"
-         WHERE "${dateCol}" >= $1 AND "${dateCol}" < $2`,
-        [start, end],
-    );
-    return rows;
 }
 
 // ──────────────────────────────────────────────
@@ -163,6 +179,32 @@ function mapColumns(
     }));
 }
 
+/** Escape a string for a ClickHouse string literal (C-style: \\ and \' are the recognized escapes). */
+function escapeChString(v: string): string {
+    return v.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+/** Serialize a single JS value to a ClickHouse SQL literal for the given column's CH type. */
+function serializeChValue(v: unknown): string {
+    if (v === null || v === undefined) return 'NULL';
+    if (typeof v === 'boolean') return `'${v ? 'true' : 'false'}'`;
+    if (v instanceof Date) return `'${v.toISOString().replace('T', ' ').slice(0, 19)}'`;
+    if (Buffer.isBuffer(v)) return `'${escapeChString(v.toString('utf8'))}'`;
+    if (Array.isArray(v)) {
+        // CH array literal, e.g. [1, 2, 3] or ['a', 'b'] — matches Array(Nullable(...)) mapping
+        const elems = v.map(el => {
+            if (el === null || el === undefined) return 'NULL';
+            if (typeof el === 'object') return `'${escapeChString(JSON.stringify(el))}'`;
+            if (typeof el === 'string') return `'${escapeChString(el)}'`;
+            return String(el);
+        });
+        return `[${elems.join(', ')}]`;
+    }
+    if (typeof v === 'object') return `'${escapeChString(JSON.stringify(v))}'`; // jsonb
+    if (typeof v === 'string') return `'${escapeChString(v)}'`;
+    return String(v);
+}
+
 async function insertChunkIntoClickHouse(
     chManager: ClickHouseClientManager,
     chDb: string,
@@ -171,23 +213,19 @@ async function insertChunkIntoClickHouse(
     rows: Record<string, unknown>[],
 ): Promise<void> {
     if (rows.length === 0) return;
+    if (!CH_IDENTIFIER_RE.test(chDb) || !CH_IDENTIFIER_RE.test(table)) {
+        throw new Error(`Invalid ClickHouse database/table identifier: '${chDb}'.'${table}'`);
+    }
     // Build column name list (excluding CH sentinel `date` which has a DEFAULT)
     const colNames = columns.map(c => `\`${c.name}\``).join(', ');
-    // Build VALUES — use JSONEachRow insert for safety and performance
     const values = rows
         .map(row => {
-            const vals = columns.map(c => {
-                const v = row[c.name];
-                if (v === null || v === undefined) return 'NULL';
-                if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`;
-                if (v instanceof Date) return `'${v.toISOString().replace('T', ' ').slice(0, 19)}'`;
-                return String(v);
-            });
+            const vals = columns.map(c => serializeChValue(row[c.name]));
             return `(${vals.join(', ')})`;
         })
         .join(',\n');
 
-    const sql = `INSERT INTO ${chDb}.${table} (${colNames}) VALUES ${values}`;
+    const sql = `INSERT INTO \`${chDb}\`.\`${table}\` (${colNames}) VALUES ${values}`;
     await chManager.exec(sql);
 }
 

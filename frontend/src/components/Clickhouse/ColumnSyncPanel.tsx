@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Button,
@@ -25,18 +25,28 @@ import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
-import { clickhouseAPI, type ChTableInfo } from '../../services/api';
+import FactCheckIcon from '@mui/icons-material/FactCheck';
+import { clickhouseAPI, type ChTableInfo, type ChTableCheckResult } from '../../services/api';
 import toast from 'react-hot-toast';
 
-type TableStatus = 'synced' | 'columns_out_of_sync' | 'missing';
+type TableStatus = 'unchecked' | 'checking' | 'synced' | 'columns_out_of_sync' | 'missing';
 
-function getTableStatus(t: ChTableInfo): TableStatus {
-  if (!t.inCH) return 'missing';
-  if (t.missingColumns > 0) return 'columns_out_of_sync';
+interface RowState {
+  status: TableStatus;
+  result?: ChTableCheckResult;
+}
+
+function rowKey(t: ChTableInfo): string {
+  return `${t.pgDatabase}.${t.pgSchema}.${t.table}`;
+}
+
+function statusFromResult(result: ChTableCheckResult): TableStatus {
+  if (!result.inCH) return 'missing';
+  if (result.missingColumns.length > 0) return 'columns_out_of_sync';
   return 'synced';
 }
 
-const STATUS_CONFIG: Record<TableStatus, {
+const STATUS_CONFIG: Record<Exclude<TableStatus, 'unchecked' | 'checking'>, {
   label: string;
   color: 'success' | 'warning' | 'error';
   icon: React.ReactNode;
@@ -60,13 +70,14 @@ const STATUS_CONFIG: Record<TableStatus, {
 
 interface TableRowProps {
   table: ChTableInfo;
-  onAction: (t: ChTableInfo) => void;
+  rowState: RowState;
+  onCheck: (t: ChTableInfo) => void;
+  onAction: (t: ChTableInfo, result: ChTableCheckResult) => void;
   actionLoading: boolean;
 }
 
-const TableRow = ({ table, onAction, actionLoading }: TableRowProps) => {
-  const status = getTableStatus(table);
-  const cfg = STATUS_CONFIG[status];
+const TableRow = ({ table, rowState, onCheck, onAction, actionLoading }: TableRowProps) => {
+  const { status, result } = rowState;
 
   return (
     <Box
@@ -91,38 +102,72 @@ const TableRow = ({ table, onAction, actionLoading }: TableRowProps) => {
         </Typography>
       </Box>
 
-      {/* Column counts */}
-      <Tooltip title={`PG: ${table.pgColumnCount} cols · CH: ${table.chColumnCount} cols`}>
-        <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
-          {table.inCH
-            ? `${table.chColumnCount}/${table.pgColumnCount} cols`
-            : `${table.pgColumnCount} cols in PG`}
-          {status === 'columns_out_of_sync' && (
-            <Box component="span" sx={{ color: 'warning.main', ml: 0.5 }}>
-              (+{table.missingColumns})
-            </Box>
-          )}
-        </Typography>
-      </Tooltip>
+      {/* Column info — only shown once a check has run */}
+      {result && (
+        <Tooltip
+          title={
+            <>
+              <div>PG: {result.pgColumnCount} cols · CH: {result.chColumnCount} cols</div>
+              {result.missingColumns.length > 0 && (
+                <div>Missing in CH: {result.missingColumns.join(', ')}</div>
+              )}
+              {result.extraChColumns.length > 0 && (
+                <div>CH-only (expected, not a gap): {result.extraChColumns.join(', ')}</div>
+              )}
+            </>
+          }
+        >
+          <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+            {result.inCH ? `${result.chColumnCount}/${result.pgColumnCount} cols` : `${result.pgColumnCount} cols in PG`}
+            {status === 'columns_out_of_sync' && (
+              <Box component="span" sx={{ color: 'warning.main', ml: 0.5 }}>
+                ({result.missingColumns.length} missing)
+              </Box>
+            )}
+          </Typography>
+        </Tooltip>
+      )}
 
       {/* Status badge */}
-      <Chip
-        size="small"
-        label={cfg.label}
-        color={cfg.color}
-        icon={cfg.icon as any}
-        variant="outlined"
-        sx={{ fontSize: 11, height: 22 }}
-      />
+      {status === 'unchecked' && (
+        <Chip size="small" label="Not checked" variant="outlined" sx={{ fontSize: 11, height: 22 }} />
+      )}
+      {status !== 'unchecked' && status !== 'checking' && (
+        <Chip
+          size="small"
+          label={STATUS_CONFIG[status].label}
+          color={STATUS_CONFIG[status].color}
+          icon={STATUS_CONFIG[status].icon as any}
+          variant="outlined"
+          sx={{ fontSize: 11, height: 22 }}
+        />
+      )}
 
-      {/* Action button */}
-      {status !== 'synced' && (
+      {/* Check / Re-check button */}
+      <Tooltip title={status === 'unchecked' ? 'Check ClickHouse sync status' : 'Re-check'}>
+        <span>
+          <IconButton
+            size="small"
+            onClick={() => onCheck(table)}
+            disabled={status === 'checking'}
+          >
+            {status === 'checking' ? (
+              <CircularProgress size={16} />
+            ) : (
+              <FactCheckIcon fontSize="small" />
+            )}
+          </IconButton>
+        </span>
+      </Tooltip>
+
+      {/* Action button — only once we know the real status from a check */}
+      {result && status !== 'synced' && (
         <Button
           size="small"
           variant="contained"
           color={status === 'missing' ? 'primary' : 'warning'}
           disabled={actionLoading}
-          onClick={() => onAction(table)}
+          onClick={() => onAction(table, result)}
           startIcon={
             actionLoading ? (
               <CircularProgress size={12} color="inherit" />
@@ -134,14 +179,10 @@ const TableRow = ({ table, onAction, actionLoading }: TableRowProps) => {
           }
           sx={{ fontSize: 12, py: 0.5, px: 1.5, minWidth: 130, whiteSpace: 'nowrap' }}
         >
-          {actionLoading
-            ? 'Working…'
-            : status === 'missing'
-            ? 'Create in CH'
-            : 'Sync Columns'}
+          {actionLoading ? 'Working…' : status === 'missing' ? 'Create in CH' : 'Sync Columns'}
         </Button>
       )}
-      {status === 'synced' && <Box sx={{ width: 130 }} />}
+      {(!result || status === 'synced') && <Box sx={{ width: 130 }} />}
     </Box>
   );
 };
@@ -152,13 +193,14 @@ const ColumnSyncPanel = () => {
   const [selectedChDb, setSelectedChDb] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [actionLoading, setActionLoading] = useState<Set<string>>(new Set());
-
+  const [checkResults, setCheckResults] = useState<Record<string, RowState>>({});
 
   const fetchTables = useCallback(async () => {
     setLoading(true);
     try {
       const { tables: t } = await clickhouseAPI.listTables();
       setTables(t);
+      setCheckResults({});
     } catch {
       toast.error('Failed to load table list');
     } finally {
@@ -170,33 +212,45 @@ const ColumnSyncPanel = () => {
     fetchTables();
   }, [fetchTables]);
 
-  const handleAction = async (t: ChTableInfo) => {
-    const key = `${t.pgDatabase}.${t.pgSchema}.${t.table}`;
+  const handleCheck = useCallback(async (t: ChTableInfo) => {
+    const key = rowKey(t);
+    setCheckResults(prev => ({ ...prev, [key]: { status: 'checking' } }));
+    try {
+      const result = await clickhouseAPI.checkTable(t.pgDatabase, t.pgSchema, t.table);
+      setCheckResults(prev => ({ ...prev, [key]: { status: statusFromResult(result), result } }));
+    } catch {
+      toast.error(`Failed to check ${t.table}`);
+      setCheckResults(prev => ({ ...prev, [key]: { status: 'unchecked' } }));
+    }
+  }, []);
+
+  const handleAction = async (t: ChTableInfo, result: ChTableCheckResult) => {
+    const key = rowKey(t);
     setActionLoading(prev => new Set(prev).add(key));
     try {
-      const status = getTableStatus(t);
-      let result;
+      const status = statusFromResult(result);
+      let actionResult;
       if (status === 'missing') {
-        result = await clickhouseAPI.createTable(t.pgDatabase, t.pgSchema, t.table);
-        if (result.success) {
+        actionResult = await clickhouseAPI.createTable(t.pgDatabase, t.pgSchema, t.table);
+        if (actionResult.success) {
           toast.success(`✅ Created ${t.table} in ClickHouse (main + queue + MV)`);
         } else {
-          toast.error(`Failed: ${result.error || result.details}`);
+          toast.error(`Failed: ${actionResult.error || actionResult.details}`);
         }
       } else {
-        result = await clickhouseAPI.syncColumns(t.pgDatabase, t.pgSchema, t.table);
-        if (result.success) {
+        actionResult = await clickhouseAPI.syncColumns(t.pgDatabase, t.pgSchema, t.table);
+        if (actionResult.success) {
           toast.success(
-            result.action === 'skipped'
+            actionResult.action === 'skipped'
               ? `${t.table}: already up to date`
               : `✅ Synced columns for ${t.table}`,
           );
         } else {
-          toast.error(`Failed: ${result.error || result.details}`);
+          toast.error(`Failed: ${actionResult.error || actionResult.details}`);
         }
       }
-      // Refresh this table's row
-      await fetchTables();
+      // Re-check just this table rather than reloading/re-checking the whole list
+      await handleCheck(t);
     } catch {
       toast.error('Action failed — see server logs');
     } finally {
@@ -227,9 +281,9 @@ const ColumnSyncPanel = () => {
     return acc;
   }, {});
 
-  // Stats
-  const totalMissing = tables.filter(t => !t.inCH).length;
-  const totalOutOfSync = tables.filter(t => t.inCH && t.missingColumns > 0).length;
+  const checkedCount = Object.values(checkResults).filter(
+    r => r.status !== 'unchecked' && r.status !== 'checking',
+  ).length;
 
   return (
     <Paper elevation={2} sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -238,19 +292,12 @@ const ColumnSyncPanel = () => {
         <Typography variant="subtitle1" fontWeight={700}>
           Column Sync
         </Typography>
-        <Stack direction="row" spacing={1}>
-          {totalMissing > 0 && (
-            <Chip size="small" label={`${totalMissing} missing`} color="error" variant="outlined" />
-          )}
-          {totalOutOfSync > 0 && (
-            <Chip size="small" label={`${totalOutOfSync} out of sync`} color="warning" variant="outlined" />
-          )}
-          {totalMissing === 0 && totalOutOfSync === 0 && tables.length > 0 && (
-            <Chip size="small" label="All synced" color="success" variant="outlined" />
-          )}
-        </Stack>
+        <Typography variant="caption" color="text.secondary">
+          {tables.length} tables{checkedCount > 0 ? ` · ${checkedCount} checked` : ''} — click{' '}
+          <FactCheckIcon sx={{ fontSize: 13, verticalAlign: 'text-bottom' }} /> to check a table's CH sync status
+        </Typography>
         <Box flexGrow={1} />
-        <Tooltip title="Refresh">
+        <Tooltip title="Refresh table list">
           <IconButton size="small" onClick={fetchTables} disabled={loading}>
             <RefreshIcon fontSize="small" />
           </IconButton>
@@ -314,12 +361,14 @@ const ColumnSyncPanel = () => {
             </Typography>
             <Paper variant="outlined" sx={{ borderRadius: 1, overflow: 'hidden' }}>
               {dbTables.map((t, idx) => {
-                const key = `${t.pgDatabase}.${t.pgSchema}.${t.table}`;
+                const key = rowKey(t);
                 return (
                   <Box key={key}>
                     {idx > 0 && <Divider />}
                     <TableRow
                       table={t}
+                      rowState={checkResults[key] ?? { status: 'unchecked' }}
+                      onCheck={handleCheck}
                       onAction={handleAction}
                       actionLoading={actionLoading.has(key)}
                     />

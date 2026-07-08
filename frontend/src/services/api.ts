@@ -356,10 +356,18 @@ export interface ChTableInfo {
   pgSchema: string;
   table: string;
   chDatabase: string;
+}
+
+export interface ChTableCheckResult {
+  pgDatabase: string;
+  pgSchema: string;
+  table: string;
+  chDatabase: string;
   inCH: boolean;
   pgColumnCount: number;
   chColumnCount: number;
-  missingColumns: number;
+  missingColumns: string[];
+  extraChColumns: string[];
 }
 
 export interface ChSyncResult {
@@ -408,6 +416,11 @@ export const clickhouseAPI = {
 
   listTables: async (): Promise<{ tables: ChTableInfo[] }> => {
     const response = await api.get('/api/clickhouse/tables');
+    return response.data;
+  },
+
+  checkTable: async (pgDatabase: string, pgSchema: string, table: string): Promise<ChTableCheckResult> => {
+    const response = await api.post('/api/clickhouse/check-table', { pgDatabase, pgSchema, table });
     return response.data;
   },
 

@@ -6,6 +6,7 @@ import clickHouseBackfillService from '../services/clickhouse/ClickHouseBackfill
 import historyService from '../services/history.service';
 import DatabasePools from '../config/database';
 import logger from '../utils/logger';
+import { CH_IDENTIFIER_RE } from '../services/clickhouse/ClickHouseBackfillService';
 
 const CH_DATABASE_LABEL = 'clickhouse';
 const READ_ONLY_RE = /^(SELECT|WITH|SHOW|DESCRIBE|EXPLAIN)\b/i;
@@ -204,12 +205,9 @@ export async function executeQuery(req: Request, res: Response): Promise<void> {
 /**
  * GET /api/clickhouse/tables
  *
- * Lists all tables across primary PG databases and cross-checks against CH.
- * Returns one row per table with:
- *   - pgDatabase, pgSchema, table
- *   - inCH: boolean
- *   - chDatabase: string (same as pgSchema per convention)
- *   - pgColumnCount, chColumnCount, missingColumns
+ * Lists all tables across primary PG databases. Deliberately does NOT check ClickHouse —
+ * that check is done on-demand per table via checkTableSync(), triggered by a "Check" button
+ * in the UI, so this stays a single cheap query per PG database regardless of table count.
  */
 export async function listSyncableTables(req: Request, res: Response): Promise<void> {
     const ch = ClickHouseClientManager.getInstance();
@@ -227,17 +225,12 @@ export async function listSyncableTables(req: Request, res: Response): Promise<v
         pgSchema: string;
         table: string;
         chDatabase: string;
-        inCH: boolean;
-        pgColumnCount: number;
-        chColumnCount: number;
-        missingColumns: number;
     }> = [];
 
     for (const db of databases) {
         const pool = dbPools.getPoolByName(cloudConfig.primaryCloud, db.databaseName);
         if (!pool) continue;
 
-        // Get all user tables across all schemas in this DB
         try {
             const { rows: pgTables } = await pool.query(`
                 SELECT table_schema, table_name
@@ -250,44 +243,11 @@ export async function listSyncableTables(req: Request, res: Response): Promise<v
             for (const pgTable of pgTables) {
                 const pgSchema = pgTable.table_schema as string;
                 const table = pgTable.table_name as string;
-                const chDatabase = pgSchema; // convention: pgSchema = chDb
-
-                // Count PG columns
-                const { rows: pgCols } = await pool.query(
-                    `SELECT COUNT(*) AS cnt FROM information_schema.columns
-                     WHERE table_schema = $1 AND table_name = $2`,
-                    [pgSchema, table],
-                );
-                const pgColumnCount = parseInt(pgCols[0]?.cnt ?? '0', 10);
-
-                // Check CH
-                let inCH = false;
-                let chColumnCount = 0;
-                try {
-                    const chCols = await ch.query<{ name: string; type: string }>(
-                        `SELECT name, type FROM system.columns
-                         WHERE database = '${chDatabase}' AND table = '${table}'
-                         ORDER BY position`,
-                    );
-                    inCH = chCols.length > 0;
-                    chColumnCount = chCols.length;
-                } catch {
-                    // CH not reachable for this db — treat as missing
-                }
-
-                // Sentinel column `date` is added by DDLBuilder and not in PG — exclude from diff
-                const effectiveChCount = inCH ? Math.max(0, chColumnCount - 1) : 0;
-                const missingColumns = inCH ? Math.max(0, pgColumnCount - effectiveChCount) : 0;
-
                 results.push({
                     pgDatabase: db.databaseName,
                     pgSchema,
                     table,
-                    chDatabase,
-                    inCH,
-                    pgColumnCount,
-                    chColumnCount: effectiveChCount,
-                    missingColumns,
+                    chDatabase: pgSchema, // convention: pgSchema = chDb
                 });
             }
         } catch (err: any) {
@@ -296,6 +256,97 @@ export async function listSyncableTables(req: Request, res: Response): Promise<v
     }
 
     res.json({ tables: results });
+}
+
+/**
+ * POST /api/clickhouse/check-table
+ * Body: { pgDatabase, pgSchema, table }
+ *
+ * On-demand, single-table column diff between PG and CH — compares by COLUMN NAME,
+ * not column count. A count-only comparison can't tell "PG is missing column X" apart
+ * from "CH has an extra column Y" (e.g. the `date` sentinel, a `sign` column on a
+ * CollapsingMergeTree, or any other CH-only column) — the two differences can silently
+ * cancel out and hide a real gap. Extra CH-only columns are returned separately and are
+ * never treated as a problem.
+ */
+export async function checkTableSync(req: Request, res: Response): Promise<void> {
+    const { pgDatabase, pgSchema, table } = req.body as {
+        pgDatabase: string;
+        pgSchema: string;
+        table: string;
+    };
+
+    if (!pgDatabase || !pgSchema || !table) {
+        res.status(400).json({ error: 'pgDatabase, pgSchema, and table are required' });
+        return;
+    }
+
+    const chDatabase = pgSchema; // convention: pgSchema = chDb
+    if (!CH_IDENTIFIER_RE.test(chDatabase) || !CH_IDENTIFIER_RE.test(table)) {
+        res.status(400).json({ error: 'pgSchema and table must contain only letters, numbers, and underscores' });
+        return;
+    }
+
+    const ch = ClickHouseClientManager.getInstance();
+    if (!ch) {
+        res.status(503).json({ error: 'ClickHouse not configured' });
+        return;
+    }
+
+    const pool = getPrimaryPool(pgDatabase);
+    if (!pool) {
+        res.status(404).json({ error: `Database '${pgDatabase}' not found in primary cloud` });
+        return;
+    }
+
+    try {
+        const { rows: pgCols } = await pool.query(
+            `SELECT column_name FROM information_schema.columns
+             WHERE table_schema = $1 AND table_name = $2
+             ORDER BY ordinal_position`,
+            [pgSchema, table],
+        );
+        const pgColumnNames: string[] = pgCols.map((r: any) => r.column_name);
+
+        if (pgColumnNames.length === 0) {
+            res.status(404).json({ error: `Table ${pgSchema}.${table} not found in PG` });
+            return;
+        }
+
+        let chColumnNames: string[] = [];
+        try {
+            const chCols = await ch.query<{ name: string }>(
+                `SELECT name FROM system.columns WHERE database = '${chDatabase}' AND table = '${table}'`,
+            );
+            chColumnNames = chCols.map(c => c.name);
+        } catch {
+            // CH unreachable for this table — treated as "not in CH" below
+        }
+
+        const inCH = chColumnNames.length > 0;
+        const pgColSet = new Set(pgColumnNames);
+        const chColSet = new Set(chColumnNames);
+
+        // Real gap: PG columns absent from CH by name.
+        const missingColumns = pgColumnNames.filter(c => !chColSet.has(c));
+        // Informational only — CH-only columns (`date` sentinel, `sign`, custom additions, etc).
+        const extraChColumns = chColumnNames.filter(c => !pgColSet.has(c));
+
+        res.json({
+            pgDatabase,
+            pgSchema,
+            table,
+            chDatabase,
+            inCH,
+            pgColumnCount: pgColumnNames.length,
+            chColumnCount: chColumnNames.length,
+            missingColumns,
+            extraChColumns,
+        });
+    } catch (err: any) {
+        logger.error('checkTableSync failed', { error: err.message, table });
+        res.status(500).json({ error: err.message });
+    }
 }
 
 /**
@@ -386,6 +437,13 @@ export async function startBackfill(req: Request, res: Response): Promise<void> 
 
     if (!pgDatabase || !pgSchema || !table || !chDatabase || !fromDate || !toDate) {
         res.status(400).json({ error: 'pgDatabase, pgSchema, table, chDatabase, fromDate, toDate are all required' });
+        return;
+    }
+
+    // chDatabase/table are spliced into raw ClickHouse SQL downstream — reject anything
+    // that isn't a plain identifier before it ever reaches the backfill service.
+    if (!CH_IDENTIFIER_RE.test(chDatabase) || !CH_IDENTIFIER_RE.test(table)) {
+        res.status(400).json({ error: 'chDatabase and table must contain only letters, numbers, and underscores' });
         return;
     }
 

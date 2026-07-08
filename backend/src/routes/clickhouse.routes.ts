@@ -4,6 +4,7 @@ import {
     manualSync,
     executeQuery,
     listSyncableTables,
+    checkTableSync,
     syncTableColumns,
     createTable,
     startBackfill,
@@ -26,8 +27,11 @@ router.post('/sync', isAuthenticated, requireChWriter, manualSync);
 // POST /api/clickhouse/query — MASTER + CKH_MANAGER (ad-hoc query execution)
 router.post('/query', isAuthenticated, requireChWriter, validate(clickhouseQuerySchema), executeQuery);
 
-// GET /api/clickhouse/tables — list PG tables and their CH sync status
+// GET /api/clickhouse/tables — list PG tables (no CH check — see /check-table)
 router.get('/tables', isAuthenticated, requireChWriter, listSyncableTables);
+
+// POST /api/clickhouse/check-table — on-demand column-name diff for a single table
+router.post('/check-table', isAuthenticated, requireChWriter, checkTableSync);
 
 // POST /api/clickhouse/sync-columns — sync missing columns for an existing CH table
 router.post('/sync-columns', isAuthenticated, requireChWriter, syncTableColumns);

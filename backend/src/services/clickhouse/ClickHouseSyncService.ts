@@ -338,16 +338,24 @@ async function getDefaultKafkaConfig(
         };
     }
 
-    logger.warn(
-        `CH sync: no sibling queue found in database '${db}' — using default fallback Kafka config for '${table}'`
+    throw new Error(
+        `Cannot derive Kafka config for ${db}.${table}: no existing '*_queue' table found in database ` +
+        `'${db}' to copy broker/topic settings from. Create at least one working table with a Kafka queue ` +
+        `in this database first, or configure Kafka settings manually.`,
     );
-    const tableSlug = table.replace(/_/g, '').toLowerCase();
-    return {
-        kafka_broker_list: 'localhost:9092',
-        kafka_topic_list: `local-sessionizer-${tableSlug}`,
-        kafka_group_name: `local-sessionizer-${tableSlug}-ec2-ckh-consumer`,
-        kafka_format: 'JSONEachRow',
-    };
+}
+
+/**
+ * Returns a human-readable suffix noting when the 730-day TTL was skipped because the
+ * table's date column is nullable — surfaced in CHSyncResult.details for the UI, in
+ * addition to the logger.warn already emitted from ClickHouseDDLBuilder.buildCreateTable.
+ */
+function ttlSkippedNote(columns: CHColumn[]): string {
+    const dateTimeCol = ClickHouseDDLBuilder.findDateTimeColumn(columns);
+    if (dateTimeCol && ClickHouseDDLBuilder.isNullableType(dateTimeCol.chType)) {
+        return ` (no retention TTL — date column '${dateTimeCol.name}' is nullable)`;
+    }
+    return '';
 }
 
 // ──────────────────────────────────────────────
@@ -539,7 +547,7 @@ export class ClickHouseSyncService {
             success: true,
             action: 'created',
             table,
-            details: `Created ${chDb}.${table}, ${chDb}.${table}_queue, ${chDb}.${table}_mv`,
+            details: `Created ${chDb}.${table}, ${chDb}.${table}_queue, ${chDb}.${table}_mv${ttlSkippedNote(columns)}`,
         };
     }
 
@@ -600,7 +608,7 @@ export class ClickHouseSyncService {
                 success: true,
                 action: 'created',
                 table,
-                details: `Bootstrapped missing CH table ${chDb}.${table} (and queue + MV) from current PG schema`,
+                details: `Bootstrapped missing CH table ${chDb}.${table} (and queue + MV) from current PG schema${ttlSkippedNote(allColumns)}`,
             };
         }
 

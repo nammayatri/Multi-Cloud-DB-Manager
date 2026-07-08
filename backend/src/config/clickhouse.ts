@@ -13,9 +13,12 @@ class ClickHouseClientManager {
 
     private client: ClickHouseClient;
     public readonly config: ClickHouseConfig;
+    /** Explicit opt-in gate for the ZooKeeper-error → single-node DDL rewrite fallback (local/dev only). */
+    private readonly allowLocalFallback: boolean;
 
     private constructor(config: ClickHouseConfig) {
         this.config = config;
+        this.allowLocalFallback = config.allowLocalFallback === true;
         this.client = createClient({
             host: `http://${config.host}:${config.port}`,
             username: config.user,
@@ -54,15 +57,17 @@ class ClickHouseClientManager {
 
     /**
      * Execute a raw DDL or query string against ClickHouse.
-     * If ZooKeeper configuration is missing (e.g., local single-node test),
-     * rewrites DDL to non-replicated standard MergeTree engines and drops ON CLUSTER.
+     * If `config.allowLocalFallback` is enabled and ZooKeeper configuration is missing
+     * (e.g., local single-node test), rewrites DDL to non-replicated standard MergeTree
+     * engines and drops ON CLUSTER. Disabled by default — must be explicitly opted into,
+     * since ZooKeeper errors can also be a transient failure on a real production cluster.
      */
     public async exec(query: string): Promise<void> {
         logger.debug('CH exec:', { query: query.slice(0, 200) });
         try {
             await this.client.exec({ query });
         } catch (err: any) {
-            if (err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
+            if (this.allowLocalFallback && err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
                 const rewritten = rewriteQueryForLocal(query);
                 logger.info('Retrying DDL exec with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
                 await this.client.exec({ query: rewritten });
@@ -81,7 +86,7 @@ class ClickHouseClientManager {
             const result = await this.client.query({ query, format: 'JSONEachRow' });
             return result.json<T>();
         } catch (err: any) {
-            if (err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
+            if (this.allowLocalFallback && err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
                 const rewritten = rewriteQueryForLocal(query);
                 logger.info('Retrying query with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
                 const result = await this.client.query({ query: rewritten, format: 'JSONEachRow' });
@@ -105,7 +110,7 @@ class ClickHouseClientManager {
             const json = await result.json<any>();
             return { rows: json.data ?? [], meta: json.meta ?? [] };
         } catch (err: any) {
-            if (err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
+            if (this.allowLocalFallback && err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
                 const rewritten = rewriteQueryForLocal(query);
                 logger.info('Retrying queryWithMeta with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
                 const result = await this.client.query({ query: rewritten, format: 'JSON' });
