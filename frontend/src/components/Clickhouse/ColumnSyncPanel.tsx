@@ -26,7 +26,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
-import { clickhouseAPI, type ChTableInfo, type ChTableCheckResult } from '../../services/api';
+import { clickhouseAPI, toastNonApiError, type ChTableInfo, type ChTableCheckResult } from '../../services/api';
 import toast from 'react-hot-toast';
 
 type TableStatus = 'unchecked' | 'checking' | 'synced' | 'columns_out_of_sync' | 'missing';
@@ -201,8 +201,8 @@ const ColumnSyncPanel = () => {
       const { tables: t } = await clickhouseAPI.listTables();
       setTables(t);
       setCheckResults({});
-    } catch {
-      toast.error('Failed to load table list');
+    } catch (e) {
+      toastNonApiError(e, 'Failed to load table list');
     } finally {
       setLoading(false);
     }
@@ -218,8 +218,8 @@ const ColumnSyncPanel = () => {
     try {
       const result = await clickhouseAPI.checkTable(t.pgDatabase, t.pgSchema, t.table);
       setCheckResults(prev => ({ ...prev, [key]: { status: statusFromResult(result), result } }));
-    } catch {
-      toast.error(`Failed to check ${t.table}`);
+    } catch (e) {
+      toastNonApiError(e, `Failed to check ${t.table}`);
       setCheckResults(prev => ({ ...prev, [key]: { status: 'unchecked' } }));
     }
   }, []);
@@ -251,8 +251,8 @@ const ColumnSyncPanel = () => {
       }
       // Re-check just this table rather than reloading/re-checking the whole list
       await handleCheck(t);
-    } catch {
-      toast.error('Action failed — see server logs');
+    } catch (e) {
+      toastNonApiError(e, 'Action failed — see server logs');
     } finally {
       setActionLoading(prev => {
         const next = new Set(prev);

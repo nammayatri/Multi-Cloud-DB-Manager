@@ -1,6 +1,11 @@
 import { createClient, ClickHouseClient } from '@clickhouse/client';
 import logger from '../utils/logger';
 import { loadClickHouseConfig, ClickHouseConfig } from './clickhouse-config-loader';
+import { ClickHouseUserError } from '../utils/clickhouse-errors';
+
+function isZkError(err: any): boolean {
+    return !!(err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139'));
+}
 
 /**
  * Singleton ClickHouse client manager.
@@ -67,11 +72,19 @@ class ClickHouseClientManager {
         try {
             await this.client.exec({ query });
         } catch (err: any) {
-            if (this.allowLocalFallback && err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
-                const rewritten = rewriteQueryForLocal(query);
-                logger.info('Retrying DDL exec with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
-                await this.client.exec({ query: rewritten });
-                return;
+            if (isZkError(err)) {
+                if (this.allowLocalFallback) {
+                    const rewritten = rewriteQueryForLocal(query);
+                    logger.info('Retrying DDL exec with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
+                    await this.client.exec({ query: rewritten });
+                    return;
+                }
+                logger.error('CH exec failed — ZooKeeper not configured', { error: err.message });
+                throw new ClickHouseUserError(
+                    'This ClickHouse cluster has no ZooKeeper configured, so replicated tables/DDL cannot be created. ' +
+                    'Ask an admin to configure ZooKeeper for this cluster, or (local/dev only) set ' +
+                    '"allowLocalFallback": true in clickhouse.json to auto-downgrade to non-replicated tables.',
+                );
             }
             throw err;
         }
@@ -86,7 +99,7 @@ class ClickHouseClientManager {
             const result = await this.client.query({ query, format: 'JSONEachRow' });
             return result.json<T>();
         } catch (err: any) {
-            if (this.allowLocalFallback && err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
+            if (this.allowLocalFallback && isZkError(err)) {
                 const rewritten = rewriteQueryForLocal(query);
                 logger.info('Retrying query with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
                 const result = await this.client.query({ query: rewritten, format: 'JSONEachRow' });
@@ -110,7 +123,7 @@ class ClickHouseClientManager {
             const json = await result.json<any>();
             return { rows: json.data ?? [], meta: json.meta ?? [] };
         } catch (err: any) {
-            if (this.allowLocalFallback && err.message && (err.message.includes('Zookeeper') || err.message.includes('ZooKeeper') || err.code === '139')) {
+            if (this.allowLocalFallback && isZkError(err)) {
                 const rewritten = rewriteQueryForLocal(query);
                 logger.info('Retrying queryWithMeta with rewritten local DDL', { original: query.slice(0, 100), rewritten: rewritten.slice(0, 100) });
                 const result = await this.client.query({ query: rewritten, format: 'JSON' });

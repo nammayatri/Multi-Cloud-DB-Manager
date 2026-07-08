@@ -7,6 +7,12 @@ import historyService from '../services/history.service';
 import DatabasePools from '../config/database';
 import logger from '../utils/logger';
 import { CH_IDENTIFIER_RE } from '../services/clickhouse/ClickHouseBackfillService';
+import { ClickHouseUserError } from '../utils/clickhouse-errors';
+
+/** 422 (safe to show verbatim) for known, well-formed operator-actionable errors; 500 (generic) for anything else. */
+function statusForError(err: any): number {
+    return err instanceof ClickHouseUserError ? 422 : 500;
+}
 
 const CH_DATABASE_LABEL = 'clickhouse';
 const READ_ONLY_RE = /^(SELECT|WITH|SHOW|DESCRIBE|EXPLAIN)\b/i;
@@ -104,7 +110,7 @@ export async function manualSync(req: Request, res: Response): Promise<void> {
         res.json(result);
     } catch (err: any) {
         logger.error('Manual CH sync failed', { error: err.message });
-        res.status(500).json({ success: false, error: err.message });
+        res.status(statusForError(err)).json({ success: false, error: err.message });
     }
 }
 
@@ -378,7 +384,7 @@ export async function syncTableColumns(req: Request, res: Response): Promise<voi
         res.json(result);
     } catch (err: any) {
         logger.error('CH sync-columns failed', { error: err.message, table });
-        res.status(500).json({ success: false, error: err.message });
+        res.status(statusForError(err)).json({ success: false, error: err.message });
     }
 }
 
@@ -411,7 +417,7 @@ export async function createTable(req: Request, res: Response): Promise<void> {
         res.json(result);
     } catch (err: any) {
         logger.error('CH create-table failed', { error: err.message, table });
-        res.status(500).json({ success: false, error: err.message });
+        res.status(statusForError(err)).json({ success: false, error: err.message });
     }
 }
 

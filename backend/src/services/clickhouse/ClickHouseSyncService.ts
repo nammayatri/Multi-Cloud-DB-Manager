@@ -4,6 +4,7 @@ import ClickHouseClientManager from '../../config/clickhouse';
 import { ClickHouseKafkaConfig } from '../../config/clickhouse-config-loader';
 import ClickHouseTypeMapper from './ClickHouseTypeMapper';
 import ClickHouseDDLBuilder, { CHColumn, CH_SENTINEL_COLUMN, ExtractedKafkaConfig } from './ClickHouseDDLBuilder';
+import { ClickHouseUserError } from '../../utils/clickhouse-errors';
 
 // ──────────────────────────────────────────────
 // Types
@@ -338,7 +339,7 @@ async function getDefaultKafkaConfig(
         };
     }
 
-    throw new Error(
+    throw new ClickHouseUserError(
         `Cannot derive Kafka config for ${db}.${table}: no existing '*_queue' table found in database ` +
         `'${db}' to copy broker/topic settings from. Create at least one working table with a Kafka queue ` +
         `in this database first, or configure Kafka settings manually.`,
