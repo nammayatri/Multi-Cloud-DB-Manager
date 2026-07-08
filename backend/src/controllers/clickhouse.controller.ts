@@ -97,6 +97,15 @@ export async function manualSync(req: Request, res: Response): Promise<void> {
         return;
     }
 
+    // `schema` becomes the CH database name (chDb) whenever the SQL's own table reference is
+    // unqualified (see qualifiedName's defaultSchema fallback in ClickHouseSyncService.ts) and
+    // is spliced unescaped into raw ClickHouse DDL from there — reject anything that isn't a
+    // plain identifier, mirroring the same guard on backfill/sync-columns/create-table.
+    if (schema && !CH_IDENTIFIER_RE.test(schema)) {
+        res.status(400).json({ error: 'schema must contain only letters, numbers, and underscores' });
+        return;
+    }
+
     const pool = getPrimaryPool(database);
     if (!pool) {
         res.status(404).json({ error: `Database '${database}' not found in primary cloud` });
@@ -373,6 +382,13 @@ export async function syncTableColumns(req: Request, res: Response): Promise<voi
         return;
     }
 
+    // pgSchema (= chDatabase) and table are spliced into raw ClickHouse SQL downstream
+    // (chTableExists, system.columns lookups, DDL) — reject anything that isn't a plain identifier.
+    if (!CH_IDENTIFIER_RE.test(pgSchema) || !CH_IDENTIFIER_RE.test(table)) {
+        res.status(400).json({ error: 'pgSchema and table must contain only letters, numbers, and underscores' });
+        return;
+    }
+
     const pool = getPrimaryPool(pgDatabase);
     if (!pool) {
         res.status(404).json({ error: `Database '${pgDatabase}' not found in primary cloud` });
@@ -403,6 +419,13 @@ export async function createTable(req: Request, res: Response): Promise<void> {
 
     if (!pgDatabase || !pgSchema || !table) {
         res.status(400).json({ error: 'pgDatabase, pgSchema, and table are required' });
+        return;
+    }
+
+    // pgSchema (= chDatabase) and table are spliced into raw ClickHouse SQL downstream
+    // (CREATE DATABASE/TABLE DDL) — reject anything that isn't a plain identifier.
+    if (!CH_IDENTIFIER_RE.test(pgSchema) || !CH_IDENTIFIER_RE.test(table)) {
+        res.status(400).json({ error: 'pgSchema and table must contain only letters, numbers, and underscores' });
         return;
     }
 
@@ -446,10 +469,12 @@ export async function startBackfill(req: Request, res: Response): Promise<void> 
         return;
     }
 
-    // chDatabase/table are spliced into raw ClickHouse SQL downstream — reject anything
-    // that isn't a plain identifier before it ever reaches the backfill service.
-    if (!CH_IDENTIFIER_RE.test(chDatabase) || !CH_IDENTIFIER_RE.test(table)) {
-        res.status(400).json({ error: 'chDatabase and table must contain only letters, numbers, and underscores' });
+    // chDatabase/table/pgSchema are spliced into raw ClickHouse/PG SQL downstream (e.g.
+    // `SELECT * FROM "${pgSchema}"."${table}"` in fetchChunk — double-quoting alone doesn't
+    // stop a schema name containing `"`) — reject anything that isn't a plain identifier
+    // before it ever reaches the backfill service.
+    if (!CH_IDENTIFIER_RE.test(chDatabase) || !CH_IDENTIFIER_RE.test(table) || !CH_IDENTIFIER_RE.test(pgSchema)) {
+        res.status(400).json({ error: 'pgSchema, chDatabase, and table must contain only letters, numbers, and underscores' });
         return;
     }
 

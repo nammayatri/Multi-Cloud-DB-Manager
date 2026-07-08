@@ -191,14 +191,17 @@ function serializeChValue(v: unknown): string {
     if (v instanceof Date) return `'${v.toISOString().replace('T', ' ').slice(0, 19)}'`;
     if (Buffer.isBuffer(v)) return `'${escapeChString(v.toString('utf8'))}'`;
     if (Array.isArray(v)) {
-        // CH array literal, e.g. [1, 2, 3] or ['a', 'b'] — matches Array(Nullable(...)) mapping
-        const elems = v.map(el => {
-            if (el === null || el === undefined) return 'NULL';
-            if (typeof el === 'object') return `'${escapeChString(JSON.stringify(el))}'`;
-            if (typeof el === 'string') return `'${escapeChString(el)}'`;
-            return String(el);
-        });
-        return `[${elems.join(', ')}]`;
+        // CH array literal, e.g. [1, 2, 3] or ['a', 'b'] — matches Array(Nullable(...)) mapping.
+        // Recurse through serializeChValue itself so element handling (Date/Buffer/boolean/etc)
+        // can never drift from the scalar path above.
+        return `[${v.map(el => serializeChValue(el)).join(', ')}]`;
+    }
+    if (typeof v === 'number') {
+        // ClickHouse spells non-finite floats `nan`/`inf`/`-inf`, not JS's `NaN`/`Infinity`/`-Infinity`.
+        if (Number.isNaN(v)) return 'nan';
+        if (v === Infinity) return 'inf';
+        if (v === -Infinity) return '-inf';
+        return String(v);
     }
     if (typeof v === 'object') return `'${escapeChString(JSON.stringify(v))}'`; // jsonb
     if (typeof v === 'string') return `'${escapeChString(v)}'`;
