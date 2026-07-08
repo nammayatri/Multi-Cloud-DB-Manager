@@ -158,6 +158,12 @@ export class ClickHouseDDLBuilder {
 
     /**
      * Format a column line for the CREATE TABLE body.
+     *
+     * KNOWN LIMITATION: col.name is backtick-quoted but not escaped, so a PG column
+     * name containing a literal backtick would break out of the quoting into raw DDL.
+     * Accepted as-is: real schemas here only ever use [a-zA-Z0-9_] column names, and
+     * anyone who can reach column sync/create already has raw ClickHouse query access
+     * via /api/clickhouse/query, so this grants no new capability today.
      */
     private static colLine(col: CHColumn): string {
         return `  \`${col.name}\` ${col.chType}`;
