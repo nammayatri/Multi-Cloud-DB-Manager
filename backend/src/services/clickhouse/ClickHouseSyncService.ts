@@ -4,6 +4,7 @@ import ClickHouseClientManager from '../../config/clickhouse';
 import { ClickHouseKafkaConfig } from '../../config/clickhouse-config-loader';
 import ClickHouseTypeMapper from './ClickHouseTypeMapper';
 import ClickHouseDDLBuilder, { CHColumn, CH_SENTINEL_COLUMN, ExtractedKafkaConfig } from './ClickHouseDDLBuilder';
+import { ClickHouseUserError } from '../../utils/clickhouse-errors';
 
 // ──────────────────────────────────────────────
 // Types
@@ -338,9 +339,24 @@ async function getDefaultKafkaConfig(
         };
     }
 
-    throw new Error(
-        `CH sync: no sibling queue found in database '${db}' — cannot derive Kafka config for '${table}'`,
+    throw new ClickHouseUserError(
+        `Cannot derive Kafka config for ${db}.${table}: no existing '*_queue' table found in database ` +
+        `'${db}' to copy broker/topic settings from. Create at least one working table with a Kafka queue ` +
+        `in this database first, or configure Kafka settings manually.`,
     );
+}
+
+/**
+ * Returns a human-readable suffix noting when the 730-day TTL was skipped because the
+ * table's date column is nullable — surfaced in CHSyncResult.details for the UI, in
+ * addition to the logger.warn already emitted from ClickHouseDDLBuilder.buildCreateTable.
+ */
+function ttlSkippedNote(columns: CHColumn[]): string {
+    const dateTimeCol = ClickHouseDDLBuilder.findDateTimeColumn(columns);
+    if (dateTimeCol && ClickHouseDDLBuilder.isNullableType(dateTimeCol.chType)) {
+        return ` (no retention TTL — date column '${dateTimeCol.name}' is nullable)`;
+    }
+    return '';
 }
 
 // ──────────────────────────────────────────────
@@ -356,6 +372,56 @@ export class ClickHouseSyncService {
      * @param pgPool       - The PG connection pool to introspect schema info
      * @param pgSchema     - The default schema used for the query (e.g. "atlas_driver_offer_bpp")
      */
+    /**
+     * Create a brand-new table in ClickHouse from PG schema (table + queue + MV).
+     * Called by the manual "Create in CH" UI action.
+     */
+    public async createTableFromPg(
+        pgDatabase: string,
+        pgSchema: string,
+        table: string,
+        pgPool: Pool,
+    ): Promise<CHSyncResult> {
+        const chManager = ClickHouseClientManager.getInstance();
+        if (!chManager) {
+            return { success: false, action: 'disabled', details: 'ClickHouse not configured' };
+        }
+        const { config } = chManager;
+        return this.handleCreateTable(
+            { kind: 'CREATE_TABLE', schema: pgSchema, table },
+            pgPool,
+            chManager,
+            pgSchema, // chDb derived from pgSchema per existing convention
+            config.cluster,
+            config.selectUsers ?? [],
+        );
+    }
+
+    /**
+     * Sync columns for an existing CH table from PG (ALTER + rebuild queue+MV).
+     * Called by the manual "Sync Columns" UI action.
+     */
+    public async syncColumnsFromPg(
+        pgDatabase: string,
+        pgSchema: string,
+        table: string,
+        pgPool: Pool,
+    ): Promise<CHSyncResult> {
+        const chManager = ClickHouseClientManager.getInstance();
+        if (!chManager) {
+            return { success: false, action: 'disabled', details: 'ClickHouse not configured' };
+        }
+        const { config } = chManager;
+        return this.handleAlterAddColumn(
+            { kind: 'ALTER_ADD_COLUMN', schema: pgSchema, table, columns: [] },
+            pgPool,
+            chManager,
+            pgSchema,
+            config.cluster,
+            config.selectUsers ?? [],
+        );
+    }
+
     public async syncAfterQuery(
         sql: string,
         pgPool: Pool,
@@ -421,7 +487,7 @@ export class ClickHouseSyncService {
     // CREATE TABLE flow
     // ──────────────────────────────────────────────
 
-    private async handleCreateTable(
+    public async handleCreateTable(
         parsed: ParsedCreateTable,
         pgPool: Pool,
         ch: ClickHouseClientManager,
@@ -444,6 +510,13 @@ export class ClickHouseSyncService {
             };
         }
         const columns = mapColumns(pgRows);
+
+        // Ensure target ClickHouse database exists
+        try {
+            await ch.exec(`CREATE DATABASE IF NOT EXISTS ${chDb} ON CLUSTER '${cluster}'`);
+        } catch (dbErr: any) {
+            logger.warn(`Failed to create database ${chDb} (might be permission issue): ${dbErr.message}`);
+        }
 
         // 2. Build and execute CH main table DDL
         const createTableDDL = ClickHouseDDLBuilder.buildCreateTable(chDb, table, cluster, columns);
@@ -475,7 +548,7 @@ export class ClickHouseSyncService {
             success: true,
             action: 'created',
             table,
-            details: `Created ${chDb}.${table}, ${chDb}.${table}_queue, ${chDb}.${table}_mv`,
+            details: `Created ${chDb}.${table}, ${chDb}.${table}_queue, ${chDb}.${table}_mv${ttlSkippedNote(columns)}`,
         };
     }
 
@@ -483,7 +556,7 @@ export class ClickHouseSyncService {
     // ALTER TABLE ADD COLUMN flow
     // ──────────────────────────────────────────────
 
-    private async handleAlterAddColumn(
+    public async handleAlterAddColumn(
         parsed: ParsedAlterAddColumn,
         pgPool: Pool,
         ch: ClickHouseClientManager,
@@ -513,6 +586,13 @@ export class ClickHouseSyncService {
                 };
             }
             const allColumns = mapColumns(allPgRows);
+
+            try {
+                await ch.exec(`CREATE DATABASE IF NOT EXISTS ${chDb} ON CLUSTER '${cluster}'`);
+            } catch (dbErr: any) {
+                logger.warn(`Failed to create database ${chDb} (might be permission issue): ${dbErr.message}`);
+            }
+
             const createTableDDL = ClickHouseDDLBuilder.buildCreateTable(chDb, table, cluster, allColumns);
             await ch.exec(createTableDDL);
             const queueConfig = await getDefaultKafkaConfig(ch, chDb, table);
@@ -529,7 +609,7 @@ export class ClickHouseSyncService {
                 success: true,
                 action: 'created',
                 table,
-                details: `Bootstrapped missing CH table ${chDb}.${table} (and queue + MV) from current PG schema`,
+                details: `Bootstrapped missing CH table ${chDb}.${table} (and queue + MV) from current PG schema${ttlSkippedNote(allColumns)}`,
             };
         }
 

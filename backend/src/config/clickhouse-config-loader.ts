@@ -17,6 +17,10 @@ export interface ClickHouseConfig {
     cluster: string;
     kafka: ClickHouseKafkaConfig;
     selectUsers?: string[];   // users to GRANT SELECT on newly created tables
+    // When true, DDL/queries that fail due to missing ZooKeeper coordination are retried
+    // against a rewritten single-node (non-replicated) DDL. Intended for local/dev only —
+    // must be explicitly opted into, never assumed true in production.
+    allowLocalFallback?: boolean;
 }
 
 /**

@@ -351,6 +351,53 @@ export const redisAPI = {
 };
 
 // ClickHouse API
+export interface ChTableInfo {
+  pgDatabase: string;
+  pgSchema: string;
+  table: string;
+  chDatabase: string;
+}
+
+export interface ChTableCheckResult {
+  pgDatabase: string;
+  pgSchema: string;
+  table: string;
+  chDatabase: string;
+  inCH: boolean;
+  pgColumnCount: number;
+  chColumnCount: number;
+  missingColumns: string[];
+  extraChColumns: string[];
+}
+
+export interface ChSyncResult {
+  success: boolean;
+  action: 'created' | 'altered' | 'skipped' | 'disabled';
+  table?: string;
+  details: string;
+  error?: string;
+}
+
+export interface BackfillJob {
+  id: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  table: string;
+  pgDatabase: string;
+  pgSchema: string;
+  chDatabase: string;
+  fromDate: string;
+  toDate: string;
+  totalChunks: number;
+  completedChunks: number;
+  rowsInserted: number;
+  currentPeriod: string;
+  granularity: 'monthly' | 'weekly' | 'daily';
+  error?: string;
+  startedAt: string;
+  completedAt?: string;
+  cancelRequested: boolean;
+}
+
 export const clickhouseAPI = {
   getStatus: async (): Promise<{ status: string; clickhouse: string; host?: string; database?: string; message?: string }> => {
     const response = await api.get('/api/clickhouse/status');
@@ -364,6 +411,48 @@ export const clickhouseAPI = {
 
   sync: async (sql: string, database: string, schema?: string): Promise<any> => {
     const response = await api.post('/api/clickhouse/sync', { sql, database, schema });
+    return response.data;
+  },
+
+  listTables: async (): Promise<{ tables: ChTableInfo[] }> => {
+    const response = await api.get('/api/clickhouse/tables');
+    return response.data;
+  },
+
+  checkTable: async (pgDatabase: string, pgSchema: string, table: string): Promise<ChTableCheckResult> => {
+    const response = await api.post('/api/clickhouse/check-table', { pgDatabase, pgSchema, table });
+    return response.data;
+  },
+
+  syncColumns: async (pgDatabase: string, pgSchema: string, table: string): Promise<ChSyncResult> => {
+    const response = await api.post('/api/clickhouse/sync-columns', { pgDatabase, pgSchema, table });
+    return response.data;
+  },
+
+  createTable: async (pgDatabase: string, pgSchema: string, table: string): Promise<ChSyncResult> => {
+    const response = await api.post('/api/clickhouse/create-table', { pgDatabase, pgSchema, table });
+    return response.data;
+  },
+
+  startBackfill: async (params: {
+    pgDatabase: string;
+    pgSchema: string;
+    table: string;
+    chDatabase: string;
+    fromDate: string;
+    toDate: string;
+  }): Promise<{ backfillId: string; status: string }> => {
+    const response = await api.post('/api/clickhouse/backfill', params);
+    return response.data;
+  },
+
+  getBackfillStatus: async (id: string): Promise<BackfillJob> => {
+    const response = await api.get(`/api/clickhouse/backfill/${id}`);
+    return response.data;
+  },
+
+  cancelBackfill: async (id: string): Promise<{ success: boolean; message: string }> => {
+    const response = await api.post(`/api/clickhouse/backfill/${id}/cancel`);
     return response.data;
   },
 };

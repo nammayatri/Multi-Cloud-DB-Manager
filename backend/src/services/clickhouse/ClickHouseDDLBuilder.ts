@@ -1,4 +1,5 @@
 import { ClickHouseKafkaConfig } from '../../config/clickhouse-config-loader';
+import logger from '../../utils/logger';
 
 export interface ExtractedKafkaConfig {
     kafka_broker_list: string;
@@ -107,6 +108,11 @@ export class ClickHouseDDLBuilder {
         return chType.startsWith('Nullable(');
     }
 
+    /** Public wrapper so callers (e.g. ClickHouseSyncService) can check nullability, e.g. to detect a skipped TTL. */
+    public static isNullableType(chType: string): boolean {
+        return this.isNullable(chType);
+    }
+
     /**
      * Determine indexes for the main table.
      * - bloom_filter on `id` (always)
@@ -152,6 +158,12 @@ export class ClickHouseDDLBuilder {
 
     /**
      * Format a column line for the CREATE TABLE body.
+     *
+     * KNOWN LIMITATION: col.name is backtick-quoted but not escaped, so a PG column
+     * name containing a literal backtick would break out of the quoting into raw DDL.
+     * Accepted as-is: real schemas here only ever use [a-zA-Z0-9_] column names, and
+     * anyone who can reach column sync/create already has raw ClickHouse query access
+     * via /api/clickhouse/query, so this grants no new capability today.
      */
     private static colLine(col: CHColumn): string {
         return `  \`${col.name}\` ${col.chType}`;
@@ -200,10 +212,17 @@ export class ClickHouseDDLBuilder {
         }
         lines.push(`ORDER BY ${orderBy}`);
 
-        if (dateTimeCol) {
+        if (dateTimeCol && !this.isNullable(dateTimeCol.chType)) {
             lines.push(`TTL ${dateTimeCol.name} + toIntervalDay(730)`);
+        } else if (dateTimeCol && this.isNullable(dateTimeCol.chType)) {
+            logger.warn(
+                `ClickHouseDDLBuilder: skipping 730-day TTL for ${db}.${table} — ` +
+                `date column '${dateTimeCol.name}' is nullable; table will retain all data indefinitely`,
+            );
         }
-        lines.push(`SETTINGS index_granularity = 8192`);
+        lines.push(`SETTINGS index_granularity = 8192, allow_nullable_key = 1`);
+
+
 
         return lines.join('\n');
     }
