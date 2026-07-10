@@ -1,5 +1,9 @@
 # Build stage
-FROM node:18-alpine AS builder
+# Node 18's bundled npm (10.x) fails `npm ci` on this lockfile with a spurious
+# "Missing: yaml@2.9.0 from lock file" error -- a known npm 10.x lockfile-validation
+# bug, not an actual sync problem (npm 11+ installs this exact lockfile cleanly).
+# devDependencies (vite 5/vitest 4/jsdom 29) also require Node >=20 anyway.
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 
