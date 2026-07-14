@@ -141,13 +141,45 @@ class QueryService {
       const databaseName = request.database;
 
       // Determine which clouds to execute on based on mode
-      const cloudsToExecute: string[] = [];
+      const dbPools = DatabasePools.getInstance();
+      let cloudsToExecute: string[] = [];
 
       if (request.mode === 'both') {
         cloudsToExecute.push(cloudConfig.primaryCloud);
         cloudsToExecute.push(...cloudConfig.secondaryClouds);
       } else {
         cloudsToExecute.push(request.mode);
+      }
+
+      // Only target clouds that actually have this database configured. A
+      // database can live on a subset of clouds (primary-only, secondary-only,
+      // or any partial spread), so 'both' means "every cloud that has this DB",
+      // not "every cloud". This prevents a spurious "Pool not found" failure
+      // for clouds that legitimately don't host the selected database.
+      const skippedClouds = cloudsToExecute.filter(
+        cloud => !dbPools.getPoolByName(cloud, databaseName)
+      );
+      cloudsToExecute = cloudsToExecute.filter(
+        cloud => !!dbPools.getPoolByName(cloud, databaseName)
+      );
+
+      if (skippedClouds.length > 0) {
+        logger.info('Skipping clouds without this database', {
+          executionId,
+          database: databaseName,
+          skippedClouds,
+          cloudsToExecute,
+        });
+      }
+
+      if (cloudsToExecute.length === 0) {
+        await this.executionManager.failExecution(
+          executionId,
+          `Database '${databaseName}' is not configured on the selected cloud(s).`,
+          'DATABASE_NOT_ON_CLOUD'
+        );
+        this.executionManager.completeActiveExecution(executionId);
+        return;
       }
 
       const response: QueryResponse = {

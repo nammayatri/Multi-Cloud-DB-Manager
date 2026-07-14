@@ -142,6 +142,26 @@ export const addTables = async (
       return res.status(400).json({ error: 'Invalid publication name in configuration' });
     }
 
+    // Determine the genuine replication subscribers for THIS database: secondary
+    // clouds that actually host it AND have a subscription configured. A
+    // database that lives only on the primary cloud (no secondary copy) has no
+    // subscribers, so replication does not apply — we don't touch the
+    // publication either. (The UI already hides the prompt in this case; this is
+    // the server-side guard for direct API calls.)
+    const eligibleSecondaries = config.secondaryClouds
+      .map(cloudName => ({
+        cloudName,
+        secondaryDb: config.secondaryDatabases[cloudName]?.find(db => db.databaseName === database),
+      }))
+      .filter(s => !!s.secondaryDb?.subscriptionName);
+
+    if (eligibleSecondaries.length === 0) {
+      return res.status(400).json({
+        notApplicable: true,
+        error: `Replication is not applicable for '${database}': it is configured on a single cloud with no secondary subscriber.`,
+      });
+    }
+
     const results: {
       publication: { success: boolean; error?: string };
       subscriptions: Array<{ cloud: string; success: boolean; error?: string }>;
@@ -169,17 +189,12 @@ export const addTables = async (
       results.publication = { success: false, error: err.message };
     }
 
-    // 2. Refresh subscriptions on each secondary cloud
-    for (const cloudName of config.secondaryClouds) {
-      const secondaryDbs = config.secondaryDatabases[cloudName];
-      const secondaryDb = secondaryDbs?.find(db => db.databaseName === database);
-
+    // 2. Refresh subscriptions on each eligible secondary cloud (those that
+    //    host this database with a configured subscription). Clouds that don't
+    //    have this database are not subscribers and are skipped entirely.
+    for (const { cloudName, secondaryDb } of eligibleSecondaries) {
       if (!secondaryDb?.subscriptionName) {
-        results.subscriptions.push({
-          cloud: cloudName,
-          success: false,
-          error: 'No subscription configured',
-        });
+        // Unreachable given the eligibility filter above, but keeps types honest.
         continue;
       }
 

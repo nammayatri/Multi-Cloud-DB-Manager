@@ -34,6 +34,8 @@ import QueryWarningDialog from '../Dialog/QueryWarningDialog';
 import ReplicationDialog from '../Dialog/ReplicationDialog';
 import { detectDangerousQueries } from '../../services/queryValidation.service';
 import type { ValidationWarning } from '../../services/queryValidation.service';
+import { buildDbMap, buildModesForDb } from './databaseTopology';
+import type { DbMap, DbCloudEntry } from './databaseTopology';
 
 interface DatabaseSelectorProps {
   onExecute: (result: QueryResponse) => void;
@@ -67,6 +69,7 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
   const user = useAppStore(s => s.user);
 
   const [databaseOptions, setDatabaseOptions] = useState<DatabaseOption[]>([]);
+  const [dbMap, setDbMap] = useState<DbMap>({});
   const [loadingConfig, setLoadingConfig] = useState(true);
   const [showWarningDialog, setShowWarningDialog] = useState(false);
   const [currentWarning, setCurrentWarning] = useState<ValidationWarning | null>(null);
@@ -105,39 +108,23 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
 
       const config: DatabaseConfiguration = await schemaAPI.getConfiguration();
 
-      // Build unique database options (use primary cloud as source of truth)
-      // All clouds should have same database structure (bpp, bap, etc.)
-      const options: DatabaseOption[] = config.primary.databases.map((db) => ({
-        value: db.name, // Database name (e.g., 'bpp', 'bap')
-        label: db.label, // Display label (e.g., 'Driver (BPP)')
-        schemas: db.schemas,
-        defaultSchema: db.defaultSchema
+      // Group databases by name across every cloud. The dropdown lists the
+      // UNION of all database names (so a database that lives on only one cloud
+      // — primary-only or secondary-only — still appears), not just the primary
+      // cloud's databases.
+      const map = buildDbMap(config);
+      const options: DatabaseOption[] = Object.entries(map).map(([name, meta]) => ({
+        value: name,
+        label: meta.label,
+        schemas: meta.schemas,
+        defaultSchema: meta.defaultSchema,
       }));
 
+      setDbMap(map);
       setDatabaseOptions(options);
       dbConfigRef.current = config;
-
-      // Build execution modes dynamically
-      const primaryCloud = config.primary.cloudName;
-      const secondaryClouds = config.secondary.map(s => s.cloudName);
-
-      setCloudNames({ primary: primaryCloud, secondary: secondaryClouds });
-
-      // Build "Both" label with all clouds
-      const allClouds = [primaryCloud, ...secondaryClouds].map(c => c.toUpperCase()).join(' + ');
-      const modes: Array<{ value: string; label: string; cloudName: string }> = [
-        { value: 'both', label: `Multi-Cloud (${allClouds})`, cloudName: 'both' }
-      ];
-
-      if (primaryCloud) {
-        modes.push({ value: primaryCloud, label: `${primaryCloud.toUpperCase()} Only`, cloudName: primaryCloud });
-      }
-
-      secondaryClouds.forEach(cloud => {
-        modes.push({ value: cloud, label: `${cloud.toUpperCase()} Only`, cloudName: cloud });
-      });
-
-      setExecutionModes(modes);
+      // Execution modes are derived per selected database in a dedicated effect
+      // below (they depend on which clouds the chosen DB actually lives on).
 
       // Set initial database and schema if available
       if (options.length > 0) {
@@ -158,30 +145,38 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
       console.error('Failed to load database configuration:', error);
       toastNonApiError(error, 'Failed to load database configuration');
 
-      // Fallback to hardcoded options
-      setDatabaseOptions([
-        {
-          value: 'db1',
+      // Fallback to hardcoded options (execution modes derive from dbMap via the
+      // per-database effect, so populate a matching fallback map here too).
+      const fallbackCloud = (cloudType: string, role: 'primary' | 'secondary'): DbCloudEntry => ({
+        cloudType,
+        role,
+      });
+      const fallbackMap: DbMap = {
+        db1: {
           label: 'Database 1',
           schemas: ['public'],
-          defaultSchema: 'public'
+          defaultSchema: 'public',
+          clouds: [fallbackCloud('cloud1', 'primary'), fallbackCloud('cloud2', 'secondary')],
+          replicationEnabled: false,
         },
-        {
-          value: 'db2',
+        db2: {
           label: 'Database 2',
           schemas: ['public'],
-          defaultSchema: 'public'
-        }
-      ]);
+          defaultSchema: 'public',
+          clouds: [fallbackCloud('cloud1', 'primary'), fallbackCloud('cloud2', 'secondary')],
+          replicationEnabled: false,
+        },
+      };
 
-      // Fallback execution modes
-      setExecutionModes([
-        { value: 'both', label: 'Both (CLOUD1 + CLOUD2)', cloudName: 'both' },
-        { value: 'cloud1', label: 'CLOUD1 Only', cloudName: 'cloud1' },
-        { value: 'cloud2', label: 'CLOUD2 Only', cloudName: 'cloud2' }
-      ]);
-
-      setCloudNames({ primary: 'cloud1', secondary: ['cloud2'] });
+      setDbMap(fallbackMap);
+      setDatabaseOptions(
+        Object.entries(fallbackMap).map(([name, meta]) => ({
+          value: name,
+          label: meta.label,
+          schemas: meta.schemas,
+          defaultSchema: meta.defaultSchema,
+        }))
+      );
     }
   };
 
@@ -215,6 +210,32 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
     }
   }, [selectedDatabase, databaseOptions, setSelectedPgSchema]);
 
+  // Rebuild Execution Mode options whenever the selected database (or config)
+  // changes. Modes are PER-DATABASE: a single-cloud database offers only its one
+  // cloud and no "Multi-Cloud" option, because there is nothing to fan out to.
+  useEffect(() => {
+    const meta = dbMap[selectedDatabase];
+    const modes = buildModesForDb(meta);
+    setExecutionModes(modes);
+
+    // Reflect the selected database's actual clouds (used by the status chips
+    // and the post-CREATE replication detection).
+    const primaryCloud = meta?.clouds.find(c => c.role === 'primary')?.cloudType || '';
+    const secondaryClouds = meta
+      ? meta.clouds.filter(c => c.role === 'secondary').map(c => c.cloudType)
+      : [];
+    setCloudNames({ primary: primaryCloud, secondary: secondaryClouds });
+
+    // If the current mode is no longer valid for this database, fall back to the
+    // default: Multi-Cloud when available, otherwise the single cloud.
+    if (modes.length > 0 && !modes.some(m => m.value === selectedMode)) {
+      setSelectedMode(modes[0].value as any);
+    }
+    // selectedMode intentionally excluded: we only re-validate on DB/config change,
+    // not when the user deliberately picks a (valid) mode.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDatabase, dbMap, setSelectedMode]);
+
   const pollExecutionStatus = async (executionId: string) => {
     try {
       const status = await queryAPI.getStatus(executionId);
@@ -246,15 +267,16 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
 
         // Detect CREATE TABLE for replication popup (check primary result regardless of overall status)
         if (status.result && (status.status === 'completed' || status.status === 'failed')) {
-          const primaryCloud = cloudNames.primary;
+          const meta = dbMap[selectedDatabase];
+          // Only prompt for replication when the database is genuinely
+          // multi-cloud (a primary publisher AND a secondary subscriber).
+          // Single-cloud databases (primary-only or secondary-only) never prompt.
+          const replicationEnabled = !!meta?.replicationEnabled;
+          const primaryCloud = meta?.clouds.find(c => c.role === 'primary')?.cloudType || cloudNames.primary;
           const modeIncludesPrimary = selectedMode === 'both' || selectedMode === primaryCloud;
-          const primaryDbInfo = dbConfigRef.current?.primary.databases.find(
-            (db) => db.name === selectedDatabase
-          );
-          const hasPublication = !!primaryDbInfo?.publicationName;
           const primaryResult = status.result[primaryCloud];
 
-          if (modeIncludesPrimary && hasPublication && primaryResult?.success) {
+          if (modeIncludesPrimary && replicationEnabled && primaryResult?.success) {
             const createTableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:("?[a-zA-Z_][a-zA-Z0-9_]*"?)\.)?("?[a-zA-Z_][a-zA-Z0-9_]*"?)/i;
             const foundTables: Array<{ schema: string; table: string }> = [];
 
