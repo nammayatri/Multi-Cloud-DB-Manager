@@ -14,8 +14,39 @@ export const getConfiguration = async (
     const dbPools = DatabasePools.getInstance();
     const config = dbPools.getCloudConfig();
 
+    // Accurate per-database view with per-cloud roles (source of truth for the
+    // UI). Each database names its own primary cloud; the primary/secondary
+    // blocks below are kept for backward compatibility with older clients.
+    const allDbInfos = [
+      ...config.primaryDatabases,
+      ...Object.values(config.secondaryDatabases).flat(),
+    ];
+    const databasesByName: Record<string, any> = {};
+    for (const [name, clouds] of Object.entries(config.databaseClouds)) {
+      const primaryCloud = config.databasePrimaryCloud[name];
+      databasesByName[name] = {
+        clouds: clouds
+          .map(cloudType => {
+            const info = allDbInfos.find(d => d.databaseName === name && d.cloudType === cloudType);
+            if (!info) return null;
+            const role = cloudType === primaryCloud ? 'primary' : 'secondary';
+            return {
+              cloudType,
+              role,
+              label: info.label,
+              schemas: info.schemas,
+              defaultSchema: info.defaultSchema,
+              ...(info.publicationName && { publicationName: info.publicationName }),
+              ...(info.subscriptionName && { subscriptionName: info.subscriptionName }),
+            };
+          })
+          .filter(Boolean),
+      };
+    }
+
     // Return sanitized configuration (without passwords)
     res.json({
+      databasesByName,
       primary: {
         cloudName: config.primaryCloud,
         databases: config.primaryDatabases.map(db => ({

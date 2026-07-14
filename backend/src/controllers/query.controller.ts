@@ -84,14 +84,16 @@ export const executeQuery = async (
       throw new AppError(`Invalid execution mode: ${queryRequest.mode}`, 400);
     }
 
-    // INSERT may only run against the primary cloud — DB-level replication
-    // carries the row to secondaries. Block 'both' and any secondary-cloud target.
-    if (queryRequest.mode !== cloudConfig.primaryCloud) {
+    // INSERT may only run against THIS database's own primary cloud — DB-level
+    // replication carries the row to its secondaries. Block 'both' and any
+    // non-primary target. Each database has its own primary cloud.
+    const dbPrimaryCloud = DatabasePools.getInstance().getPrimaryCloudForDatabase(queryRequest.database);
+    if (queryRequest.mode !== dbPrimaryCloud) {
       const statements = QueryValidator.splitStatements(queryRequest.query);
       const hasInsert = statements.some(s => /^\s*(?:WITH\b[\s\S]*?\)\s*)?INSERT\b/i.test(s));
       if (hasInsert) {
         throw new AppError(
-          `INSERT statements are only allowed on the primary cloud (${cloudConfig.primaryCloud}). Please switch the execution mode to ${cloudConfig.primaryCloud}.`,
+          `INSERT statements are only allowed on the primary cloud for '${queryRequest.database}' (${dbPrimaryCloud}). Please switch the execution mode to ${dbPrimaryCloud}.`,
           400
         );
       }
