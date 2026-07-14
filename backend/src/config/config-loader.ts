@@ -154,17 +154,24 @@ function loadFromJsonFile(filePath: string): DatabasesConfigJson | null {
 }
 
 /**
- * Normalize a parsed config into the legacy { primary, secondary[] } shape.
+ * Normalize a parsed config into the legacy { primary, secondary[] } shape,
+ * plus a per-database `databaseRoles` map.
  *
  * Supports two authoring formats transparently:
  *   1. Legacy   — { primary: {...}, secondary: [...] }  → returned as-is
  *   2. Grouped  — { databasesByName: { <name>: { label, clouds: [...] } } }
- *                 → converted to the legacy shape here
+ *                 → converted here
  *
- * In the grouped format each cloud entry carries its own role. There must be
- * exactly one `primary` cloud (shared across all databases); every other cloud
- * is a `secondary`. Any extra top-level keys (history, slack, readReplicas,
- * migrations, environment, …) are preserved untouched.
+ * Cloud roles are PER DATABASE: each database names its own primary cloud (its
+ * write target + replication publisher) and any number of secondaries. Different
+ * databases may use different primary clouds (e.g. Driver aws-primary while Rider
+ * is gcp-primary). Each database must have exactly one `primary` cloud entry.
+ *
+ * The { primary, secondary[] } buckets we emit are only used to CREATE POOLS
+ * (which are keyed by cloud+db and don't care about role), so we bucket purely
+ * by cloud and cover every (cloud, database) pair. Routing (INSERT, replication,
+ * fan-out) reads the accurate `databaseRoles` map instead. Any extra top-level
+ * keys (history, slack, readReplicas, migrations, environment, …) pass through.
  */
 function normalizeConfig(raw: any): DatabasesConfigJson {
   // Already in legacy format (or malformed — let validateConfig report it)
@@ -172,16 +179,20 @@ function normalizeConfig(raw: any): DatabasesConfigJson {
     return raw as DatabasesConfigJson;
   }
 
-  logger.info('Detected grouped "databasesByName" config format — normalizing to primary/secondary');
+  logger.info('Detected grouped "databasesByName" config format — normalizing (per-database cloud roles)');
 
-  // Preserve cloud ordering by first-seen; group db_configs per cloudName.
-  const primaryByCloud = new Map<string, DatabaseConfigJson[]>();
-  const secondaryByCloud = new Map<string, DatabaseConfigJson[]>();
+  // All db_configs grouped by cloud (for pool creation) — first-seen order.
+  const cloudToDbConfigs = new Map<string, DatabaseConfigJson[]>();
+  // Per-database roles (the source of truth for routing).
+  const databaseRoles: { [db: string]: { primaryCloud: string; secondaryClouds: string[] } } = {};
 
   for (const [name, group] of Object.entries<any>(raw.databasesByName)) {
-    if (!group || !Array.isArray(group.clouds)) {
-      throw new Error(`Invalid grouped config: database "${name}" must have a "clouds" array`);
+    if (!group || !Array.isArray(group.clouds) || group.clouds.length === 0) {
+      throw new Error(`Invalid grouped config: database "${name}" must have a non-empty "clouds" array`);
     }
+
+    let primaryCloud: string | undefined;
+    const secondaryClouds: string[] = [];
 
     for (const cloud of group.clouds) {
       if (!cloud || !cloud.cloudType) {
@@ -199,6 +210,17 @@ function normalizeConfig(raw: any): DatabasesConfigJson {
         );
       }
 
+      if (role === 'primary') {
+        if (primaryCloud) {
+          throw new Error(
+            `Invalid grouped config: database "${name}" has more than one primary cloud (${primaryCloud}, ${cloud.cloudType}); each database may have only one primary`
+          );
+        }
+        primaryCloud = cloud.cloudType;
+      } else {
+        secondaryClouds.push(cloud.cloudType);
+      }
+
       const dbConfig: DatabaseConfigJson = {
         name,
         label: cloud.label || group.label || name,
@@ -214,36 +236,44 @@ function normalizeConfig(raw: any): DatabasesConfigJson {
         ...(cloud.indexCreateBlockedTables ? { indexCreateBlockedTables: cloud.indexCreateBlockedTables } : {}),
       };
 
-      const bucket = role === 'primary' ? primaryByCloud : secondaryByCloud;
-      if (!bucket.has(cloud.cloudType)) {
-        bucket.set(cloud.cloudType, []);
+      if (!cloudToDbConfigs.has(cloud.cloudType)) {
+        cloudToDbConfigs.set(cloud.cloudType, []);
       }
-      bucket.get(cloud.cloudType)!.push(dbConfig);
+      cloudToDbConfigs.get(cloud.cloudType)!.push(dbConfig);
     }
+
+    if (!primaryCloud) {
+      throw new Error(`Invalid grouped config: database "${name}" has no "primary" cloud entry`);
+    }
+    databaseRoles[name] = { primaryCloud, secondaryClouds };
   }
 
-  if (primaryByCloud.size === 0) {
-    throw new Error('Invalid grouped config: no database has a "primary" cloud entry');
-  }
-  if (primaryByCloud.size > 1) {
-    throw new Error(
-      `Invalid grouped config: multiple primary clouds found (${[...primaryByCloud.keys()].join(', ')}); only one primary cloud is allowed`
-    );
+  const cloudNames = [...cloudToDbConfigs.keys()];
+  if (cloudNames.length === 0) {
+    throw new Error('Invalid grouped config: no cloud entries found');
   }
 
-  const [primaryCloudName, primaryDbConfigs] = [...primaryByCloud.entries()][0];
-  const secondary: CloudConfigJson[] = [...secondaryByCloud.entries()].map(
-    ([cloudName, db_configs]) => ({ cloudName, db_configs })
-  );
+  // Bucket by cloud for pool creation. The "global" primary is just the first
+  // cloud that is a primary for some database — a legacy default; real routing
+  // uses databaseRoles. Every (cloud, db) pair is covered so all pools are made.
+  const firstDb = Object.keys(databaseRoles)[0];
+  const globalPrimaryCloud = databaseRoles[firstDb].primaryCloud;
+  const primary: CloudConfigJson = {
+    cloudName: globalPrimaryCloud,
+    db_configs: cloudToDbConfigs.get(globalPrimaryCloud)!,
+  };
+  const secondary: CloudConfigJson[] = cloudNames
+    .filter(c => c !== globalPrimaryCloud)
+    .map(cloudName => ({ cloudName, db_configs: cloudToDbConfigs.get(cloudName)! }));
 
-  // Drop databasesByName; carry every other top-level key (history, slack,
-  // readReplicas, migrations, environment, …) through unchanged.
+  // Drop databasesByName; carry every other top-level key through unchanged.
   const { databasesByName, ...rest } = raw;
 
   return {
     ...rest,
-    primary: { cloudName: primaryCloudName, db_configs: primaryDbConfigs },
+    primary,
     secondary,
+    databaseRoles,
   } as DatabasesConfigJson;
 }
 

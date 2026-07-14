@@ -89,7 +89,21 @@ export interface CloudInfo {
   databases: DatabaseInfo[];
 }
 
+export interface ConfigCloudEntry {
+  cloudType: string;
+  role: 'primary' | 'secondary';
+  label: string;
+  schemas: string[];
+  defaultSchema: string;
+  publicationName?: string;
+  subscriptionName?: string;
+}
+
 export interface DatabaseConfiguration {
+  // Accurate per-database view with per-cloud roles (each DB names its own
+  // primary cloud). Preferred by the client; primary/secondary kept for
+  // backward compatibility with older backends.
+  databasesByName?: { [databaseName: string]: { clouds: ConfigCloudEntry[] } };
   primary: CloudInfo;
   secondary: CloudInfo[];
 }

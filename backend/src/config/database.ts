@@ -83,43 +83,94 @@ class DatabasePools {
    * Convert JSON configuration to internal CloudConfiguration format
    */
   private convertJsonToCloudConfig(jsonConfig: any): CloudConfiguration {
+    const primaryDatabases = jsonConfig.primary.db_configs.map((db: any) => ({
+      cloudType: jsonConfig.primary.cloudName,
+      databaseName: db.name,
+      label: db.label,
+      host: db.host,
+      port: db.port,
+      user: db.user,
+      password: db.password,
+      database: db.database,
+      schemas: db.schemas,
+      defaultSchema: db.defaultSchema,
+      ...(db.publicationName && { publicationName: db.publicationName }),
+      ...(db.indexCreateBlockedTables && { indexCreateBlockedTables: db.indexCreateBlockedTables }),
+    }));
+    const secondaryDatabases = Object.fromEntries(
+      jsonConfig.secondary.map((cloud: any) => [
+        cloud.cloudName,
+        cloud.db_configs.map((db: any) => ({
+          cloudType: cloud.cloudName,
+          databaseName: db.name,
+          label: db.label,
+          host: db.host,
+          port: db.port,
+          user: db.user,
+          password: db.password,
+          database: db.database,
+          schemas: db.schemas,
+          defaultSchema: db.defaultSchema,
+          ...(db.subscriptionName && { subscriptionName: db.subscriptionName }),
+          ...(db.indexCreateBlockedTables && { indexCreateBlockedTables: db.indexCreateBlockedTables }),
+        }))
+      ])
+    );
+
+    // Per-database cloud roles. Prefer the explicit databaseRoles map (grouped
+    // configs — each DB names its own primary). Fall back for legacy configs:
+    // every database's primary is the single global primary cloud.
+    const databasePrimaryCloud: { [db: string]: string } = {};
+    const databaseClouds: { [db: string]: string[] } = {};
+
+    if (jsonConfig.databaseRoles) {
+      for (const [db, roles] of Object.entries<any>(jsonConfig.databaseRoles)) {
+        databasePrimaryCloud[db] = roles.primaryCloud;
+        databaseClouds[db] = [roles.primaryCloud, ...roles.secondaryClouds];
+      }
+    } else {
+      // Legacy: the single primary cloud is every primary database's primary.
+      for (const db of primaryDatabases) {
+        databasePrimaryCloud[db.databaseName] = jsonConfig.primary.cloudName;
+        databaseClouds[db.databaseName] = [jsonConfig.primary.cloudName];
+      }
+      for (const [cloudName, dbs] of Object.entries<any>(secondaryDatabases)) {
+        for (const db of dbs) {
+          if (!databaseClouds[db.databaseName]) databaseClouds[db.databaseName] = [];
+          databaseClouds[db.databaseName].push(cloudName);
+          // A secondary-only database (not in the primary cloud) has no primary
+          // in the legacy model; leave it unset — callers fall back sensibly.
+        }
+      }
+    }
+
     return {
       primaryCloud: jsonConfig.primary.cloudName,
-      primaryDatabases: jsonConfig.primary.db_configs.map((db: any) => ({
-        cloudType: jsonConfig.primary.cloudName,
-        databaseName: db.name,
-        label: db.label,
-        host: db.host,
-        port: db.port,
-        user: db.user,
-        password: db.password,
-        database: db.database,
-        schemas: db.schemas,
-        defaultSchema: db.defaultSchema,
-        ...(db.publicationName && { publicationName: db.publicationName }),
-        ...(db.indexCreateBlockedTables && { indexCreateBlockedTables: db.indexCreateBlockedTables }),
-      })),
+      primaryDatabases,
       secondaryClouds: jsonConfig.secondary.map((c: any) => c.cloudName),
-      secondaryDatabases: Object.fromEntries(
-        jsonConfig.secondary.map((cloud: any) => [
-          cloud.cloudName,
-          cloud.db_configs.map((db: any) => ({
-            cloudType: cloud.cloudName,
-            databaseName: db.name,
-            label: db.label,
-            host: db.host,
-            port: db.port,
-            user: db.user,
-            password: db.password,
-            database: db.database,
-            schemas: db.schemas,
-            defaultSchema: db.defaultSchema,
-            ...(db.subscriptionName && { subscriptionName: db.subscriptionName }),
-            ...(db.indexCreateBlockedTables && { indexCreateBlockedTables: db.indexCreateBlockedTables }),
-          }))
-        ])
-      )
+      secondaryDatabases,
+      databasePrimaryCloud,
+      databaseClouds,
     };
+  }
+
+  /**
+   * Get the primary cloud for a specific database (its write target +
+   * replication publisher). Falls back to the global primary cloud when a DB
+   * has no explicit primary recorded (legacy / secondary-only edge cases).
+   */
+  public getPrimaryCloudForDatabase(databaseName: string): string {
+    return this.cloudConfig.databasePrimaryCloud[databaseName] || this.cloudConfig.primaryCloud;
+  }
+
+  /**
+   * Get every cloud a database is configured on (primary first), restricted to
+   * clouds that actually have a live pool for it.
+   */
+  public getCloudsForDatabase(databaseName: string): string[] {
+    const declared = this.cloudConfig.databaseClouds[databaseName]
+      || [this.cloudConfig.primaryCloud, ...this.cloudConfig.secondaryClouds];
+    return declared.filter(cloud => this.pools.has(`${cloud}_${databaseName}`));
   }
 
   /**

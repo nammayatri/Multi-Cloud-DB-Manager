@@ -30,11 +30,10 @@ function stripLeadingSqlComments(s: string): string {
 // Helpers
 // ──────────────────────────────────────────────
 
-/** Resolve the primary-cloud pool for a given database name. */
+/** Resolve the primary-cloud pool for a given database name (per-DB primary). */
 function getPrimaryPool(database: string) {
     const dbPools = DatabasePools.getInstance();
-    const cloudConfig = dbPools.getCloudConfig();
-    return dbPools.getPoolByName(cloudConfig.primaryCloud, database);
+    return dbPools.getPoolByName(dbPools.getPrimaryCloudForDatabase(database), database);
 }
 
 /** Get all primary databases with their default schemas. */
@@ -233,7 +232,6 @@ export async function listSyncableTables(req: Request, res: Response): Promise<v
 
     const databases = getPrimaryDatabases();
     const dbPools = DatabasePools.getInstance();
-    const cloudConfig = dbPools.getCloudConfig();
 
     const results: Array<{
         pgDatabase: string;
@@ -243,7 +241,7 @@ export async function listSyncableTables(req: Request, res: Response): Promise<v
     }> = [];
 
     for (const db of databases) {
-        const pool = dbPools.getPoolByName(cloudConfig.primaryCloud, db.databaseName);
+        const pool = dbPools.getPoolByName(dbPools.getPrimaryCloudForDatabase(db.databaseName), db.databaseName);
         if (!pool) continue;
 
         try {

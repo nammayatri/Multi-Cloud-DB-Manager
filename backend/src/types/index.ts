@@ -118,6 +118,10 @@ export interface DatabasesConfigJson {
     database: string;
   };
   slack?: SlackConfigJson;
+  // Populated by the loader when normalizing the grouped format: each database's
+  // own primary cloud + its secondary clouds. Absent for legacy configs (where
+  // every database's primary is the single `primary.cloudName`).
+  databaseRoles?: { [databaseName: string]: { primaryCloud: string; secondaryClouds: string[] } };
 }
 
 // -------------------------------------------------------------------------
@@ -182,6 +186,12 @@ export interface CloudConfiguration {
   primaryDatabases: DatabaseInfo[];
   secondaryClouds: string[];
   secondaryDatabases: { [cloudName: string]: DatabaseInfo[] };
+  // Per-database cloud roles — the source of truth for routing. Each database
+  // names its OWN primary cloud (write target + replication publisher); the
+  // `primaryCloud` field above is only a legacy/global default. This lets one
+  // database be aws-primary while another is gcp-primary in the same config.
+  databasePrimaryCloud: { [databaseName: string]: string };
+  databaseClouds: { [databaseName: string]: string[] }; // all clouds a DB is on, primary first
 }
 
 export interface SchemaInfo {
