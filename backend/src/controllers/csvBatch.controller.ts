@@ -19,18 +19,23 @@ export const startCsvBatch = async (
     const user = req.user as Express.User;
     const { queryTemplate, ids, database, batchSize, sleepMs, dryRun, stopOnError, pgSchema } = req.body;
 
-    // Validate database against actual config (primary only)
-    const cloudConfig = DatabasePools.getInstance().getCloudConfig();
-    const primaryDatabases = cloudConfig.primaryDatabases.map(d => d.databaseName);
+    // Validate the database exists in the config. CSV batch runs on the
+    // database's own primary cloud (resolved in the service).
+    const dbPools = DatabasePools.getInstance();
+    const cloudConfig = dbPools.getCloudConfig();
+    const allDatabases = [
+      ...cloudConfig.primaryDatabases.map(d => d.databaseName),
+      ...Object.values(cloudConfig.secondaryDatabases).flat().map(d => d.databaseName),
+    ];
 
-    if (!primaryDatabases.includes(database)) {
-      throw new AppError(`Invalid database: ${database}. CSV batch only runs on primary cloud databases.`, 400);
+    if (!allDatabases.includes(database)) {
+      throw new AppError(`Invalid database: ${database}.`, 400);
     }
 
     logger.info('CSV batch execution requested', {
       user: user.email,
       database,
-      cloud: cloudConfig.primaryCloud,
+      cloud: dbPools.getPrimaryCloudForDatabase(database),
       idCount: Array.isArray(ids) ? ids.length : 0,
       batchSize,
       dryRun,

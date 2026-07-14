@@ -125,10 +125,9 @@ class CsvBatchService {
   ): Promise<void> {
     const { database, sleepMs = 100, pgSchema, stopOnError = false } = request;
     const dbPools = DatabasePools.getInstance();
-    const cloudConfig = dbPools.getCloudConfig();
 
-    // CSV batch always runs on primary cloud only
-    const primaryCloud = cloudConfig.primaryCloud;
+    // CSV batch runs on this database's own primary cloud
+    const primaryCloud = dbPools.getPrimaryCloudForDatabase(database);
 
     const QUERY_TIMEOUT_MS = 15000;
     const FAILED_IDS_CAP = 50000;

@@ -40,6 +40,34 @@ export type DbMap = Record<string, DbMeta>;
 export function buildDbMap(config: DatabaseConfiguration): DbMap {
   const map: DbMap = {};
 
+  // Preferred path: the backend's accurate per-database view, where each DB
+  // names its own primary cloud (any DB can be primary on any cloud).
+  if (config.databasesByName && Object.keys(config.databasesByName).length > 0) {
+    for (const [name, entry] of Object.entries(config.databasesByName)) {
+      const primary = entry.clouds.find(c => c.role === 'primary') || entry.clouds[0];
+      map[name] = {
+        label: primary?.label || name,
+        schemas: primary?.schemas || [],
+        defaultSchema: primary?.defaultSchema || 'public',
+        clouds: entry.clouds.map(c => ({
+          cloudType: c.cloudType,
+          role: c.role,
+          publicationName: c.publicationName,
+          subscriptionName: c.subscriptionName,
+        })),
+        replicationEnabled: false,
+      };
+    }
+    Object.values(map).forEach(meta => {
+      const hasPublisher = meta.clouds.some(c => c.role === 'primary' && !!c.publicationName);
+      const hasSubscriber = meta.clouds.some(c => c.role === 'secondary' && !!c.subscriptionName);
+      meta.replicationEnabled = hasPublisher && hasSubscriber;
+    });
+    return map;
+  }
+
+  // Fallback (older backend): derive from the flat primary/secondary blocks,
+  // which assume a single global primary cloud.
   const addDb = (db: DatabaseInfo, role: 'primary' | 'secondary', cloudName: string) => {
     if (!map[db.name]) {
       map[db.name] = {

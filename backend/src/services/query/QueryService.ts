@@ -135,8 +135,6 @@ class QueryService {
     const timeout = Math.min(request.timeout || 300000, 300000);
 
     try {
-      // Get cloud configuration
-      const cloudConfig = DatabasePools.getInstance().getCloudConfig();
       const pgSchema = request.pgSchema || 'public';
       const databaseName = request.database;
 
@@ -145,17 +143,16 @@ class QueryService {
       let cloudsToExecute: string[] = [];
 
       if (request.mode === 'both') {
-        cloudsToExecute.push(cloudConfig.primaryCloud);
-        cloudsToExecute.push(...cloudConfig.secondaryClouds);
+        // "both" = every cloud THIS database actually lives on (primary +
+        // its own secondaries), which is per-database — not every configured
+        // cloud. getCloudsForDatabase already restricts to clouds with a pool.
+        cloudsToExecute = dbPools.getCloudsForDatabase(databaseName);
       } else {
         cloudsToExecute.push(request.mode);
       }
 
-      // Only target clouds that actually have this database configured. A
-      // database can live on a subset of clouds (primary-only, secondary-only,
-      // or any partial spread), so 'both' means "every cloud that has this DB",
-      // not "every cloud". This prevents a spurious "Pool not found" failure
-      // for clouds that legitimately don't host the selected database.
+      // Drop any targeted cloud that doesn't have a pool for this database
+      // (guards the single-cloud mode path and surfaces what was skipped).
       const skippedClouds = cloudsToExecute.filter(
         cloud => !dbPools.getPoolByName(cloud, databaseName)
       );
@@ -223,7 +220,7 @@ class QueryService {
         for (const stmt of candidateAllowed) {
           if (/\bINSERT\b/i.test(stmt)) {
             const implicitCols = await this.getImplicitUuidColumns(
-              stmt, pgSchema, cloudConfig.primaryCloud, databaseName
+              stmt, pgSchema, dbPools.getPrimaryCloudForDatabase(databaseName), databaseName
             );
             if (implicitCols.length > 0) {
               logger.debug('INSERT has implicit UUID-default columns', { executionId, implicitCols });
@@ -348,9 +345,8 @@ class QueryService {
       if (response.success && process.env.SYNC_TO_CLICKHOUSE !== 'false') {
         const pgSchema = request.pgSchema || 'public';
         const dbPools = DatabasePools.getInstance();
-        const cloudConfig = dbPools.getCloudConfig();
-        // Use the primary cloud pool for CH sync (source of truth)
-        const primaryPool = dbPools.getPoolByName(cloudConfig.primaryCloud, databaseName);
+        // Use this database's own primary cloud pool for CH sync (source of truth)
+        const primaryPool = dbPools.getPoolByName(dbPools.getPrimaryCloudForDatabase(databaseName), databaseName);
         if (primaryPool) {
           clickHouseSyncService
             .syncAfterQuery(request.query, primaryPool, pgSchema)
