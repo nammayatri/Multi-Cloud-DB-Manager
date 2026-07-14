@@ -85,3 +85,43 @@ describe('buildModesForDb', () => {
     expect(buildModesForDb(undefined)).toEqual([]);
   });
 });
+
+describe('buildDbMap with per-database primary clouds (databasesByName)', () => {
+  // Driver is aws-primary + gcp-secondary; Rider is gcp-primary — DIFFERENT
+  // primary clouds per database. This is only representable via databasesByName.
+  const perDbConfig = {
+    databasesByName: {
+      Bpp: {
+        clouds: [
+          { cloudType: 'aws', role: 'primary', label: 'Driver', schemas: ['public'], defaultSchema: 'public', publicationName: 'bpp_pub' },
+          { cloudType: 'gcp', role: 'secondary', label: 'Driver', schemas: ['public'], defaultSchema: 'public', subscriptionName: 'bpp_sub' },
+        ],
+      },
+      Bap: {
+        clouds: [
+          { cloudType: 'gcp', role: 'primary', label: 'Rider', schemas: ['public'], defaultSchema: 'public' },
+        ],
+      },
+    },
+    // legacy blocks present but should be IGNORED in favor of databasesByName
+    primary: { cloudName: 'aws', databases: [] },
+    secondary: [],
+  } as unknown as DatabaseConfiguration;
+
+  const map = buildDbMap(perDbConfig);
+
+  it('uses databasesByName and gives each DB its own primary cloud', () => {
+    expect(map.Bpp.clouds.map(c => `${c.cloudType}:${c.role}`)).toEqual(['aws:primary', 'gcp:secondary']);
+    expect(map.Bap.clouds.map(c => `${c.cloudType}:${c.role}`)).toEqual(['gcp:primary']);
+  });
+
+  it('marks the multi-cloud DB with a subscriber as replication-enabled, single-cloud not', () => {
+    expect(map.Bpp.replicationEnabled).toBe(true);
+    expect(map.Bap.replicationEnabled).toBe(false);
+  });
+
+  it('offers Multi-Cloud for the multi-cloud DB and single mode for the other', () => {
+    expect(buildModesForDb(map.Bpp).map(m => m.value)).toEqual(['both', 'aws', 'gcp']);
+    expect(buildModesForDb(map.Bap).map(m => m.value)).toEqual(['gcp']);
+  });
+});

@@ -127,10 +127,15 @@ export const addTables = async (
     const dbPools = DatabasePools.getInstance();
     const config = dbPools.getCloudConfig();
 
-    // Find primary database info
-    const primaryDb = config.primaryDatabases.find(db => db.databaseName === database);
+    // This database's OWN primary cloud (its replication publisher) — per-DB,
+    // not a single global primary.
+    const dbPrimaryCloud = dbPools.getPrimaryCloudForDatabase(database);
+    const allDbInfos = [...config.primaryDatabases, ...Object.values(config.secondaryDatabases).flat()];
+
+    // Find the database's info on its own primary cloud (the publisher).
+    const primaryDb = allDbInfos.find(db => db.databaseName === database && db.cloudType === dbPrimaryCloud);
     if (!primaryDb) {
-      return res.status(404).json({ error: `Database '${database}' not found in primary cloud` });
+      return res.status(404).json({ error: `Database '${database}' not found on its primary cloud (${dbPrimaryCloud})` });
     }
 
     if (!primaryDb.publicationName) {
@@ -142,16 +147,16 @@ export const addTables = async (
       return res.status(400).json({ error: 'Invalid publication name in configuration' });
     }
 
-    // Determine the genuine replication subscribers for THIS database: secondary
-    // clouds that actually host it AND have a subscription configured. A
-    // database that lives only on the primary cloud (no secondary copy) has no
-    // subscribers, so replication does not apply — we don't touch the
-    // publication either. (The UI already hides the prompt in this case; this is
-    // the server-side guard for direct API calls.)
-    const eligibleSecondaries = config.secondaryClouds
+    // Determine the genuine replication subscribers for THIS database: the
+    // database's own secondary clouds that host it AND have a subscription
+    // configured. A single-cloud database has no subscribers, so replication
+    // does not apply and we don't touch the publication either. (The UI already
+    // hides the prompt in this case; this is the server-side guard.)
+    const secondaryCloudsForDb = dbPools.getCloudsForDatabase(database).filter(c => c !== dbPrimaryCloud);
+    const eligibleSecondaries = secondaryCloudsForDb
       .map(cloudName => ({
         cloudName,
-        secondaryDb: config.secondaryDatabases[cloudName]?.find(db => db.databaseName === database),
+        secondaryDb: allDbInfos.find(db => db.databaseName === database && db.cloudType === cloudName),
       }))
       .filter(s => !!s.secondaryDb?.subscriptionName);
 
@@ -173,10 +178,10 @@ export const addTables = async (
     // Build qualified table list for SQL
     const qualifiedTables = tables.map(t => `"${t.schema}"."${t.table}"`).join(', ');
 
-    // 1. ALTER PUBLICATION on primary
-    const primaryPool = dbPools.getPoolByName(config.primaryCloud, database);
+    // 1. ALTER PUBLICATION on this database's own primary cloud
+    const primaryPool = dbPools.getPoolByName(dbPrimaryCloud, database);
     if (!primaryPool) {
-      return res.status(500).json({ error: `No pool found for primary cloud database '${database}'` });
+      return res.status(500).json({ error: `No pool found for primary cloud (${dbPrimaryCloud}) database '${database}'` });
     }
 
     try {
