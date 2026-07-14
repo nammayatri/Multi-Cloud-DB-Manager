@@ -120,6 +120,46 @@ export interface DatabasesConfigJson {
   slack?: SlackConfigJson;
 }
 
+// -------------------------------------------------------------------------
+// Grouped ("databasesByName") config format
+// -------------------------------------------------------------------------
+// Alternative authoring format that groups a logical database by name and
+// lists every cloud it lives on. The loader normalizes this into the legacy
+// { primary, secondary[] } shape above, so nothing downstream changes.
+// A database's role is per-cloud: exactly one `primary` cloud, plus any
+// number of `secondary` clouds. Present a DB as multi-cloud in the UI when
+// its `clouds` array has more than one entry.
+
+export interface GroupedCloudEntry {
+  cloudType: string;                 // e.g. "gcp", "aws"
+  role?: 'primary' | 'secondary';    // if omitted, inferred from publication/subscriptionName
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  schemas: string[];
+  defaultSchema: string;
+  label?: string;                    // falls back to the group label
+  publicationName?: string;
+  subscriptionName?: string;
+  indexCreateBlockedTables?: string[];
+}
+
+export interface GroupedDatabaseEntry {
+  label: string;
+  clouds: GroupedCloudEntry[];
+}
+
+export interface DatabasesConfigGroupedJson {
+  databasesByName: { [databaseName: string]: GroupedDatabaseEntry };
+  history: DatabasesConfigJson['history'];
+  slack?: SlackConfigJson;
+  // extra top-level keys (readReplicas, migrations, environment, …) are
+  // preserved untouched during normalization.
+  [key: string]: unknown;
+}
+
 // Internal Configuration Types (used by DatabasePools)
 export interface DatabaseInfo {
   cloudType: string;

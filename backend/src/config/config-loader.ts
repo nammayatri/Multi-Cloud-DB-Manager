@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { DatabasesConfigJson } from '../types';
+import { DatabasesConfigJson, DatabaseConfigJson, CloudConfigJson } from '../types';
 import logger from '../utils/logger';
 
 /**
@@ -76,8 +76,8 @@ function loadFromBase64Env(): DatabasesConfigJson | null {
       return value;
     });
 
-    // Parse JSON
-    const config: DatabasesConfigJson = JSON.parse(substituted);
+    // Parse JSON, normalizing the grouped databasesByName format if present
+    const config: DatabasesConfigJson = normalizeConfig(JSON.parse(substituted));
 
     // Validate structure
     validateConfig(config);
@@ -133,8 +133,8 @@ function loadFromJsonFile(filePath: string): DatabasesConfigJson | null {
       return value;
     });
 
-    // Parse JSON
-    const config: DatabasesConfigJson = JSON.parse(substituted);
+    // Parse JSON, normalizing the grouped databasesByName format if present
+    const config: DatabasesConfigJson = normalizeConfig(JSON.parse(substituted));
 
     // Validate structure
     validateConfig(config);
@@ -151,6 +151,100 @@ function loadFromJsonFile(filePath: string): DatabasesConfigJson | null {
     logger.error('Failed to load database configuration from JSON:', error);
     throw new Error(`Invalid database configuration: ${error}`);
   }
+}
+
+/**
+ * Normalize a parsed config into the legacy { primary, secondary[] } shape.
+ *
+ * Supports two authoring formats transparently:
+ *   1. Legacy   — { primary: {...}, secondary: [...] }  → returned as-is
+ *   2. Grouped  — { databasesByName: { <name>: { label, clouds: [...] } } }
+ *                 → converted to the legacy shape here
+ *
+ * In the grouped format each cloud entry carries its own role. There must be
+ * exactly one `primary` cloud (shared across all databases); every other cloud
+ * is a `secondary`. Any extra top-level keys (history, slack, readReplicas,
+ * migrations, environment, …) are preserved untouched.
+ */
+function normalizeConfig(raw: any): DatabasesConfigJson {
+  // Already in legacy format (or malformed — let validateConfig report it)
+  if (!raw || typeof raw !== 'object' || !raw.databasesByName) {
+    return raw as DatabasesConfigJson;
+  }
+
+  logger.info('Detected grouped "databasesByName" config format — normalizing to primary/secondary');
+
+  // Preserve cloud ordering by first-seen; group db_configs per cloudName.
+  const primaryByCloud = new Map<string, DatabaseConfigJson[]>();
+  const secondaryByCloud = new Map<string, DatabaseConfigJson[]>();
+
+  for (const [name, group] of Object.entries<any>(raw.databasesByName)) {
+    if (!group || !Array.isArray(group.clouds)) {
+      throw new Error(`Invalid grouped config: database "${name}" must have a "clouds" array`);
+    }
+
+    for (const cloud of group.clouds) {
+      if (!cloud || !cloud.cloudType) {
+        throw new Error(`Invalid grouped config: a cloud entry for "${name}" is missing "cloudType"`);
+      }
+
+      // Role is explicit; fall back to inferring it from pub/sub naming.
+      const role: 'primary' | 'secondary' | undefined =
+        cloud.role ??
+        (cloud.publicationName ? 'primary' : cloud.subscriptionName ? 'secondary' : undefined);
+
+      if (role !== 'primary' && role !== 'secondary') {
+        throw new Error(
+          `Invalid grouped config: cloud "${cloud.cloudType}" for database "${name}" needs a "role" of "primary" or "secondary"`
+        );
+      }
+
+      const dbConfig: DatabaseConfigJson = {
+        name,
+        label: cloud.label || group.label || name,
+        host: cloud.host,
+        port: cloud.port,
+        user: cloud.user,
+        password: cloud.password,
+        database: cloud.database,
+        schemas: cloud.schemas,
+        defaultSchema: cloud.defaultSchema,
+        ...(cloud.publicationName ? { publicationName: cloud.publicationName } : {}),
+        ...(cloud.subscriptionName ? { subscriptionName: cloud.subscriptionName } : {}),
+        ...(cloud.indexCreateBlockedTables ? { indexCreateBlockedTables: cloud.indexCreateBlockedTables } : {}),
+      };
+
+      const bucket = role === 'primary' ? primaryByCloud : secondaryByCloud;
+      if (!bucket.has(cloud.cloudType)) {
+        bucket.set(cloud.cloudType, []);
+      }
+      bucket.get(cloud.cloudType)!.push(dbConfig);
+    }
+  }
+
+  if (primaryByCloud.size === 0) {
+    throw new Error('Invalid grouped config: no database has a "primary" cloud entry');
+  }
+  if (primaryByCloud.size > 1) {
+    throw new Error(
+      `Invalid grouped config: multiple primary clouds found (${[...primaryByCloud.keys()].join(', ')}); only one primary cloud is allowed`
+    );
+  }
+
+  const [primaryCloudName, primaryDbConfigs] = [...primaryByCloud.entries()][0];
+  const secondary: CloudConfigJson[] = [...secondaryByCloud.entries()].map(
+    ([cloudName, db_configs]) => ({ cloudName, db_configs })
+  );
+
+  // Drop databasesByName; carry every other top-level key (history, slack,
+  // readReplicas, migrations, environment, …) through unchanged.
+  const { databasesByName, ...rest } = raw;
+
+  return {
+    ...rest,
+    primary: { cloudName: primaryCloudName, db_configs: primaryDbConfigs },
+    secondary,
+  } as DatabasesConfigJson;
 }
 
 /**
