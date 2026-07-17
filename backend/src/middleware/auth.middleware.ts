@@ -1,13 +1,107 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 import { Role, isSuperRole } from '../constants/roles';
+import {
+  ROLE_FUNCTIONALITY,
+  effectiveRoleFromFunctionalities,
+} from '../constants/functionalities';
+import LocService from '../services/loc/LocService';
 import QueryValidator from '../services/query/QueryValidator';
 
 /**
- * Middleware to check if user is authenticated
+ * loc-gateway authentication: the loc auth service (../loc) proxies user
+ * traffic here having already validated the user's token, and proves itself
+ * with `x-loc-auth: <shared secret>` (the locAuthSecret configured when this
+ * service was registered in loc). We trust its X-User-* identity headers and
+ * resolve the user's access from their loc functionality list — either sent
+ * inline (X-User-Functionality, for services registered with
+ * sendFunctionalities) or fetched from loc's role API and cached for an hour.
+ *
+ * Returns a user object, or null with the response already sent.
  */
-export const isAuthenticated = (req: Request, res: Response, next: NextFunction) => {
-  // Check session
+const authenticateViaLoc = async (
+  req: Request,
+  res: Response
+): Promise<Express.User | null> => {
+  const loc = LocService.getInstance();
+  const presented = req.header('x-loc-auth') || '';
+
+  if (!loc.isConfigured() || !loc.verifyGatewaySecret(presented)) {
+    logger.warn('Rejected x-loc-auth header with invalid or unconfigured secret', {
+      ip: req.ip,
+      path: req.path,
+      configured: loc.isConfigured(),
+    });
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Invalid loc gateway secret',
+    });
+    return null;
+  }
+
+  const userId = req.header('x-user-id');
+  const username = req.header('x-username');
+  const roleName = req.header('x-user-role');
+  if (!userId || !username || !roleName) {
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Missing loc identity headers (x-user-id / x-username / x-user-role)',
+    });
+    return null;
+  }
+
+  // Functionality list: inline header if loc sends it, else loc's role API
+  // (GET /get/{service}/roles/{id}/functionality, cached in-mem for 1 hour).
+  let functionalities: string[];
+  const inline = req.header('x-user-functionality');
+  if (inline !== undefined) {
+    functionalities = inline ? inline.split(',').map(f => f.trim()).filter(Boolean) : [];
+  } else {
+    try {
+      functionalities = (await loc.getFunctionalitiesForRole(roleName)) ?? [];
+    } catch (error) {
+      logger.error('loc role/functionality lookup failed', {
+        role: roleName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(503).json({
+        error: 'Service Unavailable',
+        message: 'Could not resolve permissions from the auth service',
+      });
+      return null;
+    }
+  }
+
+  return {
+    id: userId,
+    username,
+    email: '',
+    name: username,
+    role: effectiveRoleFromFunctionalities(functionalities),
+    functionalities,
+    authSource: 'loc',
+  };
+};
+
+/**
+ * Middleware to check if user is authenticated.
+ * loc-gateway requests (x-loc-auth header present) are authenticated from
+ * loc's injected identity headers; everything else falls back to the
+ * session-cookie flow.
+ */
+export const isAuthenticated = async (req: Request, res: Response, next: NextFunction) => {
+  // loc gateway path: header present → this is the ONLY way the request may
+  // authenticate (a bad secret is rejected, never silently downgraded).
+  if (req.header('x-loc-auth') !== undefined) {
+    const user = await authenticateViaLoc(req, res);
+    if (user) {
+      req.user = user;
+      return next();
+    }
+    return; // response already sent
+  }
+
+  // Fallback: session cookie
   if ((req.session as any)?.passport?.user) {
     req.user = (req.session as any).passport.user;
     return next();
@@ -27,11 +121,34 @@ export const isAuthenticated = (req: Request, res: Response, next: NextFunction)
 /**
  * Factory: gate a route to one or more roles.
  * Must be used after isAuthenticated.
+ *
+ * loc-authenticated users are validated against their functionality list
+ * (a loc role may combine several access tiers, e.g. db:write +
+ * clickhouse:manage); session users against their stored role.
  */
 export const requireRoles =
   (...roles: Role[]) =>
   (req: Request, res: Response, next: NextFunction) => {
     const user = req.user as Express.User | undefined;
+
+    if (user?.authSource === 'loc') {
+      const held = user.functionalities || [];
+      if (roles.some(role => held.includes(ROLE_FUNCTIONALITY[role]))) {
+        return next();
+      }
+      logger.warn('Unauthorized functionality access attempt (loc)', {
+        username: user.username,
+        functionalities: held,
+        required: roles.map(r => ROLE_FUNCTIONALITY[r]),
+        path: req.path,
+      });
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: `Requires one of these functionalities: ${roles
+          .map(r => ROLE_FUNCTIONALITY[r])
+          .join(', ')}`,
+      });
+    }
 
     if (!user?.role || !roles.includes(user.role)) {
       logger.warn('Unauthorized role access attempt', {

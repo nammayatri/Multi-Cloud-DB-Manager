@@ -15,6 +15,16 @@ export const getCurrentUser = (req: Request, res: Response) => {
 
 export const logout = (req: Request, res: Response) => {
   const username = (req.user as any)?.username;
+
+  // loc-gateway sessions are owned by the loc auth service — there is no
+  // local session to destroy. The client must revoke its token there.
+  if (req.user?.authSource === 'loc') {
+    return res.json({
+      message: 'Session is managed by the loc auth service — log out via its POST /auth/logout',
+      locManaged: true,
+    });
+  }
+
   req.session?.destroy((err) => {
     if (err) {
       logger.error('Logout error:', err);
