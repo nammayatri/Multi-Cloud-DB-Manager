@@ -177,6 +177,37 @@ ClickHouse-only.
 > SQL → `DROP/CREATE DATABASE`, `DROP/CREATE SCHEMA`, `ALTER/CREATE/DROP ROLE`, `ALTER/CREATE/DROP USER`
 > Redis → `FLUSHDB`, `FLUSHALL`, `KEYS`, `EVAL`, `EVALSHA`, `SCRIPT DEBUG`, `CLIENT KILL`, `SHUTDOWN`, `BGSAVE`, `BGREWRITEAOF`, `CONFIG RESETSTAT`, `LASTSAVE`
 
+### loc auth-framework integration <sub>(optional)</sub>
+
+The service can delegate authentication and user/role management to the
+[loc auth gateway](../loc). It advertises its access tiers as functionalities on
+`GET /functionality/list` (public, per the loc downstream-service contract):
+
+| Functionality | Grants the equivalent of |
+|---|---|
+| `db:master` | MASTER |
+| `db:admin` | ADMIN |
+| `db:write` | USER |
+| `db:read` | READER |
+| `clickhouse:manage` | CKH_MANAGER |
+| `release:manage` | RELEASE_MANAGER |
+
+loc admins compose roles from these (a role may combine several, e.g.
+`db:write` + `clickhouse:manage`). When a request arrives with
+`x-loc-auth: <LOC_AUTH_SECRET>` — the shared secret configured as
+`locAuthSecret` when registering this service in loc — the app trusts loc's
+injected `X-User-Id` / `X-Username` / `X-User-Role` headers and authorizes from
+the user's functionality list: taken from `X-User-Functionality` if the service
+registered with `sendFunctionalities: true`, otherwise resolved via loc's
+`GET /get/{service}/roles/{id}/functionality` API and cached in memory for
+1 hour. Requests **without** the header fall back to the existing session-cookie
+login; a wrong secret is rejected outright (never downgraded).
+
+Setup: register the service in loc (`POST /register/service` with `baseUrl`,
+`locAuthSecret`), then set `LOC_BASE_URL`, `LOC_SERVICE_NAME`,
+`LOC_SERVICE_TOKEN` and `LOC_AUTH_SECRET` on the backend (see
+`backend/.env.deployment`).
+
 <br />
 
 ---

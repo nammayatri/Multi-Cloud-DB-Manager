@@ -296,6 +296,9 @@ declare global {
       name: string;
       picture?: string;
       role?: Role;
+      /** Present only for loc-gateway-authenticated requests. */
+      functionalities?: string[];
+      authSource?: 'loc';
     }
     // Explicitly add `user` to Request rather than relying on @types/passport's
     // augmentation being resolved — some toolchains (newer TS versions in IDEs)

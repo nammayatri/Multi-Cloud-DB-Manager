@@ -15,6 +15,7 @@ import redisClient from './config/redis';
 import historyService from './services/history.service';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
+import { ALL_FUNCTIONALITIES } from './constants/functionalities';
 
 // Routes
 import authRoutes from './routes/auth.routes';
@@ -112,6 +113,14 @@ app.get('/health', (_req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });
+});
+
+// loc auth-framework contract: advertises the functionalities this service
+// supports so loc admins can compose roles for it (see ../loc README,
+// "Downstream service contract"). Public by design — loc fetches it when
+// listing composable functionalities for a service.
+app.get('/functionality/list', (_req, res) => {
+  res.json(ALL_FUNCTIONALITIES);
 });
 
 // Routes
