@@ -36,6 +36,7 @@ import { detectDangerousQueries } from '../../services/queryValidation.service';
 import type { ValidationWarning } from '../../services/queryValidation.service';
 import { buildDbMap, buildModesForDb } from './databaseTopology';
 import type { DbMap, DbCloudEntry } from './databaseTopology';
+import { SUPER_ROLES } from '../../constants/roles';
 
 interface DatabaseSelectorProps {
   onExecute: (result: QueryResponse) => void;
@@ -271,7 +272,11 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
           // Only prompt for replication when the database is genuinely
           // multi-cloud (a primary publisher AND a secondary subscriber).
           // Single-cloud databases (primary-only or secondary-only) never prompt.
-          const replicationEnabled = !!meta?.replicationEnabled;
+          // Also gate on role: adding tables to replication is MASTER/ADMIN-only
+          // on the backend, so don't offer the prompt to other roles (they'd
+          // just get a 403 on "Add to Replication").
+          const canManageReplication = !!user?.role && SUPER_ROLES.includes(user.role);
+          const replicationEnabled = canManageReplication && !!meta?.replicationEnabled;
           const primaryCloud = meta?.clouds.find(c => c.role === 'primary')?.cloudType || cloudNames.primary;
           const modeIncludesPrimary = selectedMode === 'both' || selectedMode === primaryCloud;
           const primaryResult = status.result[primaryCloud];

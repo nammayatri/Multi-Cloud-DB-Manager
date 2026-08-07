@@ -114,7 +114,6 @@ export const executeQuery = async (
     const blockedTables = [
       ...new Set(allDbInfosForDb.flatMap(d => d.indexCreateBlockedTables ?? [])),
     ];
-    const dbInfo = dbPrimaryInfo;
 
     if (blockedTables.length > 0) {
       const blockedMatches = queryService.checkIndexCreateBlocked(
