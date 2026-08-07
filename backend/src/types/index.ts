@@ -121,7 +121,9 @@ export interface DatabasesConfigJson {
   // Populated by the loader when normalizing the grouped format: each database's
   // own primary cloud + its secondary clouds. Absent for legacy configs (where
   // every database's primary is the single `primary.cloudName`).
-  databaseRoles?: { [databaseName: string]: { primaryCloud: string; secondaryClouds: string[] } };
+  // `primaryCloud` is undefined for a replica-only (secondary-only) database,
+  // which is readable but has no writable primary.
+  databaseRoles?: { [databaseName: string]: { primaryCloud?: string; secondaryClouds: string[] } };
 }
 
 // -------------------------------------------------------------------------

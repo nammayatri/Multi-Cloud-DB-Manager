@@ -125,8 +125,15 @@ class DatabasePools {
 
     if (jsonConfig.databaseRoles) {
       for (const [db, roles] of Object.entries<any>(jsonConfig.databaseRoles)) {
-        databasePrimaryCloud[db] = roles.primaryCloud;
-        databaseClouds[db] = [roles.primaryCloud, ...roles.secondaryClouds];
+        // A replica-only database has no primary cloud — leave it unset so
+        // nothing routes writes to it, and list only its secondary clouds.
+        if (roles.primaryCloud) {
+          databasePrimaryCloud[db] = roles.primaryCloud;
+        }
+        databaseClouds[db] = [
+          ...(roles.primaryCloud ? [roles.primaryCloud] : []),
+          ...roles.secondaryClouds,
+        ];
       }
     } else {
       // Legacy: the single primary cloud is every primary database's primary.

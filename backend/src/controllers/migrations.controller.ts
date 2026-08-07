@@ -29,7 +29,10 @@ export const getConfig = async (
   next: NextFunction
 ) => {
   try {
-    const { repoPath, ...safeConfig } = migrationsService.getConfig();
+    // Strip repoPath AND repoUrl — repoUrl embeds the git credential in
+    // deployments (https://x-access-token:<PAT>@github.com/...), so returning it
+    // would disclose the token to any authenticated user. Both are internal-only.
+    const { repoPath, repoUrl, ...safeConfig } = migrationsService.getConfig();
     res.json({ success: true, ...safeConfig });
   } catch (error: any) {
     logger.error('Failed to load migration config:', error);

@@ -99,7 +99,7 @@ function createReadOnlyPool(dbConfig: {
 }): Pool {
   const isLocalhost = dbConfig.host === 'localhost' || dbConfig.host === '127.0.0.1';
 
-  return new Pool({
+  const pool = new Pool({
     host: dbConfig.host,
     port: dbConfig.port,
     user: dbConfig.user,
@@ -111,6 +111,15 @@ function createReadOnlyPool(dbConfig: {
     application_name: 'dual-db-manager-migrations',
     options: '-c default_transaction_read_only=on',
   });
+
+  // An 'error' event with no listener is thrown from a socket callback and
+  // crashes the process. An idle client dying (failover, pg_terminate_backend,
+  // NAT idle timeout) emits exactly that, so this listener is required.
+  pool.on('error', err => {
+    logger.error('Unexpected error on migrations pool', { error: err.message });
+  });
+
+  return pool;
 }
 
 /**

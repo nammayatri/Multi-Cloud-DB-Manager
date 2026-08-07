@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import logger from '../../utils/logger';
 import DatabasePools from '../../config/database';
 import { ExecutionManager } from './ExecutionManager';
+import QueryValidator from './QueryValidator';
 import { QueryResponse } from '../../types';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -125,6 +126,16 @@ class CsvBatchService {
   ): Promise<void> {
     const { database, sleepMs = 100, pgSchema, stopOnError = false } = request;
     const dbPools = DatabasePools.getInstance();
+
+    // The schema name is interpolated into `SET search_path` below, so it must
+    // be validated as a plain identifier first — otherwise a value like
+    // "public; DROP TABLE x; --" executes arbitrary SQL.
+    if (pgSchema) {
+      const schemaCheck = QueryValidator.validateSchemaName(pgSchema);
+      if (!schemaCheck.valid) {
+        throw new Error(`Invalid schema name: ${schemaCheck.error}`);
+      }
+    }
 
     // CSV batch runs on this database's own primary cloud
     const primaryCloud = dbPools.getPrimaryCloudForDatabase(database);

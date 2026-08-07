@@ -92,15 +92,20 @@ export class QueryExecutor {
     try {
       const client = await pool.connect();
 
-      // Register this execution if we have an executionId
-      if (executionId) {
-        const cloudKey = `${cloudName}_${databaseName}`;
-        const pidResult = await client.query('SELECT pg_backend_pid() as pid');
-        const backendPid = pidResult.rows[0]?.pid;
-        this.executionManager.registerActiveExecution(executionId, cloudKey, client, backendPid);
-      }
-
       try {
+        // Register this execution if we have an executionId.
+        // NOTE: this must live INSIDE the try that owns `finally { client.release() }`.
+        // It issues a query (pg_backend_pid), and if that throws — e.g. the
+        // connection drops or statement_timeout fires — a client acquired
+        // outside the guard would never be released, permanently burning a pool
+        // slot until the pool (max 20) is exhausted and the DB becomes unusable.
+        if (executionId) {
+          const cloudKey = `${cloudName}_${databaseName}`;
+          const pidResult = await client.query('SELECT pg_backend_pid() as pid');
+          const backendPid = pidResult.rows[0]?.pid;
+          this.executionManager.registerActiveExecution(executionId, cloudKey, client, backendPid);
+        }
+
         // Check for cancellation
         if (executionId && await this.executionManager.isCancelled(executionId)) {
           return {

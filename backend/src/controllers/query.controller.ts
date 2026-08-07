@@ -99,17 +99,28 @@ export const executeQuery = async (
       }
     }
 
-    // Hard-block CREATE INDEX on protected tables — no override
-    const dbInfo = [
+    // Hard-block CREATE INDEX on protected tables — no override.
+    // A database can be configured on several clouds, and indexCreateBlockedTables
+    // is a per-cloud-entry field. Resolve the DB's own primary entry for the
+    // default schema, and UNION the blocked lists across every cloud entry so a
+    // protection declared on any one of them still applies (fail safe).
+    const allDbInfosForDb = [
       ...cloudConfig.primaryDatabases,
       ...Object.values(cloudConfig.secondaryDatabases).flat(),
-    ].find(d => d.databaseName === queryRequest.database);
+    ].filter(d => d.databaseName === queryRequest.database);
 
-    if (dbInfo?.indexCreateBlockedTables && dbInfo.indexCreateBlockedTables.length > 0) {
+    const dbPrimaryInfo =
+      allDbInfosForDb.find(d => d.cloudType === dbPrimaryCloud) || allDbInfosForDb[0];
+    const blockedTables = [
+      ...new Set(allDbInfosForDb.flatMap(d => d.indexCreateBlockedTables ?? [])),
+    ];
+    const dbInfo = dbPrimaryInfo;
+
+    if (blockedTables.length > 0) {
       const blockedMatches = queryService.checkIndexCreateBlocked(
         queryRequest.query,
-        dbInfo.indexCreateBlockedTables,
-        queryRequest.pgSchema || dbInfo.defaultSchema
+        blockedTables,
+        queryRequest.pgSchema || dbPrimaryInfo?.defaultSchema
       );
       if (blockedMatches.length > 0) {
         logger.warn('Blocked CREATE INDEX on protected table', {
@@ -157,6 +168,7 @@ export const getExecutionStatus = async (
 ) => {
   try {
     const { executionId } = req.params;
+    const user = req.user as Express.User;
 
     if (!executionId) {
       throw new AppError('Execution ID is required', 400);
@@ -166,6 +178,13 @@ export const getExecutionStatus = async (
 
     if (!status) {
       throw new AppError('Execution not found', 404);
+    }
+
+    // Authorization: the payload includes the full result rows, so restrict it
+    // to the owner (or MASTER/ADMIN) — matching cancelQuery below. Without this
+    // any authenticated user could read another user's query results.
+    if (status.userId && status.userId !== user.id && !isSuperRole(user.role)) {
+      throw new AppError('You can only view your own query executions', 403);
     }
 
     res.json(status);

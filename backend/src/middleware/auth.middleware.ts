@@ -313,36 +313,46 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
     return next();
   }
 
-  // READER role restrictions
-  if (user.role === 'READER') {
-    // Check if query starts with SELECT (allow WITH for CTEs)
-    if (!trimmedQuery.startsWith('SELECT') && !trimmedQuery.startsWith('WITH')) {
-      logger.warn('READER attempted non-SELECT query', {
+  // READER role restrictions — read-only, enforced per statement.
+  //
+  // This MUST be an allowlist over every statement, not a keyword denylist over
+  // the whole query. A denylist let a disallowed statement hide behind a leading
+  // SELECT (e.g. "SELECT 1; DROP INDEX x;" — DROP/TRUNCATE/COPY/VACUUM/GRANT
+  // were absent from the keyword list, and DROP INDEX is exempt from the
+  // password gate, so it executed). `COPY ... TO PROGRAM` is remote code
+  // execution on the database host when the pool role is a superuser.
+  if (user.role === Role.READER) {
+    const readerAllowedPatterns = [
+      /^\s*SELECT/i,
+      /^\s*WITH[\s\S]*SELECT/i, // CTEs with SELECT
+      // EXPLAIN restricted to read statements — EXPLAIN ANALYZE on a write
+      // statement actually executes the write.
+      /^\s*EXPLAIN(\s+\([^)]*\)|\s+ANALYZE|\s+VERBOSE)*\s+(SELECT|WITH)/i,
+      /^\s*(BEGIN|COMMIT|ROLLBACK)\b/i,
+    ];
+
+    let statements: string[];
+    try {
+      statements = QueryValidator.splitStatements(query);
+    } catch {
+      statements = [query];
+    }
+
+    const disallowed = statements.find(
+      stmt => stmt.trim().length > 0 && !readerAllowedPatterns.some(pattern => pattern.test(stmt))
+    );
+
+    if (disallowed) {
+      logger.warn('READER attempted non-read statement', {
         username: user.username,
-        query: query.substring(0, 100),
+        statement: disallowed.trim().substring(0, 100),
       });
 
       return res.status(403).json({
         error: 'Forbidden',
-        message: 'READER role can only execute SELECT queries. Write operations (INSERT, UPDATE, DELETE) are not allowed.',
+        message: 'READER role can only execute read-only statements (SELECT, WITH ... SELECT, EXPLAIN SELECT).',
+        yourRole: user.role,
       });
-    }
-
-    // Additional check: ensure no write keywords in the query
-    const writeKeywords = ['INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER'];
-    for (const keyword of writeKeywords) {
-      if (trimmedQuery.includes(keyword)) {
-        logger.warn('READER attempted query with write keyword', {
-          username: user.username,
-          keyword,
-          query: query.substring(0, 100),
-        });
-
-        return res.status(403).json({
-          error: 'Forbidden',
-          message: `READER role cannot execute queries containing ${keyword}`,
-        });
-      }
     }
 
     return next();
