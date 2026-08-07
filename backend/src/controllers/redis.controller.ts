@@ -222,7 +222,10 @@ export const getRedisHistory = async (
     const { limit, offset, user_id } = req.query;
 
     const history = await historyService.getRedisHistory({
-      user_id: isSuperRole(user.role) && user_id ? String(user_id) : undefined,
+      // MASTER/ADMIN may filter by any user (or see all); everyone else is
+      // restricted to their own history. Passing undefined means NO filter, so
+      // a non-super role must fall back to their own id — not undefined.
+      user_id: isSuperRole(user.role) ? (user_id ? String(user_id) : undefined) : user.id,
       limit: limit ? parseInt(String(limit), 10) : 20,
       offset: offset ? parseInt(String(offset), 10) : 0,
     });

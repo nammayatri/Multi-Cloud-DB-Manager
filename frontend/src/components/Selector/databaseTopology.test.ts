@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDbMap, buildModesForDb } from './databaseTopology';
+import { buildDbMap, buildModesForDb, listAllDatabases } from './databaseTopology';
 import type { DatabaseConfiguration } from '../../types';
 
 // A config exercising all topologies:
@@ -123,5 +123,19 @@ describe('buildDbMap with per-database primary clouds (databasesByName)', () => 
   it('offers Multi-Cloud for the multi-cloud DB and single mode for the other', () => {
     expect(buildModesForDb(map.Bpp).map(m => m.value)).toEqual(['both', 'aws', 'gcp']);
     expect(buildModesForDb(map.Bap).map(m => m.value)).toEqual(['gcp']);
+  });
+
+  // Regression: database pickers/filters must list EVERY database, including
+  // ones whose primary cloud differs from the global primary. Using
+  // config.primary.databases here dropped all gcp-primary DBs (e.g. the Query
+  // History filter only showed Driver).
+  it('listAllDatabases returns every DB regardless of which cloud is its primary', () => {
+    const names = listAllDatabases(perDbConfig).map(d => d.name).sort();
+    expect(names).toEqual(['Bap', 'Bpp']);
+  });
+
+  it('listAllDatabases carries label/schemas from each DB primary cloud entry', () => {
+    const bap = listAllDatabases(perDbConfig).find(d => d.name === 'Bap');
+    expect(bap).toMatchObject({ label: 'Rider', defaultSchema: 'public' });
   });
 });

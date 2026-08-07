@@ -102,6 +102,29 @@ export function buildDbMap(config: DatabaseConfiguration): DbMap {
   return map;
 }
 
+export interface DatabaseListEntry {
+  name: string;
+  label: string;
+  schemas: string[];
+  defaultSchema: string;
+}
+
+/**
+ * Every configured database, one entry per database name (the union across all
+ * clouds). Use this for database pickers/filters — NOT `config.primary.databases`,
+ * which only contains databases whose primary happens to be the global primary
+ * cloud and therefore omits databases that are primary on a different cloud.
+ */
+export function listAllDatabases(config: DatabaseConfiguration): DatabaseListEntry[] {
+  const map = buildDbMap(config);
+  return Object.entries(map).map(([name, meta]) => ({
+    name,
+    label: meta.label,
+    schemas: meta.schemas,
+    defaultSchema: meta.defaultSchema,
+  }));
+}
+
 /** Build the Execution Mode options for a single database from its clouds. */
 export function buildModesForDb(meta: DbMeta | undefined): ExecutionModeOption[] {
   if (!meta || meta.clouds.length === 0) return [];

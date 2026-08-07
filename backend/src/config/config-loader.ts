@@ -184,7 +184,8 @@ function normalizeConfig(raw: any): DatabasesConfigJson {
   // All db_configs grouped by cloud (for pool creation) — first-seen order.
   const cloudToDbConfigs = new Map<string, DatabaseConfigJson[]>();
   // Per-database roles (the source of truth for routing).
-  const databaseRoles: { [db: string]: { primaryCloud: string; secondaryClouds: string[] } } = {};
+  // primaryCloud is undefined for a replica-only (secondary-only) database.
+  const databaseRoles: { [db: string]: { primaryCloud?: string; secondaryClouds: string[] } } = {};
 
   for (const [name, group] of Object.entries<any>(raw.databasesByName)) {
     if (!group || !Array.isArray(group.clouds) || group.clouds.length === 0) {
@@ -239,12 +240,21 @@ function normalizeConfig(raw: any): DatabasesConfigJson {
       if (!cloudToDbConfigs.has(cloud.cloudType)) {
         cloudToDbConfigs.set(cloud.cloudType, []);
       }
+      // Reject a duplicate (database, cloud) pair. Pools are keyed by
+      // `${cloud}_${database}`, so a duplicate would silently overwrite the
+      // first Pool in the map — orphaning it with no 'error' handler (an
+      // unhandled 'error' event crashes the process) and never closing it.
+      if (cloudToDbConfigs.get(cloud.cloudType)!.some(d => d.name === name)) {
+        throw new Error(
+          `Invalid grouped config: database "${name}" lists cloud "${cloud.cloudType}" more than once`
+        );
+      }
       cloudToDbConfigs.get(cloud.cloudType)!.push(dbConfig);
     }
 
-    if (!primaryCloud) {
-      throw new Error(`Invalid grouped config: database "${name}" has no "primary" cloud entry`);
-    }
+    // A database with no primary cloud is allowed: it's a replica-only
+    // (secondary-only) database — readable, but nothing is writable through
+    // this tool, and INSERT routing will correctly find no primary for it.
     databaseRoles[name] = { primaryCloud, secondaryClouds };
   }
 
@@ -256,8 +266,10 @@ function normalizeConfig(raw: any): DatabasesConfigJson {
   // Bucket by cloud for pool creation. The "global" primary is just the first
   // cloud that is a primary for some database — a legacy default; real routing
   // uses databaseRoles. Every (cloud, db) pair is covered so all pools are made.
-  const firstDb = Object.keys(databaseRoles)[0];
-  const globalPrimaryCloud = databaseRoles[firstDb].primaryCloud;
+  // Fall back to the first cloud if no database declares a primary at all
+  // (a config of only replica/secondary-only databases).
+  const globalPrimaryCloud =
+    Object.values(databaseRoles).find(r => r.primaryCloud)?.primaryCloud || cloudNames[0];
   const primary: CloudConfigJson = {
     cloudName: globalPrimaryCloud,
     db_configs: cloudToDbConfigs.get(globalPrimaryCloud)!,

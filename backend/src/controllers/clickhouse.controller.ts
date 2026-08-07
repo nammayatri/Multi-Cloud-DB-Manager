@@ -36,11 +36,24 @@ function getPrimaryPool(database: string) {
     return dbPools.getPoolByName(dbPools.getPrimaryCloudForDatabase(database), database);
 }
 
-/** Get all primary databases with their default schemas. */
+/**
+ * Every configured database, taken from its OWN primary cloud. A database may
+ * be primary on any cloud, so cloudConfig.primaryDatabases (the global-primary
+ * bucket) would omit databases that are primary elsewhere.
+ */
 function getPrimaryDatabases() {
     const dbPools = DatabasePools.getInstance();
     const cloudConfig = dbPools.getCloudConfig();
-    return cloudConfig.primaryDatabases; // Array of DatabaseInfo
+    const allDbInfos = [
+        ...cloudConfig.primaryDatabases,
+        ...Object.values(cloudConfig.secondaryDatabases).flat(),
+    ];
+    return Object.keys(cloudConfig.databaseClouds)
+        .map(name => {
+            const primaryCloud = dbPools.getPrimaryCloudForDatabase(name);
+            return allDbInfos.find(d => d.databaseName === name && d.cloudType === primaryCloud);
+        })
+        .filter((d): d is NonNullable<typeof d> => !!d); // Array of DatabaseInfo
 }
 
 // ──────────────────────────────────────────────

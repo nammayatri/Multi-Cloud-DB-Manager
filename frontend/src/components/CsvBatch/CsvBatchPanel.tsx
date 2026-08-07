@@ -37,6 +37,8 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import { csvBatchAPI, schemaAPI, toastNonApiError } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
+import { buildDbMap } from '../Selector/databaseTopology';
+import type { DbMap } from '../Selector/databaseTopology';
 import toast from 'react-hot-toast';
 
 // ── CSV parsing (no external dependency) ────────────────────────────────────
@@ -112,13 +114,20 @@ interface CsvBatchSummary {
 const CsvBatchPanel = () => {
   const selectedDatabase = useAppStore(s => s.selectedDatabase);
   const selectedPgSchema = useAppStore(s => s.selectedPgSchema);
-  const [primaryCloud, setPrimaryCloud] = useState<string>('primary');
+  // The batch runs on the SELECTED DATABASE's own primary cloud (each database
+  // may be primary on a different cloud), so derive it per-database rather than
+  // using the global default — otherwise the panel can name a different cloud
+  // than the one the batch actually writes to.
+  const [dbMap, setDbMap] = useState<DbMap>({});
 
   useEffect(() => {
-    schemaAPI.getConfiguration().then(config => {
-      setPrimaryCloud(config.primary.cloudName);
-    }).catch(() => {});
+    schemaAPI.getConfiguration()
+      .then(config => setDbMap(buildDbMap(config)))
+      .catch(() => {});
   }, []);
+
+  const primaryCloud =
+    dbMap[selectedDatabase]?.clouds.find(c => c.role === 'primary')?.cloudType ?? '—';
 
   const [queryTemplate, setQueryTemplate] = useState('');
   const [csvFile, setCsvFile] = useState<File | null>(null);

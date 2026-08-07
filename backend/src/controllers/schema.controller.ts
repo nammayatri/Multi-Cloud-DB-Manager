@@ -89,7 +89,9 @@ export const getSchemas = async (
     const { cloud } = req.query;
 
     const dbPools = DatabasePools.getInstance();
-    const cloudProvider = (cloud as string) || dbPools.getCloudConfig().primaryCloud || 'gcp';
+    // Default to THIS database's own primary cloud. Using the global primary
+    // would 404 for any database that is primary on a different cloud.
+    const cloudProvider = (cloud as string) || dbPools.getPrimaryCloudForDatabase(database);
 
     // Try to get schema info directly by cloud and database name
     let schemaInfo = dbPools.getSchemaInfo(cloudProvider, database);

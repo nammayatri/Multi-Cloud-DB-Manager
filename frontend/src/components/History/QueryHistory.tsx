@@ -28,7 +28,9 @@ import { format } from 'date-fns';
 import { historyAPI, authAPI, schemaAPI, toastNonApiError } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
-import type { QueryExecution, DatabaseInfo } from '../../types';
+import type { QueryExecution } from '../../types';
+import { listAllDatabases } from '../Selector/databaseTopology';
+import type { DatabaseListEntry } from '../Selector/databaseTopology';
 import { isSuperRole } from '../../constants/roles';
 
 const ITEMS_PER_PAGE = 20;
@@ -58,7 +60,7 @@ const QueryHistory = ({ database }: QueryHistoryProps = {}) => {
   const [userSearchInput, setUserSearchInput] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
-  const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [databases, setDatabases] = useState<DatabaseListEntry[]>([]);
   const isMaster = isSuperRole(user?.role);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -150,7 +152,9 @@ const QueryHistory = ({ database }: QueryHistoryProps = {}) => {
     const fetchDatabases = async () => {
       try {
         const config = await schemaAPI.getConfiguration();
-        setDatabases(config.primary.databases);
+        // Union across all clouds — a database may be primary on any cloud, so
+        // config.primary.databases alone would omit some.
+        setDatabases(listAllDatabases(config));
       } catch (error) {
         console.error('Failed to fetch database configuration:', error);
       }

@@ -23,6 +23,7 @@ import CalendarTodayIcon from '@mui/icons-material/CalendarToday';
 import StorageIcon from '@mui/icons-material/Storage';
 import { clickhouseAPI, type BackfillJob } from '../../services/api';
 import { schemaAPI } from '../../services/api';
+import { listAllDatabases } from '../Selector/databaseTopology';
 import toast from 'react-hot-toast';
 
 const POLL_INTERVAL_MS = 2000;
@@ -170,7 +171,8 @@ const BackfillPanel = () => {
   useEffect(() => {
     schemaAPI.getConfiguration()
       .then(cfg => {
-        const dbs = cfg.primary.databases ?? [];
+        // Union across all clouds — a database may be primary on any cloud.
+        const dbs = listAllDatabases(cfg);
         setDbOptions(
           dbs.map(db => ({
             name: db.name,

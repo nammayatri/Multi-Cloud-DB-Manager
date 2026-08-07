@@ -436,6 +436,14 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
   };
 
   const handleExecute = async () => {
+    // Guard against double-submit. The Execute button is swapped for Cancel
+    // while running, but the editor's Cmd+Enter shortcut bypasses the button —
+    // without this a second run would orphan the first execution (it keeps
+    // running server-side, unpolled and uncancellable) and re-apply writes.
+    if (useAppStore.getState().isExecuting) {
+      return;
+    }
+
     const queryToExecute = getQueryToExecute();
 
     if (!queryToExecute.trim()) {

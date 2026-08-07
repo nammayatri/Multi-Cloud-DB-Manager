@@ -250,16 +250,18 @@ export const addTables = async (
         success: results.publication.success,
         error: results.publication.error,
       },
-      subscriptions: results.subscriptions.map((s, i) => {
-        const cloudName = config.secondaryClouds[i];
-        const secDb = config.secondaryDatabases[cloudName]?.find(db => db.databaseName === database);
-        return {
-          cloud: s.cloud,
-          name: secDb?.subscriptionName || 'unknown',
-          success: s.success,
-          error: s.error,
-        };
-      }),
+      // Resolve each subscription name by the cloud the result is actually for.
+      // Indexing config.secondaryClouds by position is wrong: results come from
+      // this database's OWN eligible secondaries, which can include a cloud that
+      // isn't in the global secondaryClouds list (it may be the global primary).
+      subscriptions: results.subscriptions.map(s => ({
+        cloud: s.cloud,
+        name:
+          allDbInfos.find(db => db.databaseName === database && db.cloudType === s.cloud)
+            ?.subscriptionName || 'unknown',
+        success: s.success,
+        error: s.error,
+      })),
     });
   } catch (error: any) {
     logger.error('Replication add-tables failed:', error);
