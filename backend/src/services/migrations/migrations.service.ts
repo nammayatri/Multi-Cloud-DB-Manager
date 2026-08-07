@@ -10,7 +10,7 @@ import {
   MigrationEnvironmentConfig,
   PathMapping,
 } from '../../types/migrations';
-import { getChangedFiles, getFileContent, pullLatest } from './git.service';
+import { getChangedFiles, getFileContent, getFileContentOrEmpty, getMergeBase, pullLatest } from './git.service';
 import { splitStatements, classifyStatement } from './sql-parser.service';
 import { verifyStatement } from './verification.service';
 
@@ -144,6 +144,32 @@ function computeFileStatus(statements: MigrationStatement[]): MigrationFileResul
 /**
  * Run the full migration analysis pipeline.
  */
+/**
+ * Canonical form of a SQL statement for identity comparison between two file
+ * versions: lowercased, whitespace collapsed, trailing semicolons removed. Two
+ * statements with the same canonical form are the "same" migration line, so
+ * cosmetic reformatting between refs is not mistaken for a new statement.
+ */
+export function canonicalizeStatement(sql: string): string {
+  return sql
+    .replace(/--[^\n]*/g, ' ')       // strip line comments
+    .replace(/\s+/g, ' ')
+    .replace(/;+\s*$/, '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Statements ADDED in `toRef` relative to `baseContent` — i.e. present in the
+ * new file version but not the old one. This scopes analysis to the migrations
+ * THIS diff introduced, instead of re-checking every (often years-old)
+ * statement in the whole current file.
+ */
+export function addedStatements(toStatements: string[], baseContent: string): string[] {
+  const baseSet = new Set(splitStatements(baseContent).map(canonicalizeStatement));
+  return toStatements.filter(s => !baseSet.has(canonicalizeStatement(s)));
+}
+
 export async function analyze(
   fromRef: string,
   toRef: string,
@@ -159,6 +185,11 @@ export async function analyze(
   if (!envConfig) {
     throw new Error(`Unknown environment: "${environment}". Available: ${Object.keys(environments).join(', ')}`);
   }
+
+  // Baseline for statement-level diffing. The changed-file list below uses
+  // `fromRef...toRef` (three-dot = merge-base..toRef), so per-file statement
+  // diffing must use the same merge-base to stay consistent.
+  const baseRef = getMergeBase(config.repoPath, fromRef, toRef);
 
   // 1. Get ALL changed files from git (no path scoping — we match against pathMapping)
   const allChangedFiles = getChangedFiles(config.repoPath, undefined, fromRef, toRef);
@@ -277,8 +308,15 @@ export async function analyze(
         continue;
       }
 
-      // Parse SQL statements
-      const rawStatements = splitStatements(content);
+      // Parse SQL statements — but only the ones ADDED in this diff range
+      // (present at toRef, absent at the merge-base). This is what makes the
+      // result reflect THIS release rather than the whole accumulated file.
+      // A file that didn't exist at the base (newly added) → base content is
+      // empty → every statement counts as added.
+      // '' when the file didn't exist at the base (newly added) → every
+      // statement counts as added.
+      const baseContent = getFileContentOrEmpty(config.repoPath, baseRef, filePath);
+      const rawStatements = addedStatements(splitStatements(content), baseContent);
       const parsedStatements = rawStatements.map(sql => classifyStatement(sql, mapping.defaultSchema));
 
       // Get or create pool

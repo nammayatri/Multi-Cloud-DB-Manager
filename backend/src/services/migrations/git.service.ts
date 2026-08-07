@@ -64,7 +64,33 @@ const execOpts = (repoPath: string) => ({
   encoding: 'utf8' as const,
   cwd: repoPath,
   timeout: 30000,
+  // Large migration snapshot files must not be silently truncated. The default
+  // 1 MB buffer would make `git show` throw ENOBUFS mid-file, dropping
+  // statements from the analysis. 64 MB is far above any real migration file.
+  maxBuffer: 64 * 1024 * 1024,
 });
+
+/**
+ * Merge-base of two refs — the common ancestor. `git diff A...B` (three-dot,
+ * used for the changed-file list) is equivalent to `diff merge-base(A,B) B`, so
+ * per-file statement diffing must use the SAME base to stay consistent. Falls
+ * back to `fromRef` if the merge-base can't be computed (e.g. unrelated
+ * histories or a shallow clone missing the ancestor).
+ */
+export function getMergeBase(repoPath: string, fromRef: string, toRef: string): string {
+  validateRef(fromRef);
+  validateRef(toRef);
+  try {
+    const out = execFileSync('git', ['merge-base', fromRef, toRef], execOpts(repoPath));
+    const base = out.trim();
+    return base || fromRef;
+  } catch (err: any) {
+    logger.warn('git merge-base failed — falling back to fromRef', {
+      fromRef, toRef, error: err.message,
+    });
+    return fromRef;
+  }
+}
 
 /**
  * Get list of changed files between two git refs.
@@ -118,6 +144,22 @@ export function getFileContent(repoPath: string, ref: string, filePath: string):
       error: err.message,
     });
     throw new Error(`Git show failed for ${filePath}@${ref}: ${err.message}`);
+  }
+}
+
+/**
+ * Like getFileContent, but returns '' instead of throwing/logging when the file
+ * does not exist at that ref. Used for the diff baseline, where a file being
+ * absent at the merge-base is the EXPECTED "newly added file" case (all of its
+ * statements then count as added) — not an error worth logging.
+ */
+export function getFileContentOrEmpty(repoPath: string, ref: string, filePath: string): string {
+  validateRef(ref);
+  validatePath(filePath);
+  try {
+    return execFileSync('git', ['show', `${ref}:${filePath}`], execOpts(repoPath));
+  } catch {
+    return '';
   }
 }
 

@@ -4,6 +4,45 @@ import { MigrationStatement } from '../../types/migrations';
 import { ParsedStatement } from './sql-parser.service';
 
 /**
+ * Canonicalize a PostgreSQL type name so a target type from migration SQL and
+ * the live type from pg_catalog.format_type compare equal regardless of
+ * spelling, spacing, or alias. Both sides are reduced to a single canonical
+ * short form (e.g. varchar, int4, timestamptz, float8), with precision/scale
+ * and array `[]` preserved and normalized.
+ *
+ *   "numeric(30, 15)"                -> "numeric(30,15)"
+ *   "character varying(36)"          -> "varchar(36)"
+ *   "text []"                        -> "text[]"
+ *   "integer" / "int" / "int4"       -> "int4"
+ *   "timestamp with time zone"       -> "timestamptz"
+ *   "double precision"               -> "float8"
+ */
+export function normalizePgType(raw: string): string {
+  let s = (raw || '').toLowerCase().trim().replace(/\s+/g, ' ');
+  s = s.replace(/\s*\[\s*\]/g, '[]');                 // "text []" -> "text[]"
+  s = s.replace(/\s*\(\s*/g, '(').replace(/\s*\)/g, ')').replace(/\s*,\s*/g, ','); // "( 30 , 15 )" -> "(30,15)"
+  const aliases: Array<[RegExp, string]> = [
+    [/\bcharacter varying\b/g, 'varchar'],
+    [/\bcharacter\b(?!\s+varying)/g, 'char'],
+    [/\bbpchar\b/g, 'char'],
+    [/\bdouble precision\b/g, 'float8'],
+    [/\btimestamp with time zone\b/g, 'timestamptz'],
+    [/\btimestamp without time zone\b/g, 'timestamp'],
+    [/\btime with time zone\b/g, 'timetz'],
+    [/\btime without time zone\b/g, 'time'],
+    [/\bboolean\b/g, 'bool'],
+    [/\binteger\b/g, 'int4'],
+    [/\bbigint\b/g, 'int8'],
+    [/\bsmallint\b/g, 'int2'],
+    [/\bint\b/g, 'int4'],
+    [/\breal\b/g, 'float4'],
+    [/\bdecimal\b/g, 'numeric'],
+  ];
+  for (const [re, to] of aliases) s = s.replace(re, to);
+  return s;
+}
+
+/**
  * Generate a rollback SQL statement for a given forward SQL statement.
  * Returns undefined if rollback cannot be auto-generated.
  */
@@ -199,50 +238,33 @@ export async function verifyStatement(
           return { ...base, status: 'manual_check', details: 'Could not parse column name' };
         }
         const [schema, table, column] = parts;
-        const q = 'SELECT data_type, udt_name, character_maximum_length, numeric_precision FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = $3';
+        if (!targetType) {
+          return { ...base, status: 'manual_check', details: 'Could not parse target type' };
+        }
+        // Use pg_catalog.format_type so we get the FULL canonical type, including
+        // precision/scale and array notation — e.g. "numeric(30,15)",
+        // "character varying(36)", "text[]". information_schema.udt_name alone
+        // drops the precision/scale and reports arrays as "_text", which made
+        // every numeric(p,s) / array type change look pending even when applied.
+        const q =
+          'SELECT format_type(a.atttypid, a.atttypmod) AS full_type ' +
+          'FROM pg_attribute a ' +
+          'JOIN pg_class c ON c.oid = a.attrelid ' +
+          'JOIN pg_namespace n ON n.oid = c.relnamespace ' +
+          'WHERE n.nspname = $1 AND c.relname = $2 AND a.attname = $3 ' +
+          'AND a.attnum > 0 AND NOT a.attisdropped';
         const res = await client.query(q, [schema, table, column]);
         if (!res.rowCount || res.rowCount === 0) {
           return { ...base, status: 'pending', details: `Column ${column} not found in ${schema}.${table}`, verificationQuery: q };
         }
-        const row = res.rows[0];
-        const currentUdt = (row.udt_name || '').toLowerCase();
-        const currentDataType = (row.data_type || '').toLowerCase();
-
-        if (!targetType) {
-          return { ...base, status: 'manual_check', details: `Column ${column} current type: ${currentUdt} — could not parse target type`, verificationQuery: q };
-        }
-
-        // Normalize common PostgreSQL type aliases for comparison
-        const typeAliases: Record<string, string[]> = {
-          'int4': ['integer', 'int', 'int4'],
-          'int8': ['bigint', 'int8'],
-          'int2': ['smallint', 'int2'],
-          'float8': ['double precision', 'float8'],
-          'float4': ['real', 'float4'],
-          'bool': ['boolean', 'bool'],
-          'varchar': ['character varying', 'varchar'],
-          'text': ['text'],
-          'timestamptz': ['timestamp with time zone', 'timestamptz'],
-          'timestamp': ['timestamp without time zone', 'timestamp'],
-        };
-
-        function typesMatch(current: string, target: string): boolean {
-          const normTarget = target.replace(/\s*\(\d+\)\s*$/, '').trim();
-          if (current === normTarget) return true;
-          for (const [canonical, aliases] of Object.entries(typeAliases)) {
-            const allNames = [canonical, ...aliases];
-            if (allNames.includes(current) && allNames.includes(normTarget)) return true;
-          }
-          return false;
-        }
-
-        const matched = typesMatch(currentUdt, targetType) || typesMatch(currentDataType, targetType);
+        const currentType = String(res.rows[0].full_type || '');
+        const matched = normalizePgType(currentType) === normalizePgType(targetType);
         return {
           ...base,
           status: matched ? 'applied' : 'pending',
           details: matched
-            ? `Column ${column} type is ${currentUdt} (matches ${targetType})`
-            : `Column ${column} type is ${currentUdt}, expected ${targetType}`,
+            ? `Column ${column} type is ${currentType} (matches ${targetType})`
+            : `Column ${column} type is ${currentType}, expected ${targetType}`,
           verificationQuery: q,
         };
       }
