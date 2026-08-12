@@ -2,6 +2,7 @@ import logger from '../../utils/logger';
 
 export interface ShudhiConfig {
   url: string;
+  token?: string;
 }
 
 // Matches Shudhi's PodInfo struct: { podName, sidecarUrl }
@@ -57,6 +58,7 @@ export interface ShudhiHealthResponse {
 
 class ShudhiService {
   private baseUrl: string | null = null;
+  private token: string | null = null;
 
   constructor() {
     this.loadConfig();
@@ -69,6 +71,7 @@ class ShudhiService {
         this.baseUrl = config.url.replace(/\/+$/, '');
         logger.info('Shudhi service configured', { url: this.baseUrl });
       }
+      if (config.token) this.token = config.token;
     } catch {
       // Config not found — Shudhi not configured, which is fine
     }
@@ -77,6 +80,14 @@ class ShudhiService {
     if (!this.baseUrl && process.env.SHUDHI_URL) {
       this.baseUrl = process.env.SHUDHI_URL.replace(/\/+$/, '');
       logger.info('Shudhi service configured from env', { url: this.baseUrl });
+    }
+    if (!this.token && process.env.SHUDHI_TOKEN) {
+      this.token = process.env.SHUDHI_TOKEN;
+    }
+
+    // Never log the token itself — only whether one is present.
+    if (this.baseUrl) {
+      logger.info('Shudhi auth', { tokenConfigured: this.token !== null });
     }
   }
 
@@ -99,6 +110,7 @@ class ShudhiService {
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
+          ...(this.token ? { 'x-inmem-token': this.token } : {}),
           ...(options?.headers || {}),
         },
       });
