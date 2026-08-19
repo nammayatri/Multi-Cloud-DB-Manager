@@ -122,6 +122,28 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 | **Read‑only safety** | Triple protection: read replica host + read‑only user + pool‑level `default_transaction_read_only=on` |
 | **Auto repo sync** | Init container clones repo; `git fetch` on page load with 5‑min cooldown |
 
+### Query Requests <sub>— request &amp; approve</sub>
+
+| | |
+|---|---|
+| **Request approval** | When your role blocks a query, send it for approval instead of dead‑ending — with a mandatory written reason |
+| **Peer approval** | Anyone whose *own* role permits that query can approve it. Authority follows the SQL, not a fixed role list, so a `DELETE` still reaches MASTER/ADMIN while a READER's `INSERT` can be approved by any USER |
+| **Runs as the approver** | The query executes under the approver's identity and role, so the normal permission checks authorise it — the requester never gains elevated rights, and no bypass path exists |
+| **Hash‑pinned SQL** | The approved bytes are the executed bytes. An approver whose copy went stale is asked to re‑read rather than run something they never saw |
+| **One or many queries** | A request is always a *list* — of one in the common case. Extra queries exist for **different** target databases, since a query runs against exactly one; queries sharing a target are simpler as `;`‑separated statements |
+| **Per‑query approval** | Each query is approved on its own by whoever's role permits that statement, so a mixed request can be part‑actioned |
+| **Run in order** | Approve a whole request in one action and its queries run sequentially, each waiting for the previous. A failure stops the run — the rest stay pending and can still be approved individually |
+| **Bulk actions** | Approve all in order, reject all with one note, or withdraw all — scoped to the whole request |
+| **Revisions, not edits** | Changing a pending query's SQL adds a revision and marks the previous version replaced, keeping its place in the run order. The original stays visible so approvers can see what changed |
+| **Reason is request‑scoped** | Edited separately from the SQL and applied to every still‑pending query. Anything already approved keeps the reason it was approved under |
+| **Watch it run** | Approving opens the result immediately and follows the execution — per‑statement progress, then per‑cloud results as each one lands |
+| **Resubmit** | A failed, rejected, expired, or withdrawn query can be reopened as a new request, prefilled and editable. The original stays in the audit trail |
+| **No self‑approval** | Enforced by a `CHECK` constraint, for every role including MASTER/ADMIN |
+| **Audit trail** | Reason, requester, approver, note, and outcome kept permanently — including for approved `SELECT`s, which query history skips |
+| **Auto‑expiry** | Pending requests expire after 24h, so nothing is approved against day‑old assumptions |
+
+<br />
+
 ### User Management <sub>— ADMIN only</sub>
 
 | | |
@@ -172,6 +194,13 @@ ClickHouse-only.
 <tr><td><strong>User management</strong></td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
 </tbody>
 </table>
+
+> ✎ **Anything a role can't run can be requested.** USER, READER, and
+> RELEASE_MANAGER can submit a blocked query for approval with a written reason.
+> Whoever approves it must be able to run it themselves — so a `DELETE` still
+> ends up with MASTER/ADMIN, while a READER's `INSERT` can be approved by any
+> USER. The query then runs as the approver. Self‑approval is never permitted.
+> The blocked-for-all list below is **not** unlockable this way.
 
 > ⚠ **Blocked for all roles** (including MASTER)
 > SQL → `DROP/CREATE DATABASE`, `DROP/CREATE SCHEMA`, `ALTER/CREATE/DROP ROLE`, `ALTER/CREATE/DROP USER`
@@ -410,7 +439,7 @@ Open → **http://localhost:5173**
 
 ## ◆ Database schema
 
-<sub>Migrations auto‑create (when `RUN_MIGRATIONS=true`) or run manually with `npm run migrate`.</sub>
+<sub>Applied automatically at startup when `RUN_MIGRATIONS=true`, or by hand with <code>psql -f backend/migrations/&lt;file&gt;.sql</code>. Every migration is idempotent, so re‑running one is a no‑op.</sub>
 
 <details>
 <summary><b><code>dual_db_manager.users</code></b></summary>
@@ -439,7 +468,41 @@ Open → **http://localhost:5173**
 | `database_name` | `VARCHAR(50)` | Target database |
 | `execution_mode` | `VARCHAR(50)` | `both` or specific cloud name |
 | `cloud_results` | `JSONB` | Per‑cloud results with success, duration, rows |
+| `request_id` | `UUID` | Set when this ran via an approved query request |
 | `created_at` | `TIMESTAMP` | Execution time |
+
+</details>
+
+<details>
+<summary><b><code>dual_db_manager.query_requests</code></b></summary>
+
+<sub>A request is <b>always</b> a group, of one query in the common case — members are ordinary rows sharing a <code>group_id</code>. There is no separate group table, so approve, reject, execute and expire all operate on a member with no special casing.</sub>
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `UUID` | Primary key |
+| `requester_id` | `UUID` | Who asked |
+| `query` | `TEXT` | The exact SQL to run |
+| `query_hash` | `TEXT` | SHA‑256 of `query`, re‑verified immediately before execution |
+| `reason` | `TEXT` | Why it needs to run. Required, any length; shared by the request so it is written to each member |
+| `database_name` | `VARCHAR(100)` | Target database |
+| `execution_mode` | `VARCHAR(100)` | `both` or a specific cloud name |
+| `pg_schema` | `VARCHAR(100)` | Target schema |
+| `continue_on_error` | `BOOLEAN` | Carry on after a failed statement within this one query |
+| `requires_password` | `BOOLEAN` | ALTER/DROP — approval is MASTER/ADMIN plus a password challenge |
+| `status` | `VARCHAR(20)` | `PENDING` → `APPROVED` → `RUNNING` → `SUCCEEDED`/`FAILED`, or `REJECTED` / `CANCELLED` / `EXPIRED` / `SUPERSEDED` |
+| `reviewer_id` | `UUID` | Who approved or rejected it — never the requester |
+| `reviewed_at` | `TIMESTAMP` | When it was actioned |
+| `review_note` | `TEXT` | Reviewer's note; mandatory on rejection |
+| `execution_id` | `UUID` | The execution it was handed to |
+| `executed_at` | `TIMESTAMP` | When it started running |
+| `result_summary` | `JSONB` | Row‑free outcome; full rows live in Redis until its TTL expires |
+| `error` | `TEXT` | Failure detail, prefixed with the cloud it came from |
+| `group_id` | `UUID` | Shared by queries submitted together. Never NULL |
+| `group_position` | `INTEGER` | Order within the request, 0‑based. Drives execution order for a run‑in‑order approval, not just display |
+| `created_at` | `TIMESTAMP` | Submission time |
+| `updated_at` | `TIMESTAMP` | Set when the query was revised or the reason edited |
+| `expires_at` | `TIMESTAMP` | Pending queries expire (default 24h). A revision inherits it, so a request has one bounded lifetime no matter how often it is edited |
 
 </details>
 
@@ -530,6 +593,32 @@ kubectl apply -f k8s/
 | `POST` | `/api/query/cancel/:id` | User | Cancel a running query (own queries, or any as MASTER) |
 | `GET` | `/api/query/active` | User | List active executions |
 | `POST` | `/api/query/validate` | User | Validate SQL syntax without executing |
+
+</details>
+
+<details>
+<summary><b>Query requests</b> — <code>/api/query-requests</code></summary>
+
+<sub>No fixed role gate: who may approve depends on the <b>query</b>, so each handler tests the viewer's role against the specific request.</sub>
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/query-requests` | User | Submit a request — 1–25 queries, each with its own target, under one written reason |
+| `GET` | `/api/query-requests/mine` | User | Your own requests |
+| `GET` | `/api/query-requests/pending` | User | Whole requests containing at least one query **your** role can approve |
+| `GET` | `/api/query-requests/pending/count` | User | Badge count — queries you can action right now |
+| `GET` | `/api/query-requests/reviewed` | User | What **you** approved or rejected. MASTER/ADMIN can widen to everyone's reviews (`?reviewedBy=me` narrows back); other roles only ever see their own |
+| `GET` | `/api/query-requests/:id` | User | A single query |
+| `GET` | `/api/query-requests/:id/result` | User | Its outcome — requester, reviewer, or MASTER/ADMIN only |
+| `PATCH` | `/api/query-requests/:id` | User | Revise the SQL of your own pending query — adds a revision, marks the previous version replaced |
+| `POST` | `/api/query-requests/:id/approve` | User | Approve **and run**, as you (password required for ALTER/DROP) |
+| `POST` | `/api/query-requests/:id/reject` | User | Reject with a mandatory note |
+| `POST` | `/api/query-requests/:id/cancel` | User | Withdraw your own pending query |
+| `GET` | `/api/query-requests/groups/:groupId` | User | Every query in a request that you can see |
+| `PATCH` | `/api/query-requests/groups/:groupId/reason` | User | Change the reason — applies to every still‑pending query in the request |
+| `POST` | `/api/query-requests/groups/:groupId/approve` | User | Approve every pending query and run them **in order** |
+| `POST` | `/api/query-requests/groups/:groupId/reject` | User | Reject every pending query you can review, with one note |
+| `POST` | `/api/query-requests/groups/:groupId/cancel` | User | Withdraw every pending query in your own request |
 
 </details>
 

@@ -40,6 +40,64 @@ export interface QueryRequest {
   indexCreationPassword?: string; // Special password for CREATE INDEX on protected tables
   continueOnError?: boolean; // Continue executing remaining statements if one fails
   userRole?: Role; // Internal — set by controller from session, used by executor for per-stmt role checks
+  requestId?: string; // Internal — set only by the approval path; links the history row to its query request
+}
+
+export type QueryRequestStatus =
+  | 'PENDING'
+  | 'APPROVED'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'EXPIRED'
+  // The original of an edited query — kept so the request shows what was first
+  // asked for, never approvable.
+  | 'SUPERSEDED';
+
+/** A row of dual_db_manager.query_requests, joined with requester/reviewer users. */
+export interface QueryRequestRecord {
+  id: string;
+  requester_id: string;
+  query: string;
+  query_hash: string;
+  reason: string;
+  database_name: string;
+  execution_mode: string;
+  pg_schema?: string | null;
+  continue_on_error: boolean;
+  requires_password: boolean;
+  status: QueryRequestStatus;
+  reviewer_id?: string | null;
+  reviewed_at?: Date | null;
+  review_note?: string | null;
+  execution_id?: string | null;
+  executed_at?: Date | null;
+  result_summary?: Record<string, any> | null;
+  error?: string | null;
+  created_at: Date;
+  updated_at?: Date | null;
+  expires_at: Date;
+
+  // Every request is a group — of one query in the common case. Members share a
+  // group_id but keep their own target, status, reviewer, execution and result.
+  group_id: string;
+  group_position: number;
+  /** Total queries in this request, including ones this viewer can't action. */
+  group_size?: number;
+  /** Position + status of every query in the request. No SQL, no reason. */
+  group_statuses?: Array<{ position: number; status: QueryRequestStatus }>;
+  /** Set by the pending endpoint: can THIS viewer action this query right now? */
+  can_approve?: boolean;
+
+  // Joined
+  requester_username: string;
+  requester_name: string;
+  requester_email: string;
+  requester_role: Role;
+  reviewer_username?: string | null;
+  reviewer_name?: string | null;
 }
 
 export interface StatementResult {

@@ -1,13 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import queryService from '../services/query.service';
-import QueryValidator from '../services/query/QueryValidator';
-import historyService from '../services/history.service';
-import DatabasePools from '../config/database';
+import { checkExecutionConstraints } from '../services/query/queryPermissions';
+import { verifyUserPassword } from '../utils/verifyPassword';
 import logger from '../utils/logger';
 import { AppError } from '../middleware/error.middleware';
 import { QueryRequest } from '../types';
 import { isSuperRole } from '../constants/roles';
-import bcrypt from 'bcryptjs';
 
 /**
  * Start async query execution (returns immediately with executionId)
@@ -41,19 +39,11 @@ export const executeQuery = async (
         throw new AppError('Password verification required for this query', 400);
       }
 
-      // Get user's password hash from database
-      const dbPools = DatabasePools.getInstance();
-      const historyPool = dbPools.history;
-      const userResult = await historyPool.query(
-        'SELECT password_hash FROM dual_db_manager.users WHERE username = $1',
-        [user.username]
-      );
-
-      if (userResult.rows.length === 0) {
+      const passwordValid = await verifyUserPassword(user.username, queryRequest.password);
+      if (passwordValid === null) {
         throw new AppError('User not found', 404);
       }
 
-      const passwordValid = await bcrypt.compare(queryRequest.password, userResult.rows[0].password_hash);
       if (!passwordValid) {
         logger.warn('Password verification failed for sensitive query', {
           username: user.username,
@@ -68,69 +58,24 @@ export const executeQuery = async (
       });
     }
 
-    // Validate database and mode against actual configuration
-    const cloudConfig = DatabasePools.getInstance().getCloudConfig();
-    const allDatabases = [
-      ...cloudConfig.primaryDatabases.map(d => d.databaseName),
-      ...Object.values(cloudConfig.secondaryDatabases).flat().map(d => d.databaseName)
-    ];
-    const allClouds = [cloudConfig.primaryCloud, ...cloudConfig.secondaryClouds];
+    // Role-independent execution constraints (valid database/mode, INSERT
+    // primary-cloud rule, protected-table CREATE INDEX block). Shared with the
+    // query-request approval path so both enforce them identically.
+    const constraints = checkExecutionConstraints({
+      query: queryRequest.query,
+      database: queryRequest.database,
+      mode: queryRequest.mode,
+      pgSchema: queryRequest.pgSchema,
+    });
 
-    if (!allDatabases.includes(queryRequest.database)) {
-      throw new AppError(`Invalid database: ${queryRequest.database}`, 400);
-    }
-
-    if (queryRequest.mode !== 'both' && !allClouds.includes(queryRequest.mode)) {
-      throw new AppError(`Invalid execution mode: ${queryRequest.mode}`, 400);
-    }
-
-    // INSERT may only run against THIS database's own primary cloud — DB-level
-    // replication carries the row to its secondaries. Block 'both' and any
-    // non-primary target. Each database has its own primary cloud.
-    const dbPrimaryCloud = DatabasePools.getInstance().getPrimaryCloudForDatabase(queryRequest.database);
-    if (queryRequest.mode !== dbPrimaryCloud) {
-      const statements = QueryValidator.splitStatements(queryRequest.query);
-      const hasInsert = statements.some(s => /^\s*(?:WITH\b[\s\S]*?\)\s*)?INSERT\b/i.test(s));
-      if (hasInsert) {
-        throw new AppError(
-          `INSERT statements are only allowed on the primary cloud for '${queryRequest.database}' (${dbPrimaryCloud}). Please switch the execution mode to ${dbPrimaryCloud}.`,
-          400
-        );
-      }
-    }
-
-    // Hard-block CREATE INDEX on protected tables — no override.
-    // A database can be configured on several clouds, and indexCreateBlockedTables
-    // is a per-cloud-entry field. Resolve the DB's own primary entry for the
-    // default schema, and UNION the blocked lists across every cloud entry so a
-    // protection declared on any one of them still applies (fail safe).
-    const allDbInfosForDb = [
-      ...cloudConfig.primaryDatabases,
-      ...Object.values(cloudConfig.secondaryDatabases).flat(),
-    ].filter(d => d.databaseName === queryRequest.database);
-
-    const dbPrimaryInfo =
-      allDbInfosForDb.find(d => d.cloudType === dbPrimaryCloud) || allDbInfosForDb[0];
-    const blockedTables = [
-      ...new Set(allDbInfosForDb.flatMap(d => d.indexCreateBlockedTables ?? [])),
-    ];
-
-    if (blockedTables.length > 0) {
-      const blockedMatches = queryService.checkIndexCreateBlocked(
-        queryRequest.query,
-        blockedTables,
-        queryRequest.pgSchema || dbPrimaryInfo?.defaultSchema
-      );
-      if (blockedMatches.length > 0) {
+    if (!constraints.ok) {
+      if (constraints.blockedTables) {
         logger.warn('Blocked CREATE INDEX on protected table', {
           username: user.username,
-          tables: blockedMatches,
+          tables: constraints.blockedTables,
         });
-        throw new AppError(
-          `CREATE INDEX is blocked on the following protected table(s): ${blockedMatches.join(', ')}. These tables are critical for production — please contact your administrator to run this index query.`,
-          403
-        );
       }
+      throw new AppError(constraints.message!, constraints.status || 400);
     }
 
     logger.info('Query execution requested', {
@@ -143,6 +88,10 @@ export const executeQuery = async (
     // role policy (e.g. RELEASE_MANAGER) can be enforced even on the
     // continueOnError path. Always overwrite so a client cannot smuggle their own.
     queryRequest.userRole = user.role;
+
+    // Direct execution is never tied to a query request. Clearing this stops a
+    // client from forging the audit link by posting a requestId of its own.
+    queryRequest.requestId = undefined;
 
     // Start async execution - returns immediately with executionId
     const executionId = await queryService.startExecution(queryRequest, user.id);

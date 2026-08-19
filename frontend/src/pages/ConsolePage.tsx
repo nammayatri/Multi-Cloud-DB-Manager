@@ -24,7 +24,8 @@ import TableRowsIcon from '@mui/icons-material/TableRows';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import HubIcon from '@mui/icons-material/Hub';
 import CachedIcon from '@mui/icons-material/Cached';
-import { authAPI, schemaAPI, toastNonApiError } from '../services/api';
+import RuleIcon from '@mui/icons-material/Rule';
+import { authAPI, schemaAPI, queryRequestsAPI, toastNonApiError } from '../services/api';
 import { Role } from '../constants/roles';
 import { useAppStore } from '../store/appStore';
 import toast from 'react-hot-toast';
@@ -50,6 +51,7 @@ const RedisCacheClearer = lazy(() => import('../components/Redis/RedisCacheClear
 const ClickhouseToolbar = lazy(() => import('../components/Clickhouse/ClickhouseToolbar'));
 const CsvBatchPanel = lazy(() => import('../components/CsvBatch/CsvBatchPanel'));
 const ShudhiPanel = lazy(() => import('../components/Shudhi/ShudhiPanel'));
+const QueryRequestsPanel = lazy(() => import('../components/QueryRequests/QueryRequestsPanel'));
 
 // Fallback shown while a lazy panel chunk loads on first tab open.
 const panelLoader = (
@@ -59,7 +61,7 @@ const panelLoader = (
 );
 
 
-type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi';
+type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests';
 
 // Batch Query (CSV) — destructive arbitrary parametrized SQL, intentionally
 // withheld from RELEASE_MANAGER (schema-change scope, not data manipulation).
@@ -75,6 +77,11 @@ const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Rol
 // Shudhi (In-Memory Cache Management) — same as Redis: all standard roles.
 const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
 
+// Query Requests — every role with Postgres access: the lower tiers raise
+// requests, the higher tiers approve them, and most roles do both depending on
+// the query. CKH_MANAGER has no Postgres access, so it has nothing to do here.
+const REQUEST_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+
 const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode; visibleTo: Role[] }> = [
   { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} />, visibleTo: REDIS_ROLES },
@@ -82,12 +89,19 @@ const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNod
   { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN, Role.CKH_MANAGER] },
   { mode: 'shudhi', label: 'Shudhi', icon: <CachedIcon sx={{ fontSize: 18 }} />, visibleTo: SHUDHI_ROLES },
+  { mode: 'requests', label: 'Requests', icon: <RuleIcon sx={{ fontSize: 18 }} />, visibleTo: REQUEST_ROLES },
 ];
+
+// Only these two views render a history side-panel (QueryHistory / RedisHistory).
+// The panels live inside their tab's view, which stays mounted but hidden when
+// another tab is active — so toggling History anywhere else silently mounted
+// them behind an invisible pane and fired their fetches with nothing to show.
+const HISTORY_MODES: ManagerMode[] = ['db', 'redis'];
 
 const tabsForRole = (role: Role | undefined) =>
   role ? TAB_CONFIG.filter((t) => t.visibleTo.includes(role)) : [];
 
-const PillToggle = ({ managerMode, setManagerMode, userRole }: { managerMode: ManagerMode; setManagerMode: (m: ManagerMode) => void; userRole: Role }) => {
+const PillToggle = ({ managerMode, setManagerMode, userRole, pendingApprovals }: { managerMode: ManagerMode; setManagerMode: (m: ManagerMode) => void; userRole: Role; pendingApprovals: number }) => {
   const tabRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [indicator, setIndicator] = useState({ left: 3, width: 0 });
   const visibleTabs = tabsForRole(userRole);
@@ -105,7 +119,9 @@ const PillToggle = ({ managerMode, setManagerMode, userRole }: { managerMode: Ma
         });
       }
     }
-  }, [managerMode]);
+    // pendingApprovals changes the Requests tab's width (badge appears/grows),
+    // which shifts every tab after it — recompute so the pill stays aligned.
+  }, [managerMode, pendingApprovals]);
 
   return (
     <Box
@@ -158,6 +174,26 @@ const PillToggle = ({ managerMode, setManagerMode, userRole }: { managerMode: Ma
         >
           {tab.icon}
           {tab.label}
+          {tab.mode === 'requests' && pendingApprovals > 0 && (
+            <Box
+              sx={{
+                ml: 0.25,
+                minWidth: 18,
+                height: 18,
+                px: 0.5,
+                borderRadius: '9px',
+                bgcolor: 'error.main',
+                color: '#fff',
+                fontSize: '0.65rem',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {pendingApprovals > 99 ? '99+' : pendingApprovals}
+            </Box>
+          )}
         </Box>
       ))}
     </Box>
@@ -331,6 +367,7 @@ const ConsolePage = () => {
   const [redisResult, setRedisResult] = useState<RedisCommandResponse | null>(null);
   const [clickhouseResult, setClickhouseResult] = useState<QueryResponse | null>(null);
   const [refreshingConfig, setRefreshingConfig] = useState(false);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
   const resultsPanelRef = useRef<HTMLDivElement>(null);
   const redisResultsPanelRef = useRef<HTMLDivElement>(null);
   const clickhouseResultsPanelRef = useRef<HTMLDivElement>(null);
@@ -367,6 +404,30 @@ const ConsolePage = () => {
       setManagerMode(allowed[0].mode);
     }
   }, [user, managerMode, setManagerMode]);
+
+  // Pending-approval badge. The count is per-user, not global: approval
+  // authority follows the query, so the backend tests each pending request
+  // against this user's role.
+  useEffect(() => {
+    if (!user || !tabsForRole(user.role).some((t) => t.mode === 'requests')) return;
+
+    let cancelled = false;
+    const refreshCount = async () => {
+      try {
+        const { count } = await queryRequestsAPI.pendingCount();
+        if (!cancelled) setPendingApprovals(count);
+      } catch {
+        // Badge is non-critical — a failed poll shouldn't toast or retry loudly.
+      }
+    };
+
+    refreshCount();
+    const interval = setInterval(refreshCount, 60000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user, managerMode]);
 
   const handleLogout = async () => {
     try {
@@ -458,13 +519,14 @@ const ConsolePage = () => {
               : managerMode === 'batch' ? 'Batch Query Manager'
               : managerMode === 'clickhouse' ? 'Clickhouse Manager'
               : managerMode === 'shudhi' ? 'Shudhi — In-Memory Cache Manager'
+              : managerMode === 'requests' ? 'Query Requests'
               : 'DB Migration Verifier'}
           </Typography>
 
           <Box sx={{ flexGrow: 1 }} />
 
           {/* Smooth pill toggle — auto-width based on content */}
-          <PillToggle managerMode={managerMode} setManagerMode={setManagerMode} userRole={user.role} />
+          <PillToggle managerMode={managerMode} setManagerMode={setManagerMode} userRole={user.role} pendingApprovals={pendingApprovals} />
 
           <Box sx={{ flexGrow: 1 }} />
 
@@ -479,13 +541,15 @@ const ConsolePage = () => {
               </Button>
             )}
 
-            <Button
-              color="inherit"
-              startIcon={<HistoryIcon />}
-              onClick={() => setShowHistory(!showHistory)}
-            >
-              History
-            </Button>
+            {HISTORY_MODES.includes(managerMode) && (
+              <Button
+                color="inherit"
+                startIcon={<HistoryIcon />}
+                onClick={() => setShowHistory(!showHistory)}
+              >
+                History
+              </Button>
+            )}
 
             <Button
               color="inherit"
@@ -715,6 +779,29 @@ const ConsolePage = () => {
                   {visitedModes.has('shudhi') && <Suspense fallback={panelLoader}><ShudhiPanel /></Suspense>}
                 </Stack>
               </Box>
+            </Box>
+
+            {/* Query Requests View — always mounted */}
+            <Box
+              key="requests-view"
+              sx={{
+                position: managerMode === 'requests' ? 'relative' : 'absolute',
+                inset: managerMode === 'requests' ? undefined : 0,
+                opacity: managerMode === 'requests' ? 1 : 0,
+                pointerEvents: managerMode === 'requests' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'requests' ? 1 : undefined,
+                display: canSee('requests') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'requests' ? 0 : 2,
+              }}
+            >
+              {visitedModes.has('requests') && (
+                <Suspense fallback={panelLoader}>
+                  <QueryRequestsPanel />
+                </Suspense>
+              )}
             </Box>
           </Box>
         </Box>

@@ -31,6 +31,7 @@ import { queryAPI, schemaAPI, toastNonApiError } from '../../services/api';
 import toast from 'react-hot-toast';
 import type { QueryResponse, DatabaseConfiguration, DatabaseInfo } from '../../types';
 import QueryWarningDialog from '../Dialog/QueryWarningDialog';
+import RequestComposerDialog from '../QueryRequests/RequestComposerDialog';
 import ReplicationDialog from '../Dialog/ReplicationDialog';
 import { detectDangerousQueries } from '../../services/queryValidation.service';
 import type { ValidationWarning } from '../../services/queryValidation.service';
@@ -84,6 +85,18 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
   const [uuidErrorMessage, setUuidErrorMessage] = useState<string>('');
   const [showIndexPasswordDialog, setShowIndexPasswordDialog] = useState(false);
   const [indexBlockedMessage, setIndexBlockedMessage] = useState<string>('');
+  // Set when the backend refuses the query on role grounds and the user is
+  // eligible to ask someone else to run it. Snapshots the whole attempt — the
+  // editor and the dropdowns may have moved on by the time they submit, and the
+  // request has to describe exactly what was tried.
+  const [approvalRequest, setApprovalRequest] = useState<{
+    query: string;
+    deniedReason: string;
+    database: string;
+    mode: string;
+    pgSchema: string;
+    continueOnError: boolean;
+  } | null>(null);
   const dbConfigRef = useRef<DatabaseConfiguration | null>(null);
   
   // Execution state
@@ -392,6 +405,30 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
 
     } catch (error: any) {
       const errMsg = error.response?.data?.error || '';
+
+      // Role policy refused it. That's not a dead end: offer to send it for
+      // approval by someone whose role does permit it. The API client
+      // suppresses its own toast for this code so the dialog stands alone.
+      if (error.response?.data?.code === 'ROLE_NOT_PERMITTED') {
+        const { message, canRequestApproval } = error.response.data;
+        if (canRequestApproval) {
+          setApprovalRequest({
+            query: queryToExecute,
+            deniedReason: message || '',
+            database: selectedDatabase,
+            mode: selectedMode,
+            pgSchema: selectedPgSchema,
+            continueOnError,
+          });
+        } else {
+          toast.error(message || 'You do not have permission to run this query');
+        }
+        setIsExecuting(false);
+        setCurrentExecutionId(null);
+        setExecutionProgress(null);
+        return;
+      }
+
       // If backend signals protected table / blocked index creation, show info dialog
       if (errMsg.includes('CREATE INDEX is blocked') || errMsg.includes('protected table')) {
         setIndexBlockedMessage(errMsg);
@@ -509,6 +546,22 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
         selectedMode={selectedMode}
         cloudNames={cloudNames}
       />
+
+      {approvalRequest && (
+        <RequestComposerDialog
+          open
+          onClose={() => setApprovalRequest(null)}
+          deniedReason={approvalRequest.deniedReason}
+          initialItems={[
+            {
+              query: approvalRequest.query,
+              database: approvalRequest.database,
+              mode: approvalRequest.mode,
+              pgSchema: approvalRequest.pgSchema,
+            },
+          ]}
+        />
+      )}
 
       <ReplicationDialog
         open={showReplicationDialog}
