@@ -20,6 +20,82 @@ export interface QueryRequest {
   continueOnError?: boolean; // Continue executing remaining statements if one fails
 }
 
+export type QueryRequestStatus =
+  | 'PENDING'
+  | 'APPROVED'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'EXPIRED'
+  // The original of an edited query — kept so the request shows what was first
+  // asked for, never approvable.
+  | 'SUPERSEDED';
+
+/** A query submitted for approval by a user whose role can't run it. */
+export interface QueryRequestRecord {
+  id: string;
+  requester_id: string;
+  query: string;
+  /** SHA-256 of `query`. Sent back on approve so you can't approve a version you didn't read. */
+  query_hash: string;
+  reason: string;
+  database_name: string;
+  execution_mode: string;
+  pg_schema?: string | null;
+  continue_on_error: boolean;
+  requires_password: boolean;
+  status: QueryRequestStatus;
+  reviewer_id?: string | null;
+  reviewed_at?: string | null;
+  review_note?: string | null;
+  execution_id?: string | null;
+  executed_at?: string | null;
+  result_summary?: Record<string, any> | null;
+  error?: string | null;
+  created_at: string;
+  /** Set when the requester amended a still-pending request. */
+  updated_at?: string | null;
+  expires_at: string;
+
+  // Every request is a group — of one query in the common case. Members share a
+  // group_id but keep their own target, status, reviewer, execution and result.
+  group_id: string;
+  group_position: number;
+  /** Total queries in the request, including ones this viewer can't action. */
+  group_size?: number;
+  /** Position + status of every query in the request. No SQL, no reason. */
+  group_statuses?: Array<{ position: number; status: QueryRequestStatus }>;
+  /** Set by the pending endpoint: can THIS viewer action this query right now? */
+  can_approve?: boolean;
+
+  requester_username: string;
+  requester_name: string;
+  requester_email: string;
+  requester_role: Role;
+  reviewer_username?: string | null;
+  reviewer_name?: string | null;
+}
+
+/**
+ * Payload for submitting a request.
+ *
+ * Always a list of queries — of length one in the common case. The backend has
+ * a single creation shape and never branches on "grouped or not"; presenting a
+ * one-query request as an ordinary request is purely a UI concern.
+ */
+export interface QueryRequestInput {
+  reason: string;
+  items: Array<{
+    query: string;
+    database: string;
+    mode: string;
+    pgSchema?: string;
+    continueOnError?: boolean;
+  }>;
+}
+
 export interface QueryResult {
   rows: any[];
   fields?: Array<{ name: string; dataTypeID: number }>;
@@ -58,9 +134,17 @@ export interface QueryExecution {
   execution_mode: string; // 'both' or specific cloud name
   [key: string]: any; // Dynamic cloud result fields
   created_at: string;
+  // The user who EXECUTED it. For an approved request that's the approver.
   username?: string;
   email?: string;
   name?: string;
+  // Present only when this ran via an approved query request.
+  request_id?: string | null;
+  request_reason?: string | null;
+  requester_id?: string | null;
+  requester_username?: string | null;
+  requester_name?: string | null;
+  requester_role?: Role | null;
 }
 
 export interface HistoryFilter {

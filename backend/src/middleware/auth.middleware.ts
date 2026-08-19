@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 import { Role, isSuperRole } from '../constants/roles';
-import QueryValidator from '../services/query/QueryValidator';
+import { checkRolePermission, canRequestApproval } from '../services/query/queryPermissions';
 
 /**
  * Middleware to check if user is authenticated
@@ -172,6 +172,10 @@ export const validateRedisPermissions = (req: Request, res: Response, next: Next
  * READER: SELECT only
  * USER: SELECT, INSERT, UPDATE, ALTER, CREATE TABLE only
  * MASTER: All queries (no restrictions)
+ *
+ * The rules themselves live in services/query/queryPermissions so the
+ * query-request approval flow enforces exactly the same policy — see the
+ * header comment there.
  */
 export const validateQueryPermissions = (req: Request, res: Response, next: NextFunction) => {
   const user = req.user as Express.User | undefined;
@@ -181,191 +185,36 @@ export const validateQueryPermissions = (req: Request, res: Response, next: Next
     return next();
   }
 
-  const trimmedQuery = query.trim().toUpperCase();
+  const verdict = checkRolePermission(user.role, query, {
+    continueOnError: !!req.body?.continueOnError,
+  });
 
-  // MASTER and ADMIN can run anything (ADMIN differs from MASTER only in
-  // user-access management, which is gated at the auth routes).
-  if (isSuperRole(user.role)) {
-    logger.info(`${user.role} executing query`, {
-      username: user.username,
-      query: query.substring(0, 100),
-    });
-    return next();
-  }
-
-  // CKH_MANAGER currently has no Postgres access.
-  // To grant SELECT-only later: remove this branch and extend the READER block below
-  // to also accept Role.CKH_MANAGER.
-  if (user.role === Role.CKH_MANAGER) {
-    logger.warn('CKH_MANAGER attempted Postgres query', {
-      username: user.username,
-      query: query.substring(0, 100),
-    });
-    return res.status(403).json({
-      error: 'Forbidden',
-      message: 'CKH_MANAGER does not have Postgres access',
-    });
-  }
-
-  // RELEASE_MANAGER: SELECT/EXPLAIN, ALTER TABLE ADD COLUMN/CONSTRAINT,
-  // CREATE INDEX CONCURRENTLY, transaction control. Per-statement enforcement.
-  if (user.role === Role.RELEASE_MANAGER) {
-    const continueOnError: boolean = !!req.body?.continueOnError;
-    let statements: string[];
-    try {
-      statements = QueryValidator.splitStatements(query);
-    } catch {
-      statements = [query];
-    }
-
-    const violations: Array<{ statement: string; reason: string }> = [];
-    for (const stmt of statements) {
-      const verdict = QueryValidator.isAllowedForReleaseManager(stmt);
-      if (!verdict.allowed) {
-        violations.push({ statement: stmt.trim().substring(0, 200), reason: verdict.reason || 'not allowed' });
-      }
-    }
-
-    if (violations.length === 0) {
-      return next();
-    }
-
-    // Multi-statement + continueOnError=true: let it through; the executor
-    // will reject offending statements per-statement (defense-in-depth check
-    // duplicated there).
-    if (continueOnError && statements.length > 1) {
-      return next();
-    }
-
-    logger.warn('RELEASE_MANAGER attempted disallowed query', {
-      username: user.username,
-      violations: violations.map(v => v.reason),
-    });
-
-    return res.status(403).json({
-      error: 'Forbidden',
-      message:
-        `RELEASE_MANAGER role: ${violations[0].reason}. ` +
-        `Allowed: SELECT/EXPLAIN, CREATE TABLE, CREATE INDEX CONCURRENTLY, ALTER TABLE ADD COLUMN (with DEFAULT if NOT NULL), ALTER TABLE ADD CONSTRAINT.`,
-      violations,
-      yourRole: 'RELEASE_MANAGER',
-    });
-  }
-
-  // For USER: only allow specific operations
-  if (user.role === 'USER') {
-    // Operations that USER/ADMIN are allowed to run
-    const userAllowedPatterns = [
-      /^\s*SELECT/i,
-      /^\s*WITH[\s\S]*SELECT/i, // CTEs with SELECT ([\s\S] so multi-line CTEs match)
-      /^\s*INSERT/i,
-      /^\s*UPDATE/i,
-      /^\s*ALTER\s+TABLE/i,
-      /^\s*CREATE\s+TABLE/i,
-      /^\s*CREATE\s+INDEX/i,
-      // EXPLAIN restricted to read statements — EXPLAIN ANALYZE on a write
-      // statement actually executes the write.
-      /^\s*EXPLAIN(\s+\([^)]*\)|\s+ANALYZE|\s+VERBOSE)*\s+(SELECT|WITH)/i,
-      /^\s*(BEGIN|COMMIT|ROLLBACK)\b/i,
-    ];
-
-    // Validate EVERY statement, not just the query as a whole — otherwise a
-    // disallowed statement can hide behind an allowed one
-    // (e.g. "SELECT 1; DELETE FROM t").
-    let statements: string[];
-    try {
-      statements = QueryValidator.splitStatements(query);
-    } catch {
-      statements = [query];
-    }
-
-    const disallowed = statements.find(
-      stmt => !userAllowedPatterns.some(pattern => pattern.test(stmt))
-    );
-
-    if (disallowed) {
-      // Identify what they tried to do (first keyword of the offending statement)
-      const upperStmt = disallowed.trim().toUpperCase();
-      let attemptedOperation = 'Unknown';
-      if (upperStmt.startsWith('DELETE')) attemptedOperation = 'DELETE';
-      else if (upperStmt.startsWith('DROP')) attemptedOperation = 'DROP';
-      else if (upperStmt.startsWith('TRUNCATE')) attemptedOperation = 'TRUNCATE';
-      else if (upperStmt.startsWith('GRANT')) attemptedOperation = 'GRANT';
-      else if (upperStmt.startsWith('REVOKE')) attemptedOperation = 'REVOKE';
-      else if (upperStmt.startsWith('CREATE DATABASE')) attemptedOperation = 'CREATE DATABASE';
-      else if (upperStmt.startsWith('CREATE SCHEMA')) attemptedOperation = 'CREATE SCHEMA';
-
-      logger.warn(`${user.role} attempted unauthorized operation`, {
+  if (verdict.allowed) {
+    if (isSuperRole(user.role)) {
+      logger.info(`${user.role} executing query`, {
         username: user.username,
-        operation: attemptedOperation,
         query: query.substring(0, 100),
       });
-
-      return res.status(403).json({
-        error: 'Forbidden',
-        message: `${user.role} role can only execute: SELECT, INSERT, UPDATE, ALTER TABLE, CREATE TABLE, CREATE INDEX. ${attemptedOperation} requires MASTER role.`,
-        allowedOperations: ['SELECT', 'INSERT', 'UPDATE', 'ALTER TABLE', 'CREATE TABLE', 'CREATE INDEX'],
-        yourRole: user.role,
-      });
     }
-
-    // All statements allowed — proceed
     return next();
   }
 
-  // READER role restrictions — read-only, enforced per statement.
-  //
-  // This MUST be an allowlist over every statement, not a keyword denylist over
-  // the whole query. A denylist let a disallowed statement hide behind a leading
-  // SELECT (e.g. "SELECT 1; DROP INDEX x;" — DROP/TRUNCATE/COPY/VACUUM/GRANT
-  // were absent from the keyword list, and DROP INDEX is exempt from the
-  // password gate, so it executed). `COPY ... TO PROGRAM` is remote code
-  // execution on the database host when the pool role is a superuser.
-  if (user.role === Role.READER) {
-    const readerAllowedPatterns = [
-      /^\s*SELECT/i,
-      /^\s*WITH[\s\S]*SELECT/i, // CTEs with SELECT
-      // EXPLAIN restricted to read statements — EXPLAIN ANALYZE on a write
-      // statement actually executes the write.
-      /^\s*EXPLAIN(\s+\([^)]*\)|\s+ANALYZE|\s+VERBOSE)*\s+(SELECT|WITH)/i,
-      /^\s*(BEGIN|COMMIT|ROLLBACK)\b/i,
-    ];
-
-    let statements: string[];
-    try {
-      statements = QueryValidator.splitStatements(query);
-    } catch {
-      statements = [query];
-    }
-
-    const disallowed = statements.find(
-      stmt => stmt.trim().length > 0 && !readerAllowedPatterns.some(pattern => pattern.test(stmt))
-    );
-
-    if (disallowed) {
-      logger.warn('READER attempted non-read statement', {
-        username: user.username,
-        statement: disallowed.trim().substring(0, 100),
-      });
-
-      return res.status(403).json({
-        error: 'Forbidden',
-        message: 'READER role can only execute read-only statements (SELECT, WITH ... SELECT, EXPLAIN SELECT).',
-        yourRole: user.role,
-      });
-    }
-
-    return next();
-  }
-
-  // Fail closed: every role must be explicitly handled above. An unknown role
-  // must never fall through to full query access.
-  logger.warn('Query attempt by unhandled role — denying', {
+  logger.warn('Query rejected by role policy', {
     username: user.username,
     role: user.role,
+    query: query.substring(0, 100),
+    violations: verdict.violations?.map(v => v.reason),
   });
+
   return res.status(403).json({
     error: 'Forbidden',
-    message: `Role ${user.role} does not have query access`,
+    message: verdict.message,
+    // Lets the console offer "Request approval" instead of dead-ending on a
+    // toast. The API client also skips its generic error toast on this code.
+    code: 'ROLE_NOT_PERMITTED',
+    canRequestApproval: canRequestApproval(user.role),
+    ...(verdict.violations ? { violations: verdict.violations } : {}),
+    ...(verdict.allowedOperations ? { allowedOperations: verdict.allowedOperations } : {}),
+    yourRole: user.role,
   });
 };

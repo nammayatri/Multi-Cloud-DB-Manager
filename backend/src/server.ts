@@ -13,12 +13,14 @@ import compression from 'compression';
 import DatabasePools from './config/database';
 import redisClient from './config/redis';
 import historyService from './services/history.service';
+import queryRequestsService from './services/queryRequests.service';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
 // Routes
 import authRoutes from './routes/auth.routes';
 import queryRoutes from './routes/query.routes';
+import queryRequestsRoutes from './routes/queryRequests.routes';
 import historyRoutes from './routes/history.routes';
 import schemaRoutes from './routes/schema.routes';
 import replicationRoutes from './routes/replication.routes';
@@ -81,7 +83,10 @@ app.use(
       }
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    // PATCH is used by the query-request revision endpoint. Without it the
+    // browser's preflight is answered without PATCH and the request never
+    // leaves the browser — the frontend and backend are different origins.
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   })
 );
@@ -120,6 +125,8 @@ app.use('/api/auth', authRoutes);
 console.log('[STARTUP] ✓ /api/auth routes mounted');
 app.use('/api/query', queryRoutes);
 console.log('[STARTUP] ✓ /api/query routes mounted');
+app.use('/api/query-requests', queryRequestsRoutes);
+console.log('[STARTUP] ✓ /api/query-requests routes mounted');
 app.use('/api/history', historyRoutes);
 console.log('[STARTUP] ✓ /api/history routes mounted');
 app.use('/api/schemas', schemaRoutes);
@@ -241,6 +248,9 @@ const startServer = async () => {
       console.log('[STARTUP] Initializing history schema...');
         await historyService.initializeSchema();
         console.log('[STARTUP] History schema initialized');
+        console.log('[STARTUP] Initializing query requests schema...');
+        await queryRequestsService.initializeSchema();
+        console.log('[STARTUP] Query requests schema initialized');
     } else {
       console.log('[STARTUP] Schema initialization skipped (RUN_MIGRATIONS not set)');
     }

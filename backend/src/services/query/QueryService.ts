@@ -370,7 +370,8 @@ class QueryService {
             request.query,
             request.database,
             request.mode,
-            response
+            response,
+            request.requestId
           )
           .catch((err) => {
             logger.error('Failed to save query to history:', err);
@@ -398,7 +399,8 @@ class QueryService {
             request.query,
             request.database,
             request.mode,
-            errorResponse
+            errorResponse,
+            request.requestId
           )
           .catch((err) => {
             logger.error('Failed to save failed query to history:', err);

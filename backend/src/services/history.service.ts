@@ -61,9 +61,11 @@ class HistoryService {
   }
 
   /**
-   * Clean up cloud result to remove verbose PostgreSQL type information
+   * Clean up cloud result to remove verbose PostgreSQL type information.
+   * Public because queryRequests.service stores the same row-free shape on the
+   * request record.
    */
-  private cleanCloudResult(result: any): any {
+  public cleanCloudResult(result: any): any {
     if (!result) return result;
 
     // If it's a single result with verbose data
@@ -113,9 +115,12 @@ class HistoryService {
     query: string,
     database: string, // Database name (e.g., 'bpp', 'bap')
     mode: string, // Dynamic cloud mode
-    response: QueryResponse
+    response: QueryResponse,
+    requestId?: string // Set when this ran via an approved query request
   ): Promise<void> {
-    // Skip saving SELECT queries to history
+    // Skip saving SELECT queries to history.
+    // Note: an approved read-only request is still fully audited on the
+    // query_requests row itself, which is why that path doesn't need this one.
     if (this.isReadOnlyQuery(query)) {
       logger.debug('Skipping read-only query from history');
       return;
@@ -130,8 +135,8 @@ class HistoryService {
 
     const sql = `
       INSERT INTO dual_db_manager.query_history (
-        id, user_id, query, database_name, execution_mode, cloud_results
-      ) VALUES ($1, $2, $3, $4, $5, $6)
+        id, user_id, query, database_name, execution_mode, cloud_results, request_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
     `;
 
     const values = [
@@ -141,6 +146,7 @@ class HistoryService {
       database,
       mode,
       JSON.stringify(cloudResults),
+      requestId || null,
     ];
 
     try {
@@ -156,6 +162,10 @@ class HistoryService {
    * Get query history with filters
    */
   public async getHistory(filter: QueryHistoryFilter): Promise<QueryExecution[]> {
+    // The joined user is whoever EXECUTED the query. When it ran via an
+    // approved request that's the approver, not the person who asked — so pull
+    // the requester and their stated reason across too, otherwise the audit
+    // trail credits the wrong person.
     let sql = `
       SELECT
         qh.id,
@@ -165,11 +175,19 @@ class HistoryService {
         qh.execution_mode,
         qh.cloud_results,
         qh.created_at,
+        qh.request_id,
         u.username,
         u.email,
-        u.name
+        u.name,
+        qr.reason        AS request_reason,
+        requester.id       AS requester_id,
+        requester.username AS requester_username,
+        requester.name     AS requester_name,
+        requester.role     AS requester_role
       FROM dual_db_manager.query_history qh
       JOIN dual_db_manager.users u ON qh.user_id = u.id
+      LEFT JOIN dual_db_manager.query_requests qr ON qr.id = qh.request_id
+      LEFT JOIN dual_db_manager.users requester ON requester.id = qr.requester_id
       WHERE qh.database_name != 'redis'
     `;
 

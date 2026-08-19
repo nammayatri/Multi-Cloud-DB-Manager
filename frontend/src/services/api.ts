@@ -1,6 +1,6 @@
 import axios from 'axios';
 import toast from 'react-hot-toast';
-import type { User, QueryRequest, QueryResponse, QueryExecution, HistoryFilter, DatabaseConfiguration } from '../types';
+import type { User, QueryRequest, QueryResponse, QueryExecution, HistoryFilter, DatabaseConfiguration, QueryRequestRecord, QueryRequestInput } from '../types';
 import type { Role } from '../constants/roles';
 
 // @ts-ignore - runtime config loaded from /config.js
@@ -34,13 +34,17 @@ api.interceptors.response.use(
       url.includes('/auth/register') ||
       url.includes('/auth/me');
 
+    // A role rejection is not a dead end — the caller offers "Request approval"
+    // in a dialog, so a generic "Forbidden" toast on top of it is just noise.
+    const isRoleRejection = error.response?.data?.code === 'ROLE_NOT_PERMITTED';
+
     if (error.response?.status === 401 && !isAuthForm) {
       // Expired session — redirect to login (deduplicated)
       if (!isRedirecting) {
         isRedirecting = true;
         window.location.href = '/login';
       }
-    } else if (!isAuthForm) {
+    } else if (!isAuthForm && !isRoleRejection) {
       // Show one toast per failed API call. Server messages are crafted to be
       // user-facing, but guard the UX: truncate long ones, and never surface a
       // raw 5xx body (could be an unsanitized internal error).
@@ -155,6 +159,144 @@ export const queryAPI = {
 
   validate: async (query: string): Promise<{ valid: boolean; error?: string }> => {
     const response = await api.post('/api/query/validate', { query });
+    return response.data;
+  },
+};
+
+// Query request / approval API
+export const queryRequestsAPI = {
+  // One creation endpoint. A request is always a list of queries — of length
+  // one in the common case — each with its own target database and cloud, and
+  // each approved separately.
+  create: async (
+    input: QueryRequestInput
+  ): Promise<{ groupId: string; requests: QueryRequestRecord[] }> => {
+    const response = await api.post('/api/query-requests', input);
+    return response.data;
+  },
+
+  getGroup: async (
+    groupId: string
+  ): Promise<{ groupId: string; requests: QueryRequestRecord[]; totalInGroup: number }> => {
+    const response = await api.get(`/api/query-requests/groups/${groupId}`);
+    return response.data;
+  },
+
+  listMine: async (limit = 50, offset = 0): Promise<{ requests: QueryRequestRecord[] }> => {
+    const response = await api.get('/api/query-requests/mine', { params: { limit, offset } });
+    return response.data;
+  },
+
+  // Only the requests THIS user's role is able to approve — the backend filters
+  // per viewer, since approval authority follows the query, not a role list.
+  listPending: async (): Promise<{ requests: QueryRequestRecord[] }> => {
+    const response = await api.get('/api/query-requests/pending');
+    return response.data;
+  },
+
+  pendingCount: async (): Promise<{ count: number }> => {
+    const response = await api.get('/api/query-requests/pending/count');
+    return response.data;
+  },
+
+  // reviewedBy 'me' narrows to requests you actioned; omitted also includes
+  // ones you raised (and, for MASTER/ADMIN, everyone else's).
+  listReviewed: async (
+    options: { limit?: number; offset?: number; reviewedBy?: 'me' } = {}
+  ): Promise<{ requests: QueryRequestRecord[] }> => {
+    const { limit = 50, offset = 0, reviewedBy } = options;
+    const response = await api.get('/api/query-requests/reviewed', {
+      params: { limit, offset, ...(reviewedBy ? { reviewedBy } : {}) },
+    });
+    return response.data;
+  },
+
+  // Amend a still-pending request (requester only). The target database and
+  // cloud aren't editable — changing those means starting from the console.
+  update: async (
+    id: string,
+    payload: { query: string; continueOnError?: boolean }
+  ): Promise<{ request: QueryRequestRecord }> => {
+    const response = await api.patch(`/api/query-requests/${id}`, payload);
+    return response.data;
+  },
+
+  // The reason belongs to the request, so it applies to every query in it that
+  // is still pending — separate from revising one query's SQL.
+  updateReason: async (
+    groupId: string,
+    reason: string
+  ): Promise<{ groupId: string; updated: number }> => {
+    const response = await api.patch(`/api/query-requests/groups/${groupId}/reason`, { reason });
+    return response.data;
+  },
+
+  // Always send expectedHash — the backend 409s if the requester amended the
+  // query after this approver loaded it.
+  approve: async (
+    id: string,
+    payload: { password?: string; reviewNote?: string; expectedHash?: string } = {}
+  ): Promise<{ requestId: string; executionId: string; status: string }> => {
+    const response = await api.post(`/api/query-requests/${id}/approve`, payload);
+    return response.data;
+  },
+
+  // Approve every pending query in a request and run them in order. Returns as
+  // soon as the run is queued; poll the list for progress.
+  approveGroup: async (
+    groupId: string,
+    payload: { password?: string; reviewNote?: string } = {}
+  ): Promise<{ groupId: string; queued: number; status: string }> => {
+    const response = await api.post(`/api/query-requests/groups/${groupId}/approve`, payload);
+    return response.data;
+  },
+
+  // Rejects every pending query this user can review; anything needing a role
+  // they don't have is left pending and reported as skipped.
+  rejectGroup: async (
+    groupId: string,
+    reviewNote: string
+  ): Promise<{ groupId: string; rejected: number; skipped: number }> => {
+    const response = await api.post(`/api/query-requests/groups/${groupId}/reject`, { reviewNote });
+    return response.data;
+  },
+
+  reject: async (id: string, reviewNote: string): Promise<{ request: QueryRequestRecord }> => {
+    const response = await api.post(`/api/query-requests/${id}/reject`, { reviewNote });
+    return response.data;
+  },
+
+  // Withdraws every pending query in your own request; anything already
+  // approved or run is left alone.
+  cancelGroup: async (groupId: string): Promise<{ groupId: string; cancelled: number }> => {
+    const response = await api.post(`/api/query-requests/groups/${groupId}/cancel`);
+    return response.data;
+  },
+
+  cancel: async (id: string): Promise<{ request: QueryRequestRecord }> => {
+    const response = await api.post(`/api/query-requests/${id}/cancel`);
+    return response.data;
+  },
+
+  // `live` carries the full result rows, but only while the execution record
+  // survives its Redis TTL. `request.result_summary` is the permanent record.
+  getResult: async (
+    id: string
+  ): Promise<{
+    request: QueryRequestRecord;
+    live: {
+      executionId: string;
+      status: 'running' | 'completed' | 'failed' | 'cancelled';
+      result?: QueryResponse;
+      error?: string;
+      progress?: {
+        currentStatement: number;
+        totalStatements: number;
+        currentStatementText?: string;
+      };
+    } | null;
+  }> => {
+    const response = await api.get(`/api/query-requests/${id}/result`);
     return response.data;
   },
 };

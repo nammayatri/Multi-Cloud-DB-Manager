@@ -37,6 +37,73 @@ export const queryExecutionSchema = z.object({
   pgSchema: z.string().optional(),
 });
 
+// Query request (approval workflow) schemas.
+//
+// A request is always a list of queries — of length one in the common case —
+// so the backend has a single creation shape and never branches on "grouped or
+// not". Each item carries its own target, which is what a multi-statement
+// query can't express.
+//
+// The reason is required but not length-policed: it is the first thing an
+// approver reads, and the permanent audit record for approved SELECTs, which
+// query_history skips. A CHECK constraint on the column backstops the
+// non-empty requirement against direct API calls.
+export const queryRequestCreateSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .min(1, 'Please explain why this needs to run')
+    .max(1000, 'Reason is too long (max 1000 characters)'),
+  items: z
+    .array(
+      z.object({
+        query: z.string().min(1, 'Query cannot be empty'),
+        database: z.string().min(1, 'Database name is required'),
+        mode: z.string().min(1, 'Execution mode is required'),
+        pgSchema: z.string().optional(),
+        continueOnError: z.boolean().optional(),
+      })
+    )
+    .min(1, 'At least one query is required')
+    .max(25, 'Too many queries in one request (max 25)'),
+});
+
+// Revising the SQL of a still-pending query. The target database and cloud
+// aren't editable here — changing those means starting from the console again —
+// and neither is the reason, which is request-scoped and has its own endpoint.
+export const queryRequestUpdateSchema = z.object({
+  query: z.string().min(1, 'Query cannot be empty'),
+  continueOnError: z.boolean().optional(),
+});
+
+// Changing the reason, which belongs to the request rather than one query.
+export const queryRequestReasonSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .min(1, 'Please explain why this needs to run')
+    .max(1000, 'Reason is too long (max 1000 characters)'),
+});
+
+export const queryRequestApproveSchema = z.object({
+  // Required only for ALTER/DROP — enforced in the controller, which knows the
+  // stored query. Optional here so ordinary approvals need no password.
+  password: z.string().optional(),
+  reviewNote: z.string().max(1000, 'Note is too long (max 1000 characters)').optional(),
+  // The query hash the approver had on screen. The controller rejects the
+  // approval if the requester amended it in the meantime.
+  expectedHash: z.string().optional(),
+});
+
+export const queryRequestRejectSchema = z.object({
+  // A rejection without a reason is useless to the requester.
+  reviewNote: z
+    .string()
+    .trim()
+    .min(3, 'Please say why you are rejecting this request')
+    .max(1000, 'Note is too long (max 1000 characters)'),
+});
+
 // Redis command execution schema
 export const redisCommandSchema = z.object({
   command: z.string().min(1, 'Command is required'),

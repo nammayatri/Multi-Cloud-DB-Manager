@@ -24,6 +24,7 @@ import ErrorIcon from '@mui/icons-material/Error';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import PersonIcon from '@mui/icons-material/Person';
+import AssignmentIndIcon from '@mui/icons-material/AssignmentInd';
 import { format } from 'date-fns';
 import { historyAPI, authAPI, schemaAPI, toastNonApiError } from '../../services/api';
 import { useAppStore } from '../../store/appStore';
@@ -382,6 +383,21 @@ const QueryHistory = ({ database }: QueryHistoryProps = {}) => {
                             <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
                               Run by: {execution.name || execution.email}
                             </Typography>
+                          )}
+                          {/* Ran via an approved request: the user above is the
+                              approver who executed it, so name who asked and why. */}
+                          {execution.requester_username && (
+                            <Stack direction="row" spacing={0.5} alignItems="flex-start">
+                              <AssignmentIndIcon sx={{ fontSize: 14, color: 'text.secondary', mt: '2px' }} />
+                              <Typography variant="caption" color="text.secondary">
+                                Requested by{' '}
+                                <Box component="span" sx={{ color: 'warning.light', fontWeight: 500 }}>
+                                  {execution.requester_name || execution.requester_username}
+                                </Box>
+                                {execution.requester_role ? ` (${execution.requester_role})` : ''}
+                                {execution.request_reason ? ` — ${execution.request_reason}` : ''}
+                              </Typography>
+                            </Stack>
                           )}
                         </Stack>
                       }
