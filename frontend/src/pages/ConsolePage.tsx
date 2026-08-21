@@ -427,7 +427,11 @@ const ConsolePage = () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [user, managerMode]);
+    // Deliberately NOT keyed on managerMode: the badge count is per-user, not
+    // per-tab, so nothing here depends on the active tab. Including managerMode
+    // re-ran this effect on every tab switch, firing a redundant /pending/count
+    // on each click on top of the 60s poll.
+  }, [user]);
 
   const handleLogout = async () => {
     try {
