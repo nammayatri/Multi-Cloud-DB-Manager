@@ -797,7 +797,7 @@ const ConsolePage = () => {
             >
               {visitedModes.has('requests') && (
                 <Suspense fallback={panelLoader}>
-                  <QueryRequestsPanel onReviewed={refreshPendingCount} />
+                  <QueryRequestsPanel active={managerMode === 'requests'} onReviewed={refreshPendingCount} />
                 </Suspense>
               )}
             </Box>
