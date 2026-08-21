@@ -348,7 +348,7 @@ export class ClickHouseDDLBuilder {
      * DateTime/Date   -> toDateTime(JSONExtractInt(message, 'col'))
      * Int types       -> JSONExtractInt(message, 'col')
      * Float/Decimal   -> JSONExtractFloat(message, 'col')
-     * Array types     -> JSONExtractRaw(message, 'col')
+     * Array types     -> JSONExtract(message, 'col', '<full Array type>')
      * String (default)-> JSONExtractString(message, 'col')
      */
     private static jsonExtractExpr(col: CHColumn): string {
@@ -371,9 +371,11 @@ export class ClickHouseDDLBuilder {
             return `  JSONExtractFloat(message, '${name}') AS ${name}`;
         }
 
-        // Array types -> JSONExtractRaw
+        // Array types -> typed JSONExtract (returns [] for null/missing;
+        // JSONExtractRaw would emit the literal text `null`, which fails the
+        // implicit CAST to Array(...) and stalls Kafka ingestion)
         if (bare.startsWith('Array(')) {
-            return `  JSONExtractRaw(message, '${name}') AS ${name}`;
+            return `  JSONExtract(message, '${name}', '${bare}') AS ${name}`;
         }
 
         // Default: String
