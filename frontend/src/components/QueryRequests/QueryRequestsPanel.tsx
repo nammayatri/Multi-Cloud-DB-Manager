@@ -418,7 +418,7 @@ const RequestCard = ({
   </Paper>
 );
 
-const QueryRequestsPanel = () => {
+const QueryRequestsPanel = ({ onReviewed }: { onReviewed?: () => void }) => {
   const user = useAppStore((s) => s.user);
 
   const [tab, setTab] = useState<'pending' | 'mine' | 'reviewed'>('pending');
@@ -606,6 +606,9 @@ const QueryRequestsPanel = () => {
       await load();
     } finally {
       setActioning(false);
+      // The approvable count just changed (approved, or lost the race) — let the
+      // parent refresh the tab badge.
+      onReviewed?.();
     }
   };
 
@@ -627,6 +630,7 @@ const QueryRequestsPanel = () => {
       await load();
     } finally {
       setActioning(false);
+      onReviewed?.();
     }
   };
 
@@ -644,6 +648,7 @@ const QueryRequestsPanel = () => {
       await load();
     } finally {
       setActioning(false);
+      onReviewed?.();
     }
   };
 
@@ -669,6 +674,7 @@ const QueryRequestsPanel = () => {
       await load();
     } finally {
       setActioning(false);
+      onReviewed?.();
     }
   };
 
