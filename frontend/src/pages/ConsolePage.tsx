@@ -409,27 +409,23 @@ const ConsolePage = () => {
   // authority follows the query, so the backend tests each pending request
   // against this user's role.
   //
-  // No polling: the count is only meaningful while you're on the Requests tab
-  // (where the panel already shows the live list), so we just refresh it each
-  // time you open that tab rather than hitting /pending/count on a timer.
+  // No polling: the count is only meaningful on the Requests tab (where the
+  // panel already shows the live list), so it's refreshed on two events — when
+  // the tab is opened, and when the user approves/rejects something (the panel
+  // calls back) — rather than on a timer.
+  const refreshPendingCount = useCallback(async () => {
+    if (!user || !tabsForRole(user.role).some((t) => t.mode === 'requests')) return;
+    try {
+      const { count } = await queryRequestsAPI.pendingCount();
+      setPendingApprovals(count);
+    } catch {
+      // Badge is non-critical — a failed fetch shouldn't toast or retry loudly.
+    }
+  }, [user]);
+
   useEffect(() => {
-    if (!user || managerMode !== 'requests') return;
-    if (!tabsForRole(user.role).some((t) => t.mode === 'requests')) return;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const { count } = await queryRequestsAPI.pendingCount();
-        if (!cancelled) setPendingApprovals(count);
-      } catch {
-        // Badge is non-critical — a failed fetch shouldn't toast or retry loudly.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [user, managerMode]);
+    if (managerMode === 'requests') refreshPendingCount();
+  }, [managerMode, refreshPendingCount]);
 
   const handleLogout = async () => {
     try {
@@ -801,7 +797,7 @@ const ConsolePage = () => {
             >
               {visitedModes.has('requests') && (
                 <Suspense fallback={panelLoader}>
-                  <QueryRequestsPanel />
+                  <QueryRequestsPanel onReviewed={refreshPendingCount} />
                 </Suspense>
               )}
             </Box>
