@@ -1,4 +1,4 @@
-import { PoolClient } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import logger from '../../utils/logger';
 import { MigrationStatement } from '../../types/migrations';
 import { ParsedStatement } from './sql-parser.service';
@@ -156,7 +156,11 @@ function generateRollback(parsed: ParsedStatement): string | undefined {
  * Uses only parameterized queries against information_schema / pg_catalog.
  */
 export async function verifyStatement(
-  client: PoolClient,
+  // Accepts a Pool or a PoolClient — every check is a self-contained
+  // parameterized read against information_schema/pg_catalog with no session
+  // state, so it can run directly on the pool (auto-acquiring a connection per
+  // query) and be parallelized by the caller.
+  client: Pool | PoolClient,
   parsed: ParsedStatement,
   defaultSchema: string
 ): Promise<MigrationStatement> {

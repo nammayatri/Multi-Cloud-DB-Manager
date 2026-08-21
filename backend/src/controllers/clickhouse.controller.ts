@@ -253,33 +253,38 @@ export async function listSyncableTables(req: Request, res: Response): Promise<v
         chDatabase: string;
     }> = [];
 
-    for (const db of databases) {
-        const pool = dbPools.getPoolByName(dbPools.getPrimaryCloudForDatabase(db.databaseName), db.databaseName);
-        if (!pool) continue;
+    // Each database is an independent read against its own pool — query them
+    // concurrently rather than one after another, so latency doesn't grow with
+    // the number of configured databases. Results are concatenated in the
+    // original database order.
+    const perDb = await Promise.all(
+        databases.map(async (db) => {
+            const pool = dbPools.getPoolByName(dbPools.getPrimaryCloudForDatabase(db.databaseName), db.databaseName);
+            if (!pool) return [];
 
-        try {
-            const { rows: pgTables } = await pool.query(`
-                SELECT table_schema, table_name
-                FROM information_schema.tables
-                WHERE table_type = 'BASE TABLE'
-                  AND table_schema NOT IN ('pg_catalog','information_schema','pg_toast')
-                ORDER BY table_schema, table_name
-            `);
+            try {
+                const { rows: pgTables } = await pool.query(`
+                    SELECT table_schema, table_name
+                    FROM information_schema.tables
+                    WHERE table_type = 'BASE TABLE'
+                      AND table_schema NOT IN ('pg_catalog','information_schema','pg_toast')
+                    ORDER BY table_schema, table_name
+                `);
 
-            for (const pgTable of pgTables) {
-                const pgSchema = pgTable.table_schema as string;
-                const table = pgTable.table_name as string;
-                results.push({
+                return pgTables.map((pgTable) => ({
                     pgDatabase: db.databaseName,
-                    pgSchema,
-                    table,
-                    chDatabase: pgSchema, // convention: pgSchema = chDb
-                });
+                    pgSchema: pgTable.table_schema as string,
+                    table: pgTable.table_name as string,
+                    chDatabase: pgTable.table_schema as string, // convention: pgSchema = chDb
+                }));
+            } catch (err: any) {
+                logger.warn(`listSyncableTables: failed to query ${db.databaseName}`, { error: err.message });
+                return [];
             }
-        } catch (err: any) {
-            logger.warn(`listSyncableTables: failed to query ${db.databaseName}`, { error: err.message });
-        }
-    }
+        })
+    );
+
+    for (const rows of perDb) results.push(...rows);
 
     res.json({ tables: results });
 }
@@ -326,27 +331,27 @@ export async function checkTableSync(req: Request, res: Response): Promise<void>
     }
 
     try {
-        const { rows: pgCols } = await pool.query(
-            `SELECT column_name FROM information_schema.columns
-             WHERE table_schema = $1 AND table_name = $2
-             ORDER BY ordinal_position`,
-            [pgSchema, table],
-        );
+        // The PG and CH column lookups hit different systems and are
+        // independent — run them concurrently instead of serially. The CH query
+        // swallows its own error (unreachable → "not in CH"); a PG failure still
+        // propagates to the outer catch.
+        const [{ rows: pgCols }, chColumnNames] = await Promise.all([
+            pool.query(
+                `SELECT column_name FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = $2
+                 ORDER BY ordinal_position`,
+                [pgSchema, table],
+            ),
+            ch.query<{ name: string }>(
+                `SELECT name FROM system.columns WHERE database = '${chDatabase}' AND table = '${table}'`,
+            ).then(chCols => chCols.map(c => c.name)).catch(() => [] as string[]),
+        ]);
+
         const pgColumnNames: string[] = pgCols.map((r: any) => r.column_name);
 
         if (pgColumnNames.length === 0) {
             res.status(404).json({ error: `Table ${pgSchema}.${table} not found in PG` });
             return;
-        }
-
-        let chColumnNames: string[] = [];
-        try {
-            const chCols = await ch.query<{ name: string }>(
-                `SELECT name FROM system.columns WHERE database = '${chDatabase}' AND table = '${table}'`,
-            );
-            chColumnNames = chCols.map(c => c.name);
-        } catch {
-            // CH unreachable for this table — treated as "not in CH" below
         }
 
         const inCH = chColumnNames.length > 0;
