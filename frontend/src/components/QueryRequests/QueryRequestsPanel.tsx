@@ -418,7 +418,7 @@ const RequestCard = ({
   </Paper>
 );
 
-const QueryRequestsPanel = ({ onReviewed }: { onReviewed?: () => void }) => {
+const QueryRequestsPanel = ({ onReviewed, active = true }: { onReviewed?: () => void; active?: boolean }) => {
   const user = useAppStore((s) => s.user);
 
   const [tab, setTab] = useState<'pending' | 'mine' | 'reviewed'>('pending');
@@ -512,7 +512,10 @@ const QueryRequestsPanel = ({ onReviewed }: { onReviewed?: () => void }) => {
   const pollInterval = anyInFlight ? 3000 : POLL_INTERVAL_MS;
 
   useEffect(() => {
-    if (!hasOpenWork) {
+    // Don't poll while the tab is hidden. The panel stays mounted after its
+    // first open (so switching back is instant), but that also meant it kept
+    // hitting the API on its interval while the user was on a different tab.
+    if (!active || !hasOpenWork) {
       if (pollRef.current) {
         clearInterval(pollRef.current);
         pollRef.current = null;
@@ -527,7 +530,17 @@ const QueryRequestsPanel = ({ onReviewed }: { onReviewed?: () => void }) => {
         pollRef.current = null;
       }
     };
-  }, [hasOpenWork, pollInterval, load]);
+  }, [active, hasOpenWork, pollInterval, load]);
+
+  // Refresh once when the tab is re-opened after being away — a colleague may
+  // have raised a new request while we were on another tab, and the poll above
+  // only runs when there's already open work. The initial mount load covers the
+  // very first open, so skip that.
+  const wasActiveRef = useRef(active);
+  useEffect(() => {
+    if (active && !wasActiveRef.current) load();
+    wasActiveRef.current = active;
+  }, [active, load]);
 
   // Land on whichever list actually has something in it — but only on the very
   // first load. Re-running it later hijacked the tab: changing the Reviewed
