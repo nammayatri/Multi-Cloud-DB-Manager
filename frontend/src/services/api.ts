@@ -459,6 +459,15 @@ export const historyAPI = {
   },
 };
 
+// Redis topology changes rarely, but the command form lives in the
+// always-mounted redis view, so getConfiguration used to fire on every login —
+// and again when the Cache Clearer opened. Dedupe concurrent calls and cache
+// the result briefly so both paths share one request.
+type RedisConfiguration = { services: Array<{ name: string; label: string; primary: { cloudName: string }; secondary: Array<{ cloudName: string }> }> };
+let redisConfigInFlight: Promise<RedisConfiguration> | null = null;
+let redisConfigCache: { data: RedisConfiguration; timestamp: number } | null = null;
+const REDIS_CONFIG_TTL = 1000 * 60 * 60;
+
 // Redis API
 export const redisAPI = {
   executeCommand: async (request: any): Promise<any> => {
@@ -486,9 +495,22 @@ export const redisAPI = {
     return response.data.data;
   },
 
-  getConfiguration: async (): Promise<{ services: Array<{ name: string; label: string; primary: { cloudName: string }; secondary: Array<{ cloudName: string }> }> }> => {
-    const response = await api.get('/api/redis/configuration');
-    return response.data;
+  getConfiguration: async (): Promise<RedisConfiguration> => {
+    if (redisConfigCache && Date.now() - redisConfigCache.timestamp < REDIS_CONFIG_TTL) {
+      return redisConfigCache.data;
+    }
+    if (redisConfigInFlight) {
+      return redisConfigInFlight;
+    }
+    redisConfigInFlight = api.get('/api/redis/configuration')
+      .then(response => {
+        redisConfigCache = { data: response.data, timestamp: Date.now() };
+        return response.data as RedisConfiguration;
+      })
+      .finally(() => {
+        redisConfigInFlight = null;
+      });
+    return redisConfigInFlight;
   },
 };
 

@@ -18,7 +18,17 @@ import { verifyStatement } from './verification.service';
  * Load migrations config from databases.json.
  * Checks: 1) DATABASE_CONFIGS env var (base64), 2) k8s mount, 3) local file
  */
+let cachedConfig: { migrations: MigrationsConfig; environments: Record<string, MigrationEnvironmentConfig> } | null = null;
+
 function loadConfig(): { migrations: MigrationsConfig; environments: Record<string, MigrationEnvironmentConfig> } {
+  // Memoized: the config source (env var or mounted file) is fixed for the
+  // process lifetime — a secret change requires a pod restart — so there's no
+  // need to re-read and re-parse the file on every migrations request. The
+  // synchronous readFileSync also blocked the event loop each call.
+  if (cachedConfig) {
+    return cachedConfig;
+  }
+
   let raw: string | null = null;
 
   // 1. Try DATABASE_CONFIGS environment variable (base64-encoded, used in k8s)
@@ -63,10 +73,11 @@ function loadConfig(): { migrations: MigrationsConfig; environments: Record<stri
 
   const environments: Record<string, MigrationEnvironmentConfig> = json.readReplicas?.environments ?? {};
 
-  return {
+  cachedConfig = {
     migrations: json.migrations as MigrationsConfig,
     environments,
   };
+  return cachedConfig;
 }
 
 /**
@@ -326,17 +337,13 @@ export async function analyze(
       }
       const pool = poolCache.get(poolKey)!;
 
-      // Verify each statement
-      const verifiedStatements: MigrationStatement[] = [];
-      const client = await pool.connect();
-      try {
-        for (const parsed of parsedStatements) {
-          const result = await verifyStatement(client, parsed, mapping.defaultSchema);
-          verifiedStatements.push(result);
-        }
-      } finally {
-        client.release();
-      }
+      // Verify statements concurrently. Each check is an independent, stateless
+      // read (information_schema/pg_catalog with bind params), so they can run
+      // straight on the pool — its max (3) bounds the actual concurrency, and
+      // Promise.all preserves statement order in the result.
+      const verifiedStatements: MigrationStatement[] = await Promise.all(
+        parsedStatements.map(parsed => verifyStatement(pool, parsed, mapping.defaultSchema))
+      );
 
       const fileStatus = computeFileStatus(verifiedStatements);
 
