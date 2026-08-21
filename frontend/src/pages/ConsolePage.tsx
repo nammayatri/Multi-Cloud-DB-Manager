@@ -408,30 +408,28 @@ const ConsolePage = () => {
   // Pending-approval badge. The count is per-user, not global: approval
   // authority follows the query, so the backend tests each pending request
   // against this user's role.
+  //
+  // No polling: the count is only meaningful while you're on the Requests tab
+  // (where the panel already shows the live list), so we just refresh it each
+  // time you open that tab rather than hitting /pending/count on a timer.
   useEffect(() => {
-    if (!user || !tabsForRole(user.role).some((t) => t.mode === 'requests')) return;
+    if (!user || managerMode !== 'requests') return;
+    if (!tabsForRole(user.role).some((t) => t.mode === 'requests')) return;
 
     let cancelled = false;
-    const refreshCount = async () => {
+    (async () => {
       try {
         const { count } = await queryRequestsAPI.pendingCount();
         if (!cancelled) setPendingApprovals(count);
       } catch {
-        // Badge is non-critical — a failed poll shouldn't toast or retry loudly.
+        // Badge is non-critical — a failed fetch shouldn't toast or retry loudly.
       }
-    };
+    })();
 
-    refreshCount();
-    const interval = setInterval(refreshCount, 60000);
     return () => {
       cancelled = true;
-      clearInterval(interval);
     };
-    // Deliberately NOT keyed on managerMode: the badge count is per-user, not
-    // per-tab, so nothing here depends on the active tab. Including managerMode
-    // re-ran this effect on every tab switch, firing a redundant /pending/count
-    // on each click on top of the 60s poll.
-  }, [user]);
+  }, [user, managerMode]);
 
   const handleLogout = async () => {
     try {
