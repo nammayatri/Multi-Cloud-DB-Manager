@@ -147,3 +147,114 @@ export const queryHistorySchema = z.object({
   start_date: z.string().datetime().optional(),
   end_date: z.string().datetime().optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Config Replicate
+//
+// The identifier regex is defence in depth, not the actual guard: every schema,
+// table and column name is additionally checked against what information_schema
+// returned for that exact table before it reaches a quoted identifier.
+// ---------------------------------------------------------------------------
+const CONFIG_REPLICATE_IDENT = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+
+const identifier = (label: string) =>
+  z.string().trim().min(1).max(200).regex(CONFIG_REPLICATE_IDENT, `Invalid ${label}`);
+
+const columnClassEnum = z.enum([
+  'DIMENSION',
+  'MATCH_KEY',
+  'GENERATED',
+  'TIMESTAMP',
+  'COPIED',
+  'IGNORED',
+]);
+
+export const configReplicateGroupSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).optional(),
+  // A dimension can span several columns — "this merchant, in this city".
+  dimensionColumns: z.array(identifier('dimension column')).min(1).max(8),
+  tables: z
+    .array(
+      z.object({
+        schema: identifier('schema name'),
+        table: identifier('table name'),
+        // Positionally aligned with the group's dimension columns; a table may
+        // spell the same dimension differently.
+        dimensionColumns: z.array(identifier('dimension column')).min(1).max(8),
+        position: z.number().int().min(0),
+        matchStrategy: z.enum(['AUTO', 'UNIQUE_KEY', 'SIMILARITY']),
+        matchKeyColumns: z.array(identifier('match column')).default([]),
+        columnConfig: z.record(columnClassEnum).default({}),
+        // { "<column>": "<schema>.<table>" } — the parent whose regenerated id
+        // this column must be rewritten to.
+        fkRemap: z.record(z.string().trim().min(1).max(401)).default({}),
+      })
+    )
+    .min(1, 'A group needs at least one table')
+    .max(50),
+}).superRefine((group, ctx) => {
+  group.tables.forEach((table, index) => {
+    if (table.dimensionColumns.length !== group.dimensionColumns.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tables', index, 'dimensionColumns'],
+        message:
+          `${table.schema}.${table.table} must name exactly ${group.dimensionColumns.length} ` +
+          'dimension column(s), in the same order as the group',
+      });
+    }
+  });
+});
+
+export const configReplicateIntrospectTablesSchema = z.object({
+  database: z.string().min(1),
+  cloud: z.string().min(1),
+  dimensionColumns: z.array(identifier('dimension column')).max(20).optional(),
+});
+
+export const configReplicateIntrospectTableSchema = z.object({
+  database: z.string().min(1),
+  cloud: z.string().min(1),
+  schema: identifier('schema name'),
+  table: identifier('table name'),
+  dimensionColumns: z.array(identifier('dimension column')).min(1).max(8),
+});
+
+const replicateTarget = {
+  groupId: z.string().uuid(),
+  database: z.string().min(1),
+  cloud: z.string().min(1),
+  // Positionally aligned with the group's dimension columns. Arity against the
+  // group is checked in the controller, which has the group loaded.
+  baseValues: z.array(z.string().min(1).max(500)).min(1).max(8),
+  newValues: z.array(z.string().min(1).max(500)).min(1).max(8),
+};
+
+export const configReplicateAnalyzeSchema = z
+  .object(replicateTarget)
+  .refine(v => v.baseValues.join('\u0000') !== v.newValues.join('\u0000'), {
+    message: 'Base and new dimension values must differ in at least one column',
+    path: ['newValues'],
+  });
+
+export const configReplicateApplySchema = z
+  .object({
+    ...replicateTarget,
+    analysisToken: z.string().min(1).max(128),
+    selections: z
+      .array(
+        z.object({
+          diffId: z.string().min(1).max(64),
+          operation: z.enum(['INSERT', 'UPDATE', 'DELETE']),
+          sourceHash: z.string().max(64).nullable(),
+          targetHash: z.string().max(64).nullable(),
+        })
+      )
+      .min(1, 'Select at least one row to apply')
+      .max(20000),
+  })
+  .refine(v => v.baseValues.join('\u0000') !== v.newValues.join('\u0000'), {
+    message: 'Base and new dimension values must differ in at least one column',
+    path: ['newValues'],
+  });

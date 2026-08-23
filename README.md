@@ -73,6 +73,8 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 │ Password‑protected ops             │ DROP, TRUNCATE, DELETE, ALTER need MASTER/ADMIN password │
 │ Query history & audit              │ Full execution log with filtering and pagination         │
 │ Env variable substitution          │ ${VAR_NAME} in config for secure credential management   │
+│ Config replication                 │ Clone config between dimension values (city → city, or   │
+│                                    │ merchant+city) with per-row review, in one transaction   │
 └────────────────────────────────────┴──────────────────────────────────────────────────────────┘
 ```
 
@@ -144,6 +146,32 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 
 <br />
 
+### Config Replicate <sub>— MASTER / ADMIN only</sub>
+
+Clones configuration rows from one dimension value to another — city 5 → city 9,
+or merchant A in Bangalore → merchant B in Bangalore — across a saved set of
+tables, in one transaction, after a human has reviewed and ticked every row.
+
+| | |
+|---|---|
+| **Saved config groups** | Name the dimension once and the tables that carry it. Reuse the group for every rollout; tables that spell the dimension differently carry their own column names |
+| **Composite dimensions** | A dimension can be several columns — `(merchant_id, merchant_operating_city_id)` — when config is scoped by a combination. Filtering on the city alone would sweep in every merchant operating there. Only tables carrying **all** of them can join the group, and the base/new values are given per column |
+| **Read‑only analysis** | The whole analysis runs in a single `READ ONLY` transaction on one connection, so every table is read from one MVCC snapshot and two tables can never disagree about what the base set was |
+| **Unique‑key matching** | If a `UNIQUE`/`PRIMARY KEY` constraint — or a bare unique index — contains at least one dimension column, the remaining columns are an exact match key. A key covering more of the dimension wins, then the narrowest remainder, ties broken by name so the choice is deterministic. A key of exactly the dimension columns means one row per dimension value, so the two rows pair unconditionally |
+| **Similarity fallback** | Tables with no usable key are paired by counting equal columns, and **only on a strict mutual best match**. A tie, or a row whose best candidate prefers someone else, is left unpaired and badged rather than mispaired |
+| **Four‑way classification** | Every row lands as INSERT, UPDATE (with a column‑level old → new diff), DELETE (orphaned under the new dimension), or NO CHANGE |
+| **Safe defaults** | Inserts arrive checked; updates, deletes, and anything not confidently matched arrive **unchecked**. Overwriting or deleting live config is always a deliberate act |
+| **Column classification** | Each column is auto‑detected as dimension / match key / generated / timestamp / copied / ignored, and is editable per table. `created_at` is never touched on update; `updated_at` is stamped with `NOW()` |
+| **Foreign‑key remapping** | Mark a column as referencing another table in the group and children are rewritten to point at the new dimension's parents — whether those parents were just inserted or already existed. Without it, a cloned child silently points back at the old dimension's data |
+| **Type‑aware comparison** | `numeric` `10.50` equals `10.5`, `jsonb` ignores key order, arrays don't, `NULL` equals `NULL`, and `uuid` ignores case — so the diff shows real changes, not representation noise |
+| **Drift guard** | Apply re‑runs the entire analysis on its own connection under `FOR UPDATE` and generates SQL from *those* rows. The client sends a selection and consent hashes, never values. Any row that moved aborts the whole run with nothing applied |
+| **One transaction** | `BEGIN` → deletes (reverse table order), inserts, updates → `COMMIT`. Any error rolls everything back; every UPDATE and DELETE asserts it touched exactly one row, and every dimension column is pinned to its new value so a predicate can never reach outside the slice |
+| **Never interpolated** | Values are always bound parameters; identifiers are checked against what `information_schema` returned for that exact table before they are ever quoted |
+| **Explicit UUIDs** | Regenerated ids are minted in Node as bound literals rather than left to `gen_random_uuid()`, matching the rule the query console already enforces |
+| **Audit trail** | Every run records the group *as it was*, the target, both dimension values, per‑table counts, and one row per statement issued — SQL and params stored separately |
+
+<br />
+
 ### User Management <sub>— ADMIN only</sub>
 
 | | |
@@ -191,6 +219,7 @@ ClickHouse-only.
 <tr><td>Redis RAW commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
 <tr><td>ClickHouse queries</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td></tr>
 <tr><td>Cancel any user's query</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td><strong>Config Replicate</strong></td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
 <tr><td><strong>User management</strong></td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
 </tbody>
 </table>
@@ -201,6 +230,9 @@ ClickHouse-only.
 > ends up with MASTER/ADMIN, while a READER's `INSERT` can be approved by any
 > USER. The query then runs as the approver. Self‑approval is never permitted.
 > The blocked-for-all list below is **not** unlockable this way.
+> Config Replicate is not requestable either — it is MASTER/ADMIN throughout,
+> including its read-only endpoints, which otherwise expose a schema map of
+> every connected database.
 
 > ⚠ **Blocked for all roles** (including MASTER)
 > SQL → `DROP/CREATE DATABASE`, `DROP/CREATE SCHEMA`, `ALTER/CREATE/DROP ROLE`, `ALTER/CREATE/DROP USER`
@@ -506,6 +538,76 @@ Open → **http://localhost:5173**
 
 </details>
 
+<details>
+<summary><b><code>dual_db_manager.config_replicate_groups</code></b> · <b><code>_group_tables</code></b></summary>
+
+<sub>The reusable half of Config Replicate: which dimension column, which tables, how each table's rows are matched, and what each column means. Migration <code>006</code>.</sub>
+
+**`config_replicate_groups`**
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `UUID` | Primary key |
+| `name` | `VARCHAR(200)` | Unique case‑insensitively — two groups differing only in case would be a support ticket |
+| `description` | `TEXT` | Optional |
+| `dimension_columns` | `TEXT[]` | The group's labels for the concepts — one entry, or several for a composite dimension. Order is significant: it aligns a table's spellings and a run's values to the right concept |
+| `created_by` | `UUID` | `SET NULL` on user delete — a group outlives whoever created it |
+| `created_at` / `updated_at` | `TIMESTAMP` | |
+
+**`config_replicate_group_tables`**
+
+| Column | Type | Description |
+|---|---|---|
+| `group_id` | `UUID` | `CASCADE` |
+| `schema_name` / `table_name` | `VARCHAR(200)` | Unique per group — a table listed twice would be applied twice |
+| `dimension_columns` | `TEXT[]` | This table's own name for each dimension, positionally aligned with the group's |
+| `position` | `INTEGER` | Parent‑before‑child. Inserts run forward, deletes backward |
+| `match_strategy` | `VARCHAR(20)` | `AUTO` / `UNIQUE_KEY` / `SIMILARITY` |
+| `match_key_columns` | `TEXT[]` | Pinned key. Empty for `AUTO`, where the key is rediscovered each analysis so a schema change fails loudly rather than mispairing |
+| `column_config` | `JSONB` | `{"<column>": "DIMENSION"｜"MATCH_KEY"｜"GENERATED"｜"TIMESTAMP"｜"COPIED"｜"IGNORED"}`. Columns absent from the map are auto‑classified, so a column added later is handled rather than dropped |
+| `fk_remap` | `JSONB` | `{"<column>": "<schema>.<table>"}` — rewrite this reference to the new dimension's parent. Explicitly configured; introspected FKs only pre‑fill the wizard |
+
+</details>
+
+<details>
+<summary><b><code>dual_db_manager.config_replicate_runs</code></b> · <b><code>_run_items</code></b></summary>
+
+<sub>The audit half. The group is <b>snapshotted</b> onto the run: groups get edited, and without the snapshot an old run would be read through today's configuration and quietly misdescribe what actually ran.</sub>
+
+**`config_replicate_runs`**
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `UUID` | Primary key |
+| `group_id` | `UUID` | `SET NULL` — deleting a group must not erase the record of what it did |
+| `group_name` | `VARCHAR(200)` | Kept alongside the id for the same reason |
+| `group_snapshot` | `JSONB` | The group exactly as it was when this run executed |
+| `database_name` / `cloud_name` | `VARCHAR(100)` | One cloud per run — the whole thing is a single transaction on a single connection |
+| `base_values` / `new_values` | `TEXT[]` | One value per dimension column. Text, not typed: a dimension may be integer, uuid or text. Only ever sent back as parameters. `CHECK` they differ in at least one position |
+| `status` | `VARCHAR(20)` | `RUNNING` → `SUCCEEDED` / `FAILED` / `ABORTED`. `ABORTED` is drift — nothing was attempted; `FAILED` means statements ran and rolled back |
+| `applied_by` / `applied_by_username` | `UUID` / `VARCHAR(200)` | Who ran it |
+| `summary` | `JSONB` | Per‑table counts and the match method each table used |
+| `rows_inserted` / `rows_updated` / `rows_deleted` | `INTEGER` | Totals, zero unless the run committed |
+| `error` | `TEXT` | First error out of the transaction |
+| `duration_ms` | `INTEGER` | |
+| `created_at` / `finished_at` | `TIMESTAMP` | |
+
+**`config_replicate_run_items`** — one row per statement issued
+
+| Column | Type | Description |
+|---|---|---|
+| `run_id` | `UUID` | `CASCADE` |
+| `schema_name` / `table_name` | `VARCHAR(200)` | |
+| `operation` | `VARCHAR(10)` | `INSERT` / `UPDATE` / `DELETE` |
+| `diff_id` | `TEXT` | The analyze‑time identity of the row, echoed back by the client on apply |
+| `sql` | `TEXT` | Parameterized SQL, stored **separately** from its values and never interpolated together — a record of what ran, not something to re‑execute |
+| `params` | `JSONB` | The bound values |
+| `row_diff` | `JSONB` | Column‑level old → new for updates; the row for inserts and deletes |
+| `rows_affected` | `INTEGER` | `NULL` when the transaction rolled back before this statement ran |
+| `position` | `INTEGER` | Execution order |
+
+</details>
+
 <br />
 
 ---
@@ -623,6 +725,27 @@ kubectl apply -f k8s/
 </details>
 
 <details>
+<summary><b>Config Replicate</b> — <code>/api/config-replicate</code></summary>
+
+<sub>Every endpoint is <b>MASTER/ADMIN</b>, the read-only ones included — introspection otherwise hands a full schema map of every connected database to any authenticated role.</sub>
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/config-replicate/groups` | MASTER/ADMIN | List saved config groups |
+| `GET` | `/api/config-replicate/groups/:id` | MASTER/ADMIN | One group with its tables and column configuration |
+| `POST` | `/api/config-replicate/groups` | MASTER/ADMIN | Create a group |
+| `PUT` | `/api/config-replicate/groups/:id` | MASTER/ADMIN | Replace a group and its tables |
+| `DELETE` | `/api/config-replicate/groups/:id` | MASTER/ADMIN | Delete a group. Past runs survive it |
+| `POST` | `/api/config-replicate/introspect/tables` | MASTER/ADMIN | Tables carrying **every** dimension column, for the group wizard |
+| `POST` | `/api/config-replicate/introspect/table` | MASTER/ADMIN | Columns, unique keys, suggested match key and column classification |
+| `POST` | `/api/config-replicate/analyze` | MASTER/ADMIN | Read-only diff. Takes `baseValues`/`newValues` — one per dimension column. Runs `SET TRANSACTION READ ONLY` and rolls back; returns per-table INSERT/UPDATE/DELETE/NO_CHANGE plus an `analysisToken` |
+| `POST` | `/api/config-replicate/apply` | MASTER/ADMIN | Execute the selected rows in one `BEGIN`/`COMMIT`. `409` if the data drifted since the analysis, `422` if the transaction failed and rolled back |
+| `GET` | `/api/config-replicate/runs` | MASTER/ADMIN | Run history |
+| `GET` | `/api/config-replicate/runs/:id` | MASTER/ADMIN | One run with every statement it issued |
+
+</details>
+
+<details>
 <summary><b>Redis manager</b> — <code>/api/redis</code></summary>
 
 | Method | Endpoint | Auth | Description |
@@ -732,7 +855,7 @@ dual-db-manager/
 │   ├── config/
 │   │   └── databases.json          ── Database connection config
 │   ├── migrations/
-│   │   └── 001_prod_schema.sql     ── Schema migrations
+│   │   └── 001…006_*.sql           ── Schema migrations (idempotent)
 │   ├── src/
 │   │   ├── config/
 │   │   │   └── database.ts         ── Connection pool management
@@ -740,6 +863,7 @@ dual-db-manager/
 │   │   ├── middleware/             ── Auth, validation, error handling
 │   │   ├── routes/                 ── Express routes
 │   │   ├── services/               ── Query execution, history, validation
+│   │   │   ├── configReplicate/    ── Introspection, matching, diff, SQL builder, apply
 │   │   │   └── migrations/         ── Git diff, SQL parser, DB verification
 │   │   ├── types/                  ── TypeScript interfaces
 │   │   ├── utils/                  ── Logger
@@ -749,6 +873,7 @@ dual-db-manager/
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
+│   │   │   ├── ConfigReplicate/    ── Config Replicate (wizard, diff review, action bar)
 │   │   │   ├── Dialog/             ── Warning / confirmation dialogs
 │   │   │   ├── Editor/             ── Monaco SQL editor
 │   │   │   ├── History/            ── Query history sidebar

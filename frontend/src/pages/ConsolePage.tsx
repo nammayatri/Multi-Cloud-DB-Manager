@@ -25,6 +25,7 @@ import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import HubIcon from '@mui/icons-material/Hub';
 import CachedIcon from '@mui/icons-material/Cached';
 import RuleIcon from '@mui/icons-material/Rule';
+import DifferenceIcon from '@mui/icons-material/Difference';
 import { authAPI, schemaAPI, queryRequestsAPI, toastNonApiError } from '../services/api';
 import { Role } from '../constants/roles';
 import { useAppStore } from '../store/appStore';
@@ -51,6 +52,7 @@ const RedisCacheClearer = lazy(() => import('../components/Redis/RedisCacheClear
 const ClickhouseToolbar = lazy(() => import('../components/Clickhouse/ClickhouseToolbar'));
 const CsvBatchPanel = lazy(() => import('../components/CsvBatch/CsvBatchPanel'));
 const ShudhiPanel = lazy(() => import('../components/Shudhi/ShudhiPanel'));
+const ConfigReplicatePanel = lazy(() => import('../components/ConfigReplicate/ConfigReplicatePanel'));
 const QueryRequestsPanel = lazy(() => import('../components/QueryRequests/QueryRequestsPanel'));
 
 // Fallback shown while a lazy panel chunk loads on first tab open.
@@ -61,7 +63,7 @@ const panelLoader = (
 );
 
 
-type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests';
+type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate';
 
 // Batch Query (CSV) — destructive arbitrary parametrized SQL, intentionally
 // withheld from RELEASE_MANAGER (schema-change scope, not data manipulation).
@@ -90,6 +92,10 @@ const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNod
   { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN, Role.CKH_MANAGER] },
   { mode: 'shudhi', label: 'Shudhi', icon: <CachedIcon sx={{ fontSize: 18 }} />, visibleTo: SHUDHI_ROLES },
   { mode: 'requests', label: 'Requests', icon: <RuleIcon sx={{ fontSize: 18 }} />, visibleTo: REQUEST_ROLES },
+  // Config Replicate ends in an unrestricted multi-table write across a whole
+  // group of config tables, so it stays at the MASTER/ADMIN tier — same gate the
+  // routes enforce server-side.
+  { mode: 'configreplicate', label: 'Config Replicate', icon: <DifferenceIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN] },
 ];
 
 // Only these two views render a history side-panel (QueryHistory / RedisHistory).
@@ -517,6 +523,7 @@ const ConsolePage = () => {
               : managerMode === 'batch' ? 'Batch Query Manager'
               : managerMode === 'clickhouse' ? 'Clickhouse Manager'
               : managerMode === 'shudhi' ? 'Shudhi — In-Memory Cache Manager'
+              : managerMode === 'configreplicate' ? 'Config Replicate'
               : managerMode === 'requests' ? 'Query Requests'
               : 'DB Migration Verifier'}
           </Typography>
@@ -775,6 +782,29 @@ const ConsolePage = () => {
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
                   {visitedModes.has('shudhi') && <Suspense fallback={panelLoader}><ShudhiPanel /></Suspense>}
+                </Stack>
+              </Box>
+            </Box>
+
+            {/* Config Replicate View — always mounted */}
+            <Box
+              key="configreplicate-view"
+              sx={{
+                position: managerMode === 'configreplicate' ? 'relative' : 'absolute',
+                inset: managerMode === 'configreplicate' ? undefined : 0,
+                opacity: managerMode === 'configreplicate' ? 1 : 0,
+                pointerEvents: managerMode === 'configreplicate' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'configreplicate' ? 1 : undefined,
+                display: canSee('configreplicate') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'configreplicate' ? 0 : 2,
+              }}
+            >
+              <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
+                  {visitedModes.has('configreplicate') && <Suspense fallback={panelLoader}><ConfigReplicatePanel /></Suspense>}
                 </Stack>
               </Box>
             </Box>
