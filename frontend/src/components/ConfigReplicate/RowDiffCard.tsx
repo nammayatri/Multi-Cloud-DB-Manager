@@ -54,14 +54,14 @@ interface Props {
 }
 
 const RowDiffCard = ({ diff }: Props) => {
-  const selectedDiffs = useConfigReplicateStore(s => s.selectedDiffs);
+  // Subscribed as booleans, not as the Sets: toggling any row replaces the Set
+  // identity, so selecting the whole set here would re-render every mounted card
+  // on every click and defeat the memo below.
+  const isSelected = useConfigReplicateStore(s => s.selectedDiffs.has(diff.diffId));
+  const isExpanded = useConfigReplicateStore(s => s.expandedDiffs.has(diff.diffId));
   const toggleDiff = useConfigReplicateStore(s => s.toggleDiff);
-  const expandedDiffs = useConfigReplicateStore(s => s.expandedDiffs);
   const toggleDiffExpanded = useConfigReplicateStore(s => s.toggleDiffExpanded);
   const [showAllColumns, setShowAllColumns] = useState(false);
-
-  const isSelected = selectedDiffs.has(diff.diffId);
-  const isExpanded = expandedDiffs.has(diff.diffId);
   const selectable = diff.operation !== 'NO_CHANGE';
 
   const changedColumns = new Set((diff.columnDiffs || []).map(c => c.column));

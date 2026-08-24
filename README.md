@@ -168,7 +168,7 @@ tables, in one transaction, after a human has reviewed and ticked every row.
 | **One transaction** | `BEGIN` → deletes (reverse table order), inserts, updates → `COMMIT`. Any error rolls everything back; every UPDATE and DELETE asserts it touched exactly one row, and every dimension column is pinned to its new value so a predicate can never reach outside the slice |
 | **Never interpolated** | Values are always bound parameters; identifiers are checked against what `information_schema` returned for that exact table before they are ever quoted |
 | **Explicit UUIDs** | Regenerated ids are minted in Node as bound literals rather than left to `gen_random_uuid()`, matching the rule the query console already enforces |
-| **Audit trail** | Every run records the group *as it was*, the target, both dimension values, per‑table counts, and one row per statement issued — SQL and params stored separately |
+| **Audit trail** | Every run records the group *as it was*, the target, both dimension values, per‑table counts, and one row per statement issued — SQL and params stored separately. Row‑level detail can be pruned on a retention window while run summaries are kept forever |
 
 <br />
 
@@ -464,6 +464,7 @@ Open → **http://localhost:5173**
 | `STATEMENT_TIMEOUT_MS` | `300000` | Per‑statement PostgreSQL timeout (5 min) |
 | `REDIS_EXECUTION_TTL_SECONDS` | `300` | Async execution state TTL in Redis (5 min) |
 | `RUN_MIGRATIONS` | `false` | Auto‑create `dual_db_manager` schema on startup |
+| `CONFIG_REPLICATE_RUN_ITEM_RETENTION_DAYS` | — | Prune Config Replicate row‑level audit past N days. Run summaries are always kept; unset keeps everything |
 
 <br />
 

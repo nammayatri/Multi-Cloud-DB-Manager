@@ -153,3 +153,41 @@ describe('pairByKey with an empty match key', () => {
     expect(result.ambiguousTarget.size).toBe(2);
   });
 });
+
+describe('pairByMutualBestMatch at scale', () => {
+  const C = 20;
+  const cols = Array.from({ length: C }, (_, i) => `c${i}`);
+  const udtMap: Record<string, string> = {};
+  cols.forEach(c => (udtMap[c] = 'text'));
+
+  const rowsWhere = (n: number, fn: (i: number, c: number) => string) =>
+    Array.from({ length: n }, (_, i) => {
+      const row: Record<string, unknown> = {};
+      cols.forEach((c, k) => (row[c] = fn(i, k)));
+      return row;
+    });
+
+  it('pairs a large set one-to-one without materialising a score matrix', () => {
+    // Each base row has exactly one near-identical target, differing in one column.
+    const base = rowsWhere(400, (i, c) => `r${i}-c${c}`);
+    const target = rowsWhere(400, (i, c) => (c === 0 ? `changed-${i}` : `r${i}-c${c}`));
+
+    const started = Date.now();
+    const result = pairByMutualBestMatch(base, target, cols, udtMap);
+
+    expect(result.pairs).toHaveLength(400);
+    expect(result.unpairedBase).toHaveLength(0);
+    expect(result.unpairedTarget).toHaveLength(0);
+    // Comfortably under a second; the dense-matrix version took seconds here.
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('keeps each pairing with its own counterpart', () => {
+    const base = rowsWhere(50, (i, c) => `r${i}-c${c}`);
+    const target = rowsWhere(50, (i, c) => (c === 0 ? `x-${i}` : `r${i}-c${c}`));
+
+    for (const { base: b, target: t } of pairByMutualBestMatch(base, target, cols, udtMap).pairs) {
+      expect(String(t.c1)).toBe(String(b.c1));
+    }
+  });
+});

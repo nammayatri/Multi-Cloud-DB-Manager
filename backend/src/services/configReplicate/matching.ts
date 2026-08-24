@@ -1,4 +1,4 @@
-import { canonical, valuesEqual } from './values';
+import { canonical } from './values';
 
 export const MAX_PAIRWISE = 2_000_000;
 
@@ -100,6 +100,21 @@ const strictBest = (scores: number[]): BestMatch | null => {
   return { index: bestIndex, score: bestScore };
 };
 
+interface RunningBest {
+  index: number;
+  score: number;
+  tied: boolean;
+}
+
+const commit = (best: RunningBest | null): BestMatch | null =>
+  best && !best.tied ? { index: best.index, score: best.score } : null;
+
+const consider = (best: RunningBest | null, index: number, score: number): RunningBest => {
+  if (!best || score > best.score) return { index, score, tied: false };
+  if (score === best.score) return { ...best, tied: true };
+  return best;
+};
+
 export const pairByMutualBestMatch = (
   baseRows: Row[],
   targetRows: Row[],
@@ -121,19 +136,46 @@ export const pairByMutualBestMatch = (
     );
   }
 
-  const scores: number[][] = baseRows.map(baseRow =>
-    targetRows.map(targetRow => {
+  // Canonicalise once per row rather than once per comparison. Scoring pair
+  // (i, j) directly would re-canonicalise row i's every column for all M targets,
+  // making it O(N*M*C) string builds; this is O((N+M)*C), and the inner loop
+  // becomes a string compare.
+  const encode = (rows: Row[]): string[][] =>
+    rows.map(row => compareColumns.map(column => canonical(row[column], udtMap[column])));
+
+  const baseKeys = encode(baseRows);
+  const targetKeys = encode(targetRows);
+
+  // Running bests rather than a materialised base x target score matrix, so
+  // memory is O(N+M) instead of O(N*M).
+  const bestForBase: Array<BestMatch | null> = new Array(baseRows.length).fill(null);
+  const baseHadOverlap: boolean[] = new Array(baseRows.length).fill(false);
+  const targetRunning: Array<RunningBest | null> = new Array(targetRows.length).fill(null);
+  const targetHadOverlap: boolean[] = new Array(targetRows.length).fill(false);
+
+  for (let i = 0; i < baseRows.length; i++) {
+    const baseRow = baseKeys[i];
+    let rowBest: RunningBest | null = null;
+
+    for (let j = 0; j < targetRows.length; j++) {
+      const targetRow = targetKeys[j];
+
       let score = 0;
-      for (const column of compareColumns) {
-        if (valuesEqual(baseRow[column], targetRow[column], udtMap[column])) score++;
+      for (let c = 0; c < compareColumns.length; c++) {
+        if (baseRow[c] === targetRow[c]) score++;
       }
-      return score;
-    })
-  );
+      if (score <= 0) continue;
 
-  const bestForBase = scores.map(strictBest);
-  const bestForTarget = targetRows.map((_, j) => strictBest(scores.map(row => row[j])));
+      baseHadOverlap[i] = true;
+      targetHadOverlap[j] = true;
+      rowBest = consider(rowBest, j, score);
+      targetRunning[j] = consider(targetRunning[j], i, score);
+    }
 
+    bestForBase[i] = commit(rowBest);
+  }
+
+  const bestForTarget = targetRunning.map(commit);
   const pairedTarget = new Set<number>();
 
   for (let i = 0; i < baseRows.length; i++) {
@@ -142,8 +184,7 @@ export const pairByMutualBestMatch = (
 
     if (!best) {
       result.unpairedBase.push(baseRow);
-      const hadAnyOverlap = scores[i].some(s => s > 0);
-      if (hadAnyOverlap) {
+      if (baseHadOverlap[i]) {
         result.ambiguousBase.add(baseRow);
         result.ambiguityReasons.set(
           baseRow,
@@ -171,7 +212,7 @@ export const pairByMutualBestMatch = (
     if (pairedTarget.has(j)) continue;
     const targetRow = targetRows[j];
     result.unpairedTarget.push(targetRow);
-    if (scores.some(row => row[j] > 0)) {
+    if (targetHadOverlap[j]) {
       result.ambiguousTarget.add(targetRow);
       result.ambiguityReasons.set(
         targetRow,

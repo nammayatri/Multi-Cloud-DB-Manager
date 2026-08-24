@@ -167,6 +167,9 @@ export const analyze = async (req: Request, res: Response, next: NextFunction) =
       return res.status(400).json({ error: 'This group has no tables configured' });
     }
 
+    const arityError = checkDimensionArity(group, baseValues, newValues);
+    if (arityError) return res.status(400).json({ error: arityError });
+
     const pool = resolveTargetPool(cloud, database);
     client = await pool.connect();
 
@@ -175,11 +178,6 @@ export const analyze = async (req: Request, res: Response, next: NextFunction) =
     await client.query('SET LOCAL statement_timeout = 30000');
 
     try {
-      const arityError = checkDimensionArity(group, baseValues, newValues);
-      if (arityError) {
-        return res.status(400).json({ error: arityError });
-      }
-
       const { result } = await runAnalysis(client, group, database, cloud, baseValues, newValues);
       res.json(result);
     } finally {

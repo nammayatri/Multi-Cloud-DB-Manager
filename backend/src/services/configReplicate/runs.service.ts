@@ -9,6 +9,15 @@ import {
   RunSummaryRecord,
 } from '../../types/configReplicate';
 
+/**
+ * Row-level audit is the bulky, sensitive half: params holds the actual config
+ * values written. Setting this prunes run_items past N days while keeping every
+ * run summary forever, so "who replicated what, when, how many rows" survives
+ * but the payload does not linger. Unset means keep everything.
+ */
+const RETENTION_DAYS = parseInt(process.env.CONFIG_REPLICATE_RUN_ITEM_RETENTION_DAYS || '0', 10);
+const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
 interface RecordInput {
   group: ConfigGroup;
   database: string;
@@ -44,8 +53,34 @@ const mapRun = (row: any): RunSummaryRecord => ({
 });
 
 export class ConfigReplicateRunsService {
+  private lastSweepAt = 0;
+
   private get pool(): Pool {
     return DatabasePools.getInstance().history;
+  }
+
+  private async pruneExpiredItems(): Promise<void> {
+    if (!RETENTION_DAYS || RETENTION_DAYS <= 0) return;
+    if (Date.now() - this.lastSweepAt < SWEEP_INTERVAL_MS) return;
+    this.lastSweepAt = Date.now();
+
+    try {
+      const result = await this.pool.query(
+        `DELETE FROM dual_db_manager.config_replicate_run_items i
+          USING dual_db_manager.config_replicate_runs r
+          WHERE i.run_id = r.id
+            AND r.created_at < NOW() - ($1 || ' days')::interval`,
+        [RETENTION_DAYS]
+      );
+      if (result.rowCount) {
+        logger.info('Pruned config replicate run items', {
+          rows: result.rowCount,
+          retentionDays: RETENTION_DAYS,
+        });
+      }
+    } catch (error: any) {
+      logger.error('Failed to prune config replicate run items:', error);
+    }
   }
 
   public async record(input: RecordInput): Promise<string> {
@@ -105,6 +140,7 @@ export class ConfigReplicateRunsService {
       }
 
       await client.query('COMMIT');
+      void this.pruneExpiredItems();
       return runId;
     } catch (error: any) {
       await client.query('ROLLBACK').catch(err => logger.error('Run audit rollback failed:', err));
