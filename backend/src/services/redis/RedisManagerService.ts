@@ -4,7 +4,7 @@ import { executeCommand, isWriteCommand, executeRawCommand } from './RedisComman
 import { startScan, getScanStatus as getScanStatusFromStore, cancelScan as cancelScanInStore } from './RedisScanService';
 import { RedisCommandRequest, RedisCommandResponse, RedisScanRequest, RedisScanResponse } from '../../types';
 import logger from '../../utils/logger';
-import { isSuperRole } from '../../constants/roles';
+import { Role, isSuperRole, isReadOnlyRole, canClearCache } from '../../constants/roles';
 
 // Max raw command length to prevent memory exhaustion
 const MAX_RAW_COMMAND_LENGTH = 10000;
@@ -170,7 +170,7 @@ class RedisManagerService {
     }
 
     // Check write permissions
-    if (isWriteCommand(command) && (userRole === 'READER' || userRole === 'CKH_MANAGER')) {
+    if (isWriteCommand(command) && (isReadOnlyRole(userRole) || userRole === Role.CKH_MANAGER)) {
       throw new Error(`${userRole} role cannot execute Redis write commands`);
     }
 
@@ -229,7 +229,7 @@ class RedisManagerService {
       throw new Error('Wildcard-only patterns (e.g., "*") are blocked. Use a more specific pattern like "prefix:*".');
     }
 
-    if (action === 'delete' && (userRole === 'READER' || userRole === 'CKH_MANAGER')) {
+    if (action === 'delete' && !canClearCache(userRole)) {
       throw new Error(`${userRole} role cannot delete keys`);
     }
 

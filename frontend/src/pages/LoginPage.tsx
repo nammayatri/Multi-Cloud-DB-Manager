@@ -272,7 +272,7 @@ const LoginPage = () => {
             </Typography>
             <Box component="ul" sx={{ pl: 2, mt: 1, mb: 0 }}>
               <Typography component="li" variant="body2" color="text.secondary">
-                Role-based access: MASTER, USER, READER, RELEASE_MANAGER, CKH_MANAGER
+                Role-based access: MASTER, USER, READER, RELEASE_MANAGER, CKH_MANAGER, CACHE_CLEARER
               </Typography>
               <Typography component="li" variant="body2" color="text.secondary">
                 Execute queries on Multiple Clouds simultaneously

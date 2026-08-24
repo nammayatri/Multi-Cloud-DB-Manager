@@ -1,4 +1,4 @@
-import { Role, isSuperRole } from '../../constants/roles';
+import { Role, isSuperRole, isReadOnlyRole } from '../../constants/roles';
 import QueryValidator from './QueryValidator';
 import DatabasePools from '../../config/database';
 
@@ -40,13 +40,13 @@ const USER_ALLOWED_PATTERNS = [
 ];
 
 /**
- * Statements a READER may run.
+ * Statements a read-only role (READER, CACHE_CLEARER) may run.
  *
  * This MUST be an allowlist over every statement, not a keyword denylist over
  * the whole query — a denylist lets a disallowed statement hide behind a
  * leading SELECT (e.g. "SELECT 1; DROP INDEX x;").
  */
-const READER_ALLOWED_PATTERNS = [
+const READ_ONLY_ALLOWED_PATTERNS = [
   /^\s*SELECT/i,
   /^\s*WITH[\s\S]*SELECT/i, // CTEs with SELECT
   /^\s*EXPLAIN(\s+\([^)]*\)|\s+ANALYZE|\s+VERBOSE)*\s+(SELECT|WITH)/i,
@@ -156,9 +156,11 @@ export const checkRolePermission = (
     };
   }
 
-  if (role === Role.READER) {
+  // READER and CACHE_CLEARER share one Postgres policy: read-only. Whatever
+  // extra powers CACHE_CLEARER has are Redis/Shudhi-side only.
+  if (isReadOnlyRole(role)) {
     const disallowed = splitOrWhole(query).find(
-      stmt => stmt.trim().length > 0 && !READER_ALLOWED_PATTERNS.some(pattern => pattern.test(stmt))
+      stmt => stmt.trim().length > 0 && !READ_ONLY_ALLOWED_PATTERNS.some(pattern => pattern.test(stmt))
     );
 
     if (!disallowed) {
@@ -167,7 +169,7 @@ export const checkRolePermission = (
 
     return {
       allowed: false,
-      message: 'READER role can only execute read-only statements (SELECT, WITH ... SELECT, EXPLAIN SELECT).',
+      message: `${role} role can only execute read-only statements (SELECT, WITH ... SELECT, EXPLAIN SELECT).`,
     };
   }
 
@@ -221,7 +223,12 @@ export const canRunDirectly = (
  * CKH_MANAGER because it has no Postgres access at all — there is nothing for
  * an approver to grant it. Unknown roles are excluded by fail-closed default.
  */
-const REQUESTER_ROLES: string[] = [Role.USER, Role.READER, Role.RELEASE_MANAGER];
+const REQUESTER_ROLES: string[] = [
+  Role.USER,
+  Role.READER,
+  Role.RELEASE_MANAGER,
+  Role.CACHE_CLEARER,
+];
 
 export const canRequestApproval = (role?: string | null): boolean =>
   !!role && REQUESTER_ROLES.includes(role);

@@ -20,7 +20,7 @@ import { redisAPI, toastNonApiError } from '../../services/api';
 import { ALL_STRUCTURED_COMMANDS, RAW_COMMAND, getCommandDefinition } from './RedisCommandDefinitions';
 import toast from 'react-hot-toast';
 import type { RedisCommandResponse, RedisCommandDefinition } from '../../types';
-import { isSuperRole } from '../../constants/roles';
+import { isSuperRole, isReadOnlyRole } from '../../constants/roles';
 
 interface ServiceOption {
   name: string;
@@ -51,7 +51,9 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
     return services.find(s => s.name === selectedRedisService)?.clouds || [];
   }, [services, selectedRedisService]);
 
-  const isReader = user?.role === 'READER';
+  // Read-only roles (READER, CACHE_CLEARER) cannot issue write commands here.
+  // CACHE_CLEARER clears keys from the Cache Clearer panel's SCAN delete.
+  const isReadOnly = isReadOnlyRole(user?.role);
   const isMaster = isSuperRole(user?.role);
   const commandDef = getCommandDefinition(selectedCommand);
   const isWriteCommand = commandDef?.isWrite ?? false;
@@ -181,7 +183,7 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
                   {option.isWrite && (
                     <Chip label="W" size="small" color="warning" sx={{ height: 18, fontSize: 10 }} />
                   )}
-                  {isReader && option.isWrite && (
+                  {isReadOnly && option.isWrite && (
                     <Typography variant="caption" color="error" sx={{ ml: 'auto' }}>
                       No access
                     </Typography>
@@ -199,7 +201,7 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
             )}
             disableClearable
             isOptionEqualToValue={(option, value) => option.command === value.command}
-            getOptionDisabled={(option) => isReader && option.isWrite}
+            getOptionDisabled={(option) => isReadOnly && option.isWrite}
             sx={{ minWidth: 280 }}
             disabled={isExecuting}
           />
@@ -250,7 +252,7 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
             size="large"
             startIcon={isExecuting ? <CircularProgress size={20} color="inherit" /> : <PlayArrowIcon />}
             onClick={handleExecute}
-            disabled={isExecuting || (isReader && isWriteCommand) || (isRawCommand && !isMaster)}
+            disabled={isExecuting || (isReadOnly && isWriteCommand) || (isRawCommand && !isMaster)}
             sx={{ minWidth: 150 }}
           >
             {isExecuting ? 'Running...' : 'Execute'}
@@ -278,9 +280,9 @@ const RedisCommandForm = ({ onResult }: RedisCommandFormProps) => {
           </Stack>
         )}
 
-        {isReader && isWriteCommand && (
+        {isReadOnly && isWriteCommand && (
           <Typography variant="caption" color="error">
-            READER role cannot execute write commands
+            {user?.role} role cannot execute write commands
           </Typography>
         )}
 
