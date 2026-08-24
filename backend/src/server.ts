@@ -14,6 +14,7 @@ import DatabasePools from './config/database';
 import redisClient from './config/redis';
 import historyService from './services/history.service';
 import queryRequestsService from './services/queryRequests.service';
+import configReplicateGroupsService from './services/configReplicate/groups.service';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
@@ -30,6 +31,7 @@ import migrationsRoutes from './routes/migrations.routes';
 import { getConfig as getMigrationsConfig } from './services/migrations/migrations.service';
 import repoState from './services/migrations/repo-state.service';
 import shudhiRoutes from './routes/shudhi.routes';
+import configReplicateRoutes from './routes/configReplicate.routes';
 import RedisManagerPools from './config/redis-pools';
 import ClickHouseClientManager from './config/clickhouse';
 
@@ -143,6 +145,8 @@ app.use('/api/migrations', migrationsRoutes);
 console.log('[STARTUP] ✓ /api/migrations routes mounted');
 app.use('/api/shudhi', shudhiRoutes);
 console.log('[STARTUP] ✓ /api/shudhi routes mounted');
+app.use('/api/config-replicate', configReplicateRoutes);
+console.log('[STARTUP] ✓ /api/config-replicate routes mounted');
 
 // 404 handler
 app.use(notFoundHandler);
@@ -251,6 +255,9 @@ const startServer = async () => {
         console.log('[STARTUP] Initializing query requests schema...');
         await queryRequestsService.initializeSchema();
         console.log('[STARTUP] Query requests schema initialized');
+        console.log('[STARTUP] Initializing config replicate schema...');
+        await configReplicateGroupsService.initializeSchema();
+        console.log('[STARTUP] Config replicate schema initialized');
     } else {
       console.log('[STARTUP] Schema initialization skipped (RUN_MIGRATIONS not set)');
     }

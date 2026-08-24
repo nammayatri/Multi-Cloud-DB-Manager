@@ -42,8 +42,8 @@ const savePersistedStringSetting = (key: string, value: string) => {
 
 interface AppState {
   // Manager mode
-  managerMode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests';
-  setManagerMode: (mode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests') => void;
+  managerMode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate';
+  setManagerMode: (mode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate') => void;
 
   // User state
   user: User | null;
@@ -94,7 +94,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Manager mode
-  managerMode: (sessionStorage.getItem('managerMode') as 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests') || 'db',
+  managerMode: (sessionStorage.getItem('managerMode') as 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate') || 'db',
   setManagerMode: (mode) => {
     sessionStorage.setItem('managerMode', mode);
     set({ managerMode: mode });
