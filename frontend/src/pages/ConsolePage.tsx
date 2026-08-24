@@ -65,9 +65,12 @@ const panelLoader = (
 
 type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate';
 
-// Batch Query (CSV) — destructive arbitrary parametrized SQL, intentionally
-// withheld from RELEASE_MANAGER (schema-change scope, not data manipulation).
-const BATCH_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.CACHE_CLEARER];
+// Batch Query (CSV) — destructive arbitrary parametrized SQL that only writers
+// may run. Mirrors the backend gate (`requireBatchWriter` = MASTER/ADMIN/USER):
+// read-only roles (READER, CACHE_CLEARER) are excluded so they aren't shown a
+// tab the endpoint would 403. RELEASE_MANAGER is withheld too (schema-change
+// scope, not data manipulation).
+const BATCH_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER];
 
 // Redis Manager — RELEASE_MANAGER joins the standard tier (USER-equivalent
 // read + write + SCAN preview/delete; RAW stays MASTER-only at the route gate).
