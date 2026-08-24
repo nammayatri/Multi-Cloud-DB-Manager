@@ -43,6 +43,21 @@ describe('checkRolePermission', () => {
     });
   });
 
+  // CACHE_CLEARER's extra powers are Redis/Shudhi-side only — for Postgres it
+  // must stay exactly as restricted as READER.
+  describe('CACHE_CLEARER', () => {
+    it('allows read-only statements', () => {
+      expect(checkRolePermission(Role.CACHE_CLEARER, 'SELECT * FROM rides').allowed).toBe(true);
+      expect(checkRolePermission(Role.CACHE_CLEARER, 'EXPLAIN SELECT 1').allowed).toBe(true);
+    });
+
+    it('denies writes, exactly like READER', () => {
+      expect(checkRolePermission(Role.CACHE_CLEARER, 'DELETE FROM rides').allowed).toBe(false);
+      expect(checkRolePermission(Role.CACHE_CLEARER, 'INSERT INTO rides VALUES (1)').allowed).toBe(false);
+      expect(checkRolePermission(Role.CACHE_CLEARER, 'SELECT 1; DROP INDEX idx_rides;').allowed).toBe(false);
+    });
+  });
+
   describe('USER', () => {
     it('allows its documented operations', () => {
       expect(checkRolePermission(Role.USER, 'INSERT INTO rides VALUES (1)').allowed).toBe(true);
@@ -110,6 +125,7 @@ describe('canRequestApproval', () => {
     expect(canRequestApproval(Role.USER)).toBe(true);
     expect(canRequestApproval(Role.READER)).toBe(true);
     expect(canRequestApproval(Role.RELEASE_MANAGER)).toBe(true);
+    expect(canRequestApproval(Role.CACHE_CLEARER)).toBe(true);
   });
 
   it('excludes roles that can already run everything, or nothing', () => {

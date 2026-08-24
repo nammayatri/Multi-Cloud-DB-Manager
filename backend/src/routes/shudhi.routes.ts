@@ -3,14 +3,14 @@ import { getShudhiStatus, getServices, getPods, getKeys, getValue, refreshCache 
 import { isAuthenticated, requireRoles } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
 import { z } from 'zod';
-import { Role } from '../constants/roles';
+import { Role, CACHE_CLEAR_ROLES } from '../constants/roles';
 
 const router = Router();
 
 router.use(isAuthenticated);
 
 // All roles except CKH_MANAGER can access Shudhi
-const requireShudhiAccess = requireRoles(Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER);
+const requireShudhiAccess = requireRoles(Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER);
 
 // Validation schemas — match Shudhi's Go structs
 const shudhiGetSchema = z.object({
@@ -39,7 +39,8 @@ router.get('/keys', requireShudhiAccess, getKeys);
 // Get cached value from a specific pod
 router.post('/get', requireShudhiAccess, validate(shudhiGetSchema), getValue);
 
-// Refresh (invalidate) cache — write operation, READER excluded
-router.post('/refresh', requireRoles(Role.MASTER, Role.ADMIN, Role.USER, Role.RELEASE_MANAGER), validate(shudhiRefreshSchema), refreshCache);
+// Refresh (invalidate) cache — write operation. READER excluded; CACHE_CLEARER
+// is included since invalidation is exactly what that role exists for.
+router.post('/refresh', requireRoles(...CACHE_CLEAR_ROLES), validate(shudhiRefreshSchema), refreshCache);
 
 export default router;

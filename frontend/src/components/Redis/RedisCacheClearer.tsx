@@ -25,6 +25,7 @@ import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import StopIcon from '@mui/icons-material/Stop';
 import { useAppStore } from '../../store/appStore';
 import { redisAPI, toastNonApiError } from '../../services/api';
+import { canClearCache } from '../../constants/roles';
 import toast from 'react-hot-toast';
 import type { RedisScanResponse, RedisScanProgress } from '../../types';
 
@@ -104,7 +105,9 @@ const RedisCacheClearer = () => {
   const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const isReader = user?.role === 'READER';
+  // Deleting keys is the cache-clearing capability, not a general write — so
+  // CACHE_CLEARER can do it here even though it cannot run write commands.
+  const canDelete = canClearCache(user?.role);
 
   // Clouds for currently-selected Redis service
   const cloudNames = (services.find(s => s.name === selectedRedisService)?.clouds) || [];
@@ -351,7 +354,7 @@ const RedisCacheClearer = () => {
                 color="error"
                 startIcon={<DeleteSweepIcon />}
                 onClick={() => handleScan('delete')}
-                disabled={!pattern.trim() || isReader}
+                disabled={!pattern.trim() || !canDelete}
               >
                 Delete Keys
               </Button>
@@ -359,9 +362,9 @@ const RedisCacheClearer = () => {
           )}
         </Stack>
 
-        {isReader && (
+        {!canDelete && (
           <Typography variant="caption" color="error">
-            READER role cannot delete keys
+            {user?.role} role cannot delete keys
           </Typography>
         )}
 

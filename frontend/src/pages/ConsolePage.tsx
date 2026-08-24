@@ -65,24 +65,28 @@ const panelLoader = (
 
 type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate';
 
-// Batch Query (CSV) — destructive arbitrary parametrized SQL, intentionally
-// withheld from RELEASE_MANAGER (schema-change scope, not data manipulation).
-const BATCH_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER];
+// Batch Query (CSV) — destructive arbitrary parametrized SQL that only writers
+// may run. Mirrors the backend gate (`requireBatchWriter` = MASTER/ADMIN/USER):
+// read-only roles (READER, CACHE_CLEARER) are excluded so they aren't shown a
+// tab the endpoint would 403. RELEASE_MANAGER is withheld too (schema-change
+// scope, not data manipulation).
+const BATCH_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER];
 
 // Redis Manager — RELEASE_MANAGER joins the standard tier (USER-equivalent
 // read + write + SCAN preview/delete; RAW stays MASTER-only at the route gate).
-const REDIS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+// CACHE_CLEARER gets the tab for read commands + SCAN delete.
+const REDIS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
 
 // DB Manager / Migrations — schema work, fits RELEASE_MANAGER.
-const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
 
 // Shudhi (In-Memory Cache Management) — same as Redis: all standard roles.
-const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
 
 // Query Requests — every role with Postgres access: the lower tiers raise
 // requests, the higher tiers approve them, and most roles do both depending on
 // the query. CKH_MANAGER has no Postgres access, so it has nothing to do here.
-const REQUEST_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+const REQUEST_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
 
 const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode; visibleTo: Role[] }> = [
   { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },

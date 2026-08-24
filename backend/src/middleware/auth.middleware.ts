@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
-import { Role, isSuperRole } from '../constants/roles';
+import { Role, isSuperRole, isReadOnlyRole, canClearCache } from '../constants/roles';
 import { checkRolePermission, canRequestApproval } from '../services/query/queryPermissions';
 
 /**
@@ -65,7 +65,7 @@ export const requireAdmin = requireRoles(Role.ADMIN);
 
 /**
  * Middleware to check if user can execute write queries
- * MASTER and USER can write, READER cannot
+ * MASTER and USER can write, read-only roles (READER, CACHE_CLEARER) cannot
  */
 export const canWrite = (req: Request, res: Response, next: NextFunction) => {
   const user = req.user as Express.User | undefined;
@@ -76,10 +76,10 @@ export const canWrite = (req: Request, res: Response, next: NextFunction) => {
     });
   }
 
-  if (user.role === 'READER') {
+  if (isReadOnlyRole(user.role)) {
     return res.status(403).json({
       error: 'Forbidden',
-      message: 'READER role can only execute SELECT queries',
+      message: `${user.role} role can only execute SELECT queries`,
     });
   }
 
@@ -88,7 +88,8 @@ export const canWrite = (req: Request, res: Response, next: NextFunction) => {
 
 /**
  * Middleware to validate Redis permissions based on user role
- * READER cannot execute write commands or delete via SCAN
+ * Read-only roles cannot execute write commands; SCAN delete is restricted to
+ * the cache-clearing roles (which includes CACHE_CLEARER but not READER).
  */
 export const validateRedisPermissions = (req: Request, res: Response, next: NextFunction) => {
   const user = req.user as Express.User | undefined;
@@ -125,8 +126,10 @@ export const validateRedisPermissions = (req: Request, res: Response, next: Next
   // preview/delete). RAW commands stay gated to MASTER above. No further
   // restrictions here — fall through to the structured-command checks.
 
-  if (user.role === 'READER') {
-    // Check for write commands
+  // Read-only roles (READER, CACHE_CLEARER) may not issue write commands.
+  // CACHE_CLEARER clears keys through the SCAN delete flow below, not via DEL:
+  // SCAN delete is pattern-scoped and written to Redis history.
+  if (isReadOnlyRole(user.role)) {
     if (upperCmd) {
       const writeCommands = [
         'SET', 'SETNX', 'SETEX', 'MSET', 'DEL', 'EXPIRE',
@@ -140,28 +143,29 @@ export const validateRedisPermissions = (req: Request, res: Response, next: Next
         'RAW',
       ];
       if (writeCommands.includes(upperCmd)) {
-        logger.warn('READER attempted Redis write command', {
+        logger.warn('Read-only role attempted Redis write command', {
           username: user.username,
+          role: user.role,
           command: upperCmd,
         });
         return res.status(403).json({
           error: 'Forbidden',
-          message: 'READER role cannot execute write commands',
+          message: `${user.role} role cannot execute write commands`,
         });
       }
     }
+  }
 
-    // Check for SCAN delete action
-    const { action } = req.body;
-    if (action === 'delete') {
-      logger.warn('READER attempted Redis SCAN delete', {
-        username: user.username,
-      });
-      return res.status(403).json({
-        error: 'Forbidden',
-        message: 'READER role cannot delete keys',
-      });
-    }
+  // SCAN delete — allowlisted roles only, so an unhandled role fails closed.
+  if (req.body?.action === 'delete' && !canClearCache(user.role)) {
+    logger.warn('Unprivileged role attempted Redis SCAN delete', {
+      username: user.username,
+      role: user.role,
+    });
+    return res.status(403).json({
+      error: 'Forbidden',
+      message: `${user.role} role cannot delete keys`,
+    });
   }
 
   next();

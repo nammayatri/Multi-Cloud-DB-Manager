@@ -69,7 +69,7 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 │ Async query engine                 │ Non‑blocking execution with progress + cancellation      │
 │ Multi‑statement support            │ Batches separated by ';' with per‑statement results      │
 │ Role‑based access                  │ MASTER / ADMIN / USER / READER / CKH_MANAGER /           │
-│                                    │ RELEASE_MANAGER with granular SQL control                │
+│                                    │ RELEASE_MANAGER / CACHE_CLEARER, granular SQL control    │
 │ Password‑protected ops             │ DROP, TRUNCATE, DELETE, ALTER need MASTER/ADMIN password │
 │ Query history & audit              │ Full execution log with filtering and pagination         │
 │ Env variable substitution          │ ${VAR_NAME} in config for secure credential management   │
@@ -178,7 +178,7 @@ tables, in one transaction, after a human has reviewed and ticked every row.
 |---|---|
 | **User registration** | Self‑service signup, requires ADMIN activation |
 | **Activate / deactivate** | Enable or disable user accounts |
-| **Role assignment** | Promote or demote between MASTER / ADMIN / USER / READER / CKH_MANAGER / RELEASE_MANAGER |
+| **Role assignment** | Promote or demote between MASTER / ADMIN / USER / READER / CKH_MANAGER / RELEASE_MANAGER / CACHE_CLEARER |
 | **User search** | Search by username, name, or email |
 | **User deletion** | Remove accounts (cannot delete MASTER users) |
 
@@ -188,10 +188,11 @@ tables, in one transaction, after a human has reviewed and ticked every row.
 
 ## ◈ Role permissions
 
-There are six roles. **ADMIN** has everything MASTER has *plus* user-access
+There are seven roles. **ADMIN** has everything MASTER has *plus* user-access
 management; **MASTER** retains full execution powers but does **not** manage
 users. **RELEASE_MANAGER** is scoped to safe schema changes; **CKH_MANAGER** is
-ClickHouse-only.
+ClickHouse-only; **CACHE_CLEARER** is READER plus cache invalidation (Redis SCAN
+delete and Shudhi in-memory refresh) and nothing else.
 
 <table>
 <thead>
@@ -203,29 +204,37 @@ ClickHouse-only.
   <th align="center">READER</th>
   <th align="center">RELEASE_MANAGER</th>
   <th align="center">CKH_MANAGER</th>
+  <th align="center">CACHE_CLEARER</th>
 </tr>
 </thead>
 <tbody>
-<tr><td>SELECT</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>INSERT / UPDATE</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>CREATE TABLE / INDEX</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓ <sub>CONCURRENTLY</sub></td><td align="center">—</td></tr>
-<tr><td>ALTER TABLE (ADD)</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>DELETE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>DROP / TRUNCATE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>ALTER DROP</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>GRANT / REVOKE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>Redis READ commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>Redis WRITE commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
-<tr><td>Redis RAW commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td>ClickHouse queries</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td></tr>
-<tr><td>Cancel any user's query</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td><strong>Config Replicate</strong></td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
-<tr><td><strong>User management</strong></td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>SELECT</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td></tr>
+<tr><td>INSERT / UPDATE</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>CREATE TABLE / INDEX</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓ <sub>CONCURRENTLY</sub></td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>ALTER TABLE (ADD)</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>DELETE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>DROP / TRUNCATE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>ALTER DROP</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>GRANT / REVOKE</td><td align="center">✓ <sub>password</sub></td><td align="center">✓ <sub>password</sub></td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>Redis READ commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td></tr>
+<tr><td>Redis WRITE commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>Redis RAW commands</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td>Redis SCAN delete</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td></tr>
+<tr><td>Shudhi cache refresh</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td></tr>
+<tr><td>ClickHouse queries</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
+<tr><td>Cancel any user's query</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td><strong>Config Replicate</strong></td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+<tr><td><strong>User management</strong></td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
 </tbody>
 </table>
 
-> ✎ **Anything a role can't run can be requested.** USER, READER, and
-> RELEASE_MANAGER can submit a blocked query for approval with a written reason.
+> ✎ **CACHE_CLEARER clears keys through SCAN delete, not `DEL`.** Direct Redis
+> write commands stay blocked for it, so every key removal it performs is
+> pattern-scoped and recorded in Redis history.
+
+> ✎ **Anything a role can't run can be requested.** USER, READER,
+> RELEASE_MANAGER, and CACHE_CLEARER can submit a blocked query for approval
+> with a written reason.
 > Whoever approves it must be able to run it themselves — so a `DELETE` still
 > ends up with MASTER/ADMIN, while a READER's `INSERT` can be approved by any
 > USER. The query then runs as the approver. Self‑approval is never permitted.
@@ -432,7 +441,7 @@ Open → **http://localhost:5173**
 1. Register a new account via the login page
 2. Promote yourself to ADMIN (the user-management role — also has full
    query powers; available roles: MASTER, ADMIN, USER, READER,
-   CKH_MANAGER, RELEASE_MANAGER):
+   CKH_MANAGER, RELEASE_MANAGER, CACHE_CLEARER):
 
    ```sql
    UPDATE dual_db_manager.users
@@ -440,8 +449,10 @@ Open → **http://localhost:5173**
    WHERE username = 'your-username';
    ```
 
-   > Run migrations `001`–`004` first (`backend/migrations/`) — `004` adds
-   > the ADMIN role to the `users.role` CHECK constraint.
+   > Run migrations `001`–`007` first (`backend/migrations/`) — `004` adds
+   > the ADMIN role to the `users.role` CHECK constraint and `007` adds
+   > CACHE_CLEARER. Assigning a role the constraint doesn't know about fails
+   > with a plain `Role change failed`.
 3. Log out and log back in. You now have full access.
 
 <br />
@@ -856,7 +867,7 @@ dual-db-manager/
 │   ├── config/
 │   │   └── databases.json          ── Database connection config
 │   ├── migrations/
-│   │   └── 001…006_*.sql           ── Schema migrations (idempotent)
+│   │   └── 001…007_*.sql           ── Schema migrations (idempotent)
 │   ├── src/
 │   │   ├── config/
 │   │   │   └── database.ts         ── Connection pool management

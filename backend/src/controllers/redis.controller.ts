@@ -9,6 +9,16 @@ import { RedisCommandRequest, RedisScanRequest } from '../types';
 import { isSuperRole } from '../constants/roles';
 
 /**
+ * Does this service error represent a role rejection (→ 403 rather than 500)?
+ *
+ * RedisManagerService interpolates the role name into these messages, so match
+ * the shape ("<ROLE> role cannot ...") rather than any one role — matching the
+ * literal "READER role" silently turned every other role's rejection into a 500.
+ */
+const isRoleRejection = (error: any): boolean =>
+  / role cannot /.test(error?.message ?? '');
+
+/**
  * Execute a Redis command
  */
 export const executeRedisCommand = async (
@@ -59,7 +69,7 @@ export const executeRedisCommand = async (
 
     res.json(result);
   } catch (error: any) {
-    if (error.message?.includes('READER role') || error.message?.includes('Invalid cloud') || error.message?.includes('blocked') || error.message?.includes('Only MASTER')) {
+    if (isRoleRejection(error) || error.message?.includes('Invalid cloud') || error.message?.includes('blocked') || error.message?.includes('Only MASTER')) {
       return res.status(403).json({ error: error.message });
     }
     next(error);
@@ -110,7 +120,7 @@ export const scanKeys = async (
       message: 'SCAN operation started',
     });
   } catch (error: any) {
-    if (error.message?.includes('READER role') || error.message?.includes('Invalid cloud') || error.message?.includes('blocked')) {
+    if (isRoleRejection(error) || error.message?.includes('Invalid cloud') || error.message?.includes('blocked')) {
       return res.status(403).json({ error: error.message });
     }
     next(error);

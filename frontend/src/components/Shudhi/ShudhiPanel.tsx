@@ -27,6 +27,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import { shudhiAPI, toastNonApiError } from '../../services/api';
+import { canClearCache } from '../../constants/roles';
 import toast from 'react-hot-toast';
 import type {
   ShudhiPodInfo,
@@ -215,7 +216,9 @@ const ShudhiPanel = () => {
     }
   };
 
-  const isReader = user?.role === 'READER';
+  // Invalidation is the cache-clearing capability — CACHE_CLEARER has it,
+  // READER does not. Mirrors the /api/shudhi/refresh route gate.
+  const canInvalidate = canClearCache(user?.role);
 
   // Case-insensitive substring filter over the loaded keys. We filter on a
   // debounced value (see effect below) so typing doesn't re-run the filter and
@@ -454,7 +457,7 @@ const ShudhiPanel = () => {
           )}
 
           {/* Cache Refresh */}
-          {!isReader && (
+          {canInvalidate && (
             <Paper elevation={1} sx={{ p: 2 }}>
               <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
                 Invalidate Cache
