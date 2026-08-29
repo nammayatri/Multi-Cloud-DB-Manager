@@ -45,8 +45,8 @@ const savePersistedStringSetting = (key: string, value: string) => {
 
 interface AppState {
   // Manager mode
-  managerMode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate';
-  setManagerMode: (mode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate') => void;
+  managerMode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate';
+  setManagerMode: (mode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate') => void;
 
   // Which face of the Migrations tab is showing. Lives here (not in a panel)
   // because both panels' toolbars render the switch for it.
@@ -102,7 +102,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Manager mode
-  managerMode: (sessionStorage.getItem('managerMode') as 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate') || 'db',
+  managerMode: (sessionStorage.getItem('managerMode') as 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate') || 'db',
   setManagerMode: (mode) => {
     sessionStorage.setItem('managerMode', mode);
     set({ managerMode: mode });

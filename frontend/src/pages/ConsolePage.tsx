@@ -26,6 +26,7 @@ import HubIcon from '@mui/icons-material/Hub';
 import CachedIcon from '@mui/icons-material/Cached';
 import RuleIcon from '@mui/icons-material/Rule';
 import DifferenceIcon from '@mui/icons-material/Difference';
+import SettingsSuggestIcon from '@mui/icons-material/SettingsSuggest';
 import { authAPI, schemaAPI, queryRequestsAPI, toastNonApiError } from '../services/api';
 import { Role } from '../constants/roles';
 import { useAppStore } from '../store/appStore';
@@ -53,6 +54,7 @@ const ClickhouseToolbar = lazy(() => import('../components/Clickhouse/Clickhouse
 const CsvBatchPanel = lazy(() => import('../components/CsvBatch/CsvBatchPanel'));
 const ShudhiPanel = lazy(() => import('../components/Shudhi/ShudhiPanel'));
 const ConfigReplicatePanel = lazy(() => import('../components/ConfigReplicate/ConfigReplicatePanel'));
+const SystemConfigsPanel = lazy(() => import('../components/SystemConfigs/SystemConfigsPanel'));
 const QueryRequestsPanel = lazy(() => import('../components/QueryRequests/QueryRequestsPanel'));
 const LiteRunnerPanel = lazy(() => import('../components/Migrations/LiteRunner/LiteRunnerPanel'));
 
@@ -64,7 +66,7 @@ const panelLoader = (
 );
 
 
-type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate';
+type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate';
 
 // Batch Query (CSV) — destructive arbitrary parametrized SQL that only writers
 // may run. Mirrors the backend gate (`requireBatchWriter` = MASTER/ADMIN/USER):
@@ -84,6 +86,12 @@ const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Rol
 // Shudhi (In-Memory Cache Management) — same as Redis: all standard roles.
 const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
 
+// System Configs (feature-flag rows like lean_flow) — reads open to the
+// standard Postgres-access tier; the backend gates the actual save to
+// MASTER/ADMIN only (see systemConfigs.routes.ts), the panel just hides the
+// Save button for everyone else.
+const SYSTEM_CONFIGS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
+
 // Query Requests — every role with Postgres access: the lower tiers raise
 // requests, the higher tiers approve them, and most roles do both depending on
 // the query. CKH_MANAGER has no Postgres access, so it has nothing to do here.
@@ -96,6 +104,7 @@ const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNod
   { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
   { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN, Role.CKH_MANAGER] },
   { mode: 'shudhi', label: 'Shudhi', icon: <CachedIcon sx={{ fontSize: 18 }} />, visibleTo: SHUDHI_ROLES },
+  { mode: 'systemConfigs', label: 'System Configs', icon: <SettingsSuggestIcon sx={{ fontSize: 18 }} />, visibleTo: SYSTEM_CONFIGS_ROLES },
   { mode: 'requests', label: 'Requests', icon: <RuleIcon sx={{ fontSize: 18 }} />, visibleTo: REQUEST_ROLES },
   // Config Replicate ends in an unrestricted multi-table write across a whole
   // group of config tables, so it stays at the MASTER/ADMIN tier — same gate the
@@ -538,6 +547,7 @@ const ConsolePage = () => {
               : managerMode === 'clickhouse' ? 'Clickhouse Manager'
               : managerMode === 'shudhi' ? 'Shudhi — In-Memory Cache Manager'
               : managerMode === 'configreplicate' ? 'Config Replicate'
+              : managerMode === 'systemConfigs' ? 'System Configs'
               : managerMode === 'requests' ? 'Query Requests'
               : 'DB Migration Verifier'}
           </Typography>
@@ -819,6 +829,29 @@ const ConsolePage = () => {
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
                   {visitedModes.has('configreplicate') && <Suspense fallback={panelLoader}><ConfigReplicatePanel /></Suspense>}
+                </Stack>
+              </Box>
+            </Box>
+
+            {/* System Configs View — always mounted */}
+            <Box
+              key="systemConfigs-view"
+              sx={{
+                position: managerMode === 'systemConfigs' ? 'relative' : 'absolute',
+                inset: managerMode === 'systemConfigs' ? undefined : 0,
+                opacity: managerMode === 'systemConfigs' ? 1 : 0,
+                pointerEvents: managerMode === 'systemConfigs' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'systemConfigs' ? 1 : undefined,
+                display: canSee('systemConfigs') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'systemConfigs' ? 0 : 2,
+              }}
+            >
+              <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
+                  {visitedModes.has('systemConfigs') && <Suspense fallback={panelLoader}><SystemConfigsPanel /></Suspense>}
                 </Stack>
               </Box>
             </Box>

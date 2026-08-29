@@ -32,6 +32,7 @@ import { getConfig as getMigrationsConfig } from './services/migrations/migratio
 import repoState from './services/migrations/repo-state.service';
 import shudhiRoutes from './routes/shudhi.routes';
 import configReplicateRoutes from './routes/configReplicate.routes';
+import systemConfigsRoutes from './routes/systemConfigs.routes';
 import RedisManagerPools from './config/redis-pools';
 import ClickHouseClientManager from './config/clickhouse';
 
@@ -147,6 +148,8 @@ app.use('/api/shudhi', shudhiRoutes);
 console.log('[STARTUP] ✓ /api/shudhi routes mounted');
 app.use('/api/config-replicate', configReplicateRoutes);
 console.log('[STARTUP] ✓ /api/config-replicate routes mounted');
+app.use('/api/system-configs', systemConfigsRoutes);
+console.log('[STARTUP] ✓ /api/system-configs routes mounted');
 
 // 404 handler
 app.use(notFoundHandler);
