@@ -38,11 +38,13 @@ const OpSection = ({
   label,
   operation,
   diffs,
+  editableColumns,
 }: {
   tableKey: string;
   label: string;
   operation: ActionableOperation | 'NO_CHANGE';
   diffs: RowDiff[];
+  editableColumns: string[];
 }) => {
   const [open, setOpen] = React.useState(operation !== 'NO_CHANGE');
   const [visible, setVisible] = React.useState(INITIAL_VISIBLE_ROWS);
@@ -85,7 +87,7 @@ const OpSection = ({
       <Collapse in={open} unmountOnExit>
         <Box sx={{ pl: 3, pt: 0.5 }}>
           {diffs.slice(0, visible).map(diff => (
-            <RowDiffCard key={diff.diffId} diff={diff} />
+            <RowDiffCard key={diff.diffId} diff={diff} editableColumns={editableColumns} />
           ))}
 
           {diffs.length > visible && (
@@ -216,6 +218,7 @@ const TableSection = ({ table }: { table: TableAnalysis }) => {
                   label={section.label}
                   operation={section.operation}
                   diffs={visible.filter(d => d.operation === section.operation)}
+                  editableColumns={table.editableColumns || []}
                 />
               ))}
             </>

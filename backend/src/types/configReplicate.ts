@@ -105,6 +105,7 @@ export interface TableAnalysis {
   matchMethod: MatchMethod | null;
   matchKeyColumns: string[];
   dimensionColumns: string[];
+  editableColumns: string[];
   baseRowCount: number;
   targetRowCount: number;
   counts: { insert: number; update: number; delete: number; noChange: number };
@@ -132,6 +133,8 @@ export interface DiffSelection {
   operation: 'INSERT' | 'UPDATE' | 'DELETE';
   sourceHash: string | null;
   targetHash: string | null;
+  excludeColumns?: string[];
+  overrides?: Record<string, string | null>;
 }
 
 export type DriftReason =

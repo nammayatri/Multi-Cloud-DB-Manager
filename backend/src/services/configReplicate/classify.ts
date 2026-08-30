@@ -79,6 +79,11 @@ export const comparableColumns = (classes: Record<string, ColumnClass>): string[
 export const copiedColumns = (classes: Record<string, ColumnClass>): string[] =>
   Object.keys(classes).filter(c => classes[c] === 'COPIED');
 
+export const editableColumns = (
+  classes: Record<string, ColumnClass>,
+  fkRemap: Record<string, string> = {}
+): string[] => copiedColumns(classes).filter(c => !(c in fkRemap));
+
 export const suggestMatchKey = (
   keys: UniqueKeyInfo[],
   dimensionColumns: string[]

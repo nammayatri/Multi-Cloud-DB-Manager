@@ -249,6 +249,8 @@ export const configReplicateApplySchema = z
           operation: z.enum(['INSERT', 'UPDATE', 'DELETE']),
           sourceHash: z.string().max(64).nullable(),
           targetHash: z.string().max(64).nullable(),
+          excludeColumns: z.array(identifier('column')).max(200).optional(),
+          overrides: z.record(z.string().max(100000).nullable()).optional(),
         })
       )
       .min(1, 'Select at least one row to apply')

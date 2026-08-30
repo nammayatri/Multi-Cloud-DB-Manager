@@ -99,6 +99,56 @@ const verifySelection = (
 
 interface PlannedStatement extends RunItemRecord {}
 
+const verifyColumnChoices = (
+  analysis: AnalyzeOutput,
+  selections: DiffSelection[]
+): void => {
+  const contextOf = (diffId: string): TableContext | null => {
+    for (const context of analysis.contexts.values()) {
+      if (context.baseRowsByDiffId.has(diffId) || context.targetRowsByDiffId.has(diffId)) {
+        return context;
+      }
+    }
+    return null;
+  };
+
+  for (const selection of selections) {
+    const overrides = selection.overrides || {};
+    const excluded = selection.excludeColumns || [];
+    if (Object.keys(overrides).length === 0 && excluded.length === 0) continue;
+
+    const context = contextOf(selection.diffId);
+    if (!context) continue;
+    const where = `${context.config.schema}.${context.config.table}`;
+
+    if (Object.keys(overrides).length > 0 && selection.operation !== 'INSERT') {
+      throw new Error(`Column values can only be set on an insert (${where})`);
+    }
+    if (excluded.length > 0 && selection.operation !== 'UPDATE') {
+      throw new Error(`Columns can only be retained on an update (${where})`);
+    }
+
+    for (const column of [...Object.keys(overrides), ...excluded]) {
+      if (!context.editableColumns.has(column)) {
+        throw new Error(
+          `${where}.${column} cannot be edited: it is a dimension, generated id, ` +
+            'timestamp, match key, or a foreign key this run rewrites.'
+        );
+      }
+    }
+
+    if (excluded.length > 0) {
+      const changed = context.changedColumnsByDiffId.get(selection.diffId) || [];
+      const unknown = excluded.filter(c => !changed.includes(c));
+      if (unknown.length > 0) {
+        throw new Error(
+          `${where}: ${unknown.join(', ')} is not among the columns this update changes.`
+        );
+      }
+    }
+  }
+};
+
 const buildContextFor = (
   context: TableContext,
   newValues: string[]
@@ -232,12 +282,15 @@ const buildPlan = (
       if (!baseRow) continue;
 
       const remapped = resolveRemapped(context, baseRow, minted);
+      const overrides = selection.overrides || {};
       const built = buildInsert(
         ctx,
         baseRow,
         generated.get(selection.diffId) || {},
-        remapped
+        remapped,
+        overrides
       );
+      const overriddenColumns = Object.keys(overrides);
       inserts.push({
         schema: context.config.schema,
         table: context.config.table,
@@ -245,7 +298,10 @@ const buildPlan = (
         diffId: selection.diffId,
         sql: built.sql,
         params: built.params,
-        rowDiff: { inserted: previewOf(context, { ...baseRow, ...remapped }) },
+        rowDiff: {
+          inserted: previewOf(context, { ...baseRow, ...remapped, ...overrides }),
+          ...(overriddenColumns.length ? { overriddenColumns } : {}),
+        },
         rowsAffected: null,
         position: inserts.length,
       });
@@ -257,8 +313,12 @@ const buildPlan = (
     for (const selection of selectedByTable.get(tableKey) || []) {
       if (selection.operation !== 'UPDATE') continue;
       const pair = context.pairedByDiffId.get(selection.diffId);
-      const changed = context.changedColumnsByDiffId.get(selection.diffId);
-      if (!pair || !changed) continue;
+      const allChanged = context.changedColumnsByDiffId.get(selection.diffId);
+      if (!pair || !allChanged) continue;
+
+      const retained = new Set(selection.excludeColumns || []);
+      const changed = allChanged.filter(c => !retained.has(c));
+      if (changed.length === 0) continue;
 
       const remapped = resolveRemapped(context, pair.base, minted);
       const built = buildUpdate(
@@ -284,6 +344,7 @@ const buildPlan = (
               Object.prototype.hasOwnProperty.call(remapped, c) ? remapped[c] : pair.base[c]
             ),
           })),
+          ...(retained.size ? { retainedColumns: [...retained] } : {}),
         },
         rowsAffected: null,
         position: updates.length,
@@ -350,6 +411,7 @@ export const applyReplication = async (
     );
 
     verifySelection(analysis, request.selections, request.analysisToken);
+    verifyColumnChoices(analysis, request.selections);
 
     plan = buildPlan(analysis, request.selections, request.newValues);
 
