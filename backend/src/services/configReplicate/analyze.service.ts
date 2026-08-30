@@ -11,7 +11,13 @@ import {
   TableAnalysis,
   UniqueKeyInfo,
 } from '../../types/configReplicate';
-import { classifyColumns, comparableColumns, copiedColumns, suggestMatchKey } from './classify';
+import {
+  classifyColumns,
+  comparableColumns,
+  copiedColumns,
+  editableColumns,
+  suggestMatchKey,
+} from './classify';
 import * as introspection from './introspection.service';
 import { pairByKey, pairByMutualBestMatch, Row } from './matching';
 import { idMapKey, pendingRef, projectRow } from './projection';
@@ -35,6 +41,7 @@ export interface TableContext {
   changedColumnsByDiffId: Map<string, string[]>;
   primaryKeyColumn: string | null;
   originalBaseByDiffId: Map<string, Row>;
+  editableColumns: Set<string>;
 }
 
 export interface AnalyzeOutput {
@@ -103,6 +110,7 @@ const analyzeTable = async (
     matchMethod: null,
     matchKeyColumns: [],
     dimensionColumns: config.dimensionColumns,
+    editableColumns: [],
     baseRowCount: 0,
     targetRowCount: 0,
     counts: { insert: 0, update: 0, delete: 0, noChange: 0 },
@@ -201,6 +209,7 @@ const analyzeTable = async (
   analysis.targetRowCount = targetRows.length;
   analysis.matchMethod = matchMethod;
   analysis.matchKeyColumns = matchKeyColumns;
+  analysis.editableColumns = editableColumns(classes, config.fkRemap);
 
   const originalOf = new Map<Row, Row>();
   const danglingOf = new Map<Row, string[]>();
@@ -246,6 +255,7 @@ const analyzeTable = async (
     changedColumnsByDiffId: new Map(),
     primaryKeyColumn: primary && primary.columns.length === 1 ? primary.columns[0] : null,
     originalBaseByDiffId: new Map(),
+    editableColumns: new Set(analysis.editableColumns),
   };
 
   const pkColumn = context.primaryKeyColumn;

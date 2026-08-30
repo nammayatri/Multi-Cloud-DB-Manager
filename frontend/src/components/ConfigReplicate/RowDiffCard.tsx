@@ -1,22 +1,26 @@
 import React, { useState } from 'react';
 import {
+  Alert,
   Box,
   Checkbox,
   Chip,
   Collapse,
   IconButton,
   Paper,
+  Stack,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableRow,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import UndoIcon from '@mui/icons-material/Undo';
 import { useConfigReplicateStore } from '../../store/configReplicateStore';
 import type { RowDiff } from '../../types/configReplicate';
 
@@ -51,9 +55,10 @@ const identityLabel = (diff: RowDiff): string => {
 
 interface Props {
   diff: RowDiff;
+  editableColumns: string[];
 }
 
-const RowDiffCard = ({ diff }: Props) => {
+const RowDiffCard = ({ diff, editableColumns }: Props) => {
   // Subscribed as booleans, not as the Sets: toggling any row replaces the Set
   // identity, so selecting the whole set here would re-render every mounted card
   // on every click and defeat the memo below.
@@ -61,7 +66,18 @@ const RowDiffCard = ({ diff }: Props) => {
   const isExpanded = useConfigReplicateStore(s => s.expandedDiffs.has(diff.diffId));
   const toggleDiff = useConfigReplicateStore(s => s.toggleDiff);
   const toggleDiffExpanded = useConfigReplicateStore(s => s.toggleDiffExpanded);
+  const retained = useConfigReplicateStore(s => s.retainedColumns[diff.diffId]);
+  const overrides = useConfigReplicateStore(s => s.overrides[diff.diffId]);
+  const toggleRetainedColumn = useConfigReplicateStore(s => s.toggleRetainedColumn);
+  const setOverride = useConfigReplicateStore(s => s.setOverride);
+  const clearOverride = useConfigReplicateStore(s => s.clearOverride);
   const [showAllColumns, setShowAllColumns] = useState(false);
+
+  const editable = new Set(editableColumns);
+  const retainedSet = new Set(retained || []);
+  const overrideMap = overrides || {};
+  const changedCount = (diff.columnDiffs || []).length;
+  const allRetained = changedCount > 0 && retainedSet.size === changedCount;
   const selectable = diff.operation !== 'NO_CHANGE';
 
   const changedColumns = new Set((diff.columnDiffs || []).map(c => c.column));
@@ -140,30 +156,71 @@ const RowDiffCard = ({ diff }: Props) => {
 
       <Collapse in={isExpanded} unmountOnExit>
         <Box sx={{ px: 1.5, pb: 1 }}>
+          {allRetained && (
+            <Alert severity="info" sx={{ mb: 1, py: 0, fontSize: '0.72rem' }}>
+              Every changed column is being kept, so this row will not be written.
+            </Alert>
+          )}
           {diff.operation === 'UPDATE' ? (
             <>
               <Table size="small" sx={{ bgcolor: 'rgba(0,0,0,0.3)', borderRadius: 1 }}>
                 <TableHead>
                   <TableRow>
+                    <TableCell sx={{ ...mono, fontWeight: 600, width: 40 }} />
                     <TableCell sx={{ ...mono, fontWeight: 600 }}>Column</TableCell>
                     <TableCell sx={{ ...mono, fontWeight: 600 }}>Current</TableCell>
                     <TableCell sx={{ ...mono, fontWeight: 600 }}>New</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(diff.columnDiffs || []).map(columnDiff => (
-                    <TableRow key={columnDiff.column}>
-                      <TableCell sx={mono}>{columnDiff.column}</TableCell>
-                      <TableCell
-                        sx={{ ...mono, color: 'error.main', textDecoration: 'line-through' }}
-                      >
-                        {renderValue(columnDiff.oldValue)}
-                      </TableCell>
-                      <TableCell sx={{ ...mono, color: 'success.main' }}>
-                        {renderValue(columnDiff.newValue)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {(diff.columnDiffs || []).map(columnDiff => {
+                    const isRetained = retainedSet.has(columnDiff.column);
+                    const canEdit = editable.has(columnDiff.column);
+                    return (
+                      <TableRow key={columnDiff.column}>
+                        <TableCell sx={{ py: 0 }}>
+                          <Tooltip
+                            title={
+                              canEdit
+                                ? isRetained
+                                  ? 'Keeping the current value — untick to apply the new one'
+                                  : 'Applying the new value — tick to keep the current one'
+                                : 'This column identifies the row and is always applied'
+                            }
+                          >
+                            <span>
+                              <Checkbox
+                                size="small"
+                                checked={!isRetained}
+                                disabled={!canEdit}
+                                onChange={() => toggleRetainedColumn(diff.diffId, columnDiff.column)}
+                                sx={{ p: 0.25 }}
+                              />
+                            </span>
+                          </Tooltip>
+                        </TableCell>
+                        <TableCell sx={mono}>{columnDiff.column}</TableCell>
+                        <TableCell
+                          sx={{
+                            ...mono,
+                            color: isRetained ? 'success.main' : 'error.main',
+                            textDecoration: isRetained ? 'none' : 'line-through',
+                          }}
+                        >
+                          {renderValue(columnDiff.oldValue)}
+                        </TableCell>
+                        <TableCell
+                          sx={{
+                            ...mono,
+                            color: isRetained ? 'text.disabled' : 'success.main',
+                            textDecoration: isRetained ? 'line-through' : 'none',
+                          }}
+                        >
+                          {renderValue(columnDiff.newValue)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
               <Typography
@@ -191,12 +248,82 @@ const RowDiffCard = ({ diff }: Props) => {
           ) : (
             <Table size="small" sx={{ bgcolor: 'rgba(0,0,0,0.3)', borderRadius: 1 }}>
               <TableBody>
-                {visibleEntries.map(([column, value]) => (
-                  <TableRow key={column}>
-                    <TableCell sx={{ ...mono, width: '35%' }}>{column}</TableCell>
-                    <TableCell sx={mono}>{renderValue(value)}</TableCell>
-                  </TableRow>
-                ))}
+                {visibleEntries.map(([column, value]) => {
+                  const canEdit = diff.operation === 'INSERT' && editable.has(column);
+                  const isOverridden = Object.prototype.hasOwnProperty.call(overrideMap, column);
+
+                  return (
+                    <TableRow key={column}>
+                      <TableCell sx={{ ...mono, width: '35%' }}>
+                        {column}
+                        {isOverridden && (
+                          <Chip
+                            label="edited"
+                            size="small"
+                            color="info"
+                            sx={{ height: 16, fontSize: '0.58rem', ml: 0.5 }}
+                          />
+                        )}
+                      </TableCell>
+                      <TableCell sx={mono}>
+                        {canEdit ? (
+                          <Stack direction="row" spacing={0.5} alignItems="center">
+                            <TextField
+                              size="small"
+                              variant="standard"
+                              fullWidth
+                              placeholder={renderValue(value)}
+                              value={
+                                isOverridden
+                                  ? overrideMap[column] === null
+                                    ? ''
+                                    : String(overrideMap[column])
+                                  : ''
+                              }
+                              onChange={e => setOverride(diff.diffId, column, e.target.value)}
+                              InputProps={{ sx: { ...mono } }}
+                            />
+                            {isOverridden ? (
+                              <Tooltip title="Revert to the copied value">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => clearOverride(diff.diffId, column)}
+                                  sx={{ p: 0.25 }}
+                                >
+                                  <UndoIcon sx={{ fontSize: 14 }} />
+                                </IconButton>
+                              </Tooltip>
+                            ) : (
+                              <Tooltip title="Set this column to NULL">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => setOverride(diff.diffId, column, null)}
+                                  sx={{ p: 0.25, fontSize: '0.6rem' }}
+                                >
+                                  <Typography variant="caption" sx={{ fontSize: '0.6rem' }}>
+                                    NULL
+                                  </Typography>
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                          </Stack>
+                        ) : (
+                          <Tooltip
+                            title={
+                              diff.operation === 'INSERT'
+                                ? 'Set by the replication — a dimension, generated id, timestamp, match key, or a remapped reference'
+                                : ''
+                            }
+                          >
+                            <span style={{ opacity: diff.operation === 'INSERT' ? 0.7 : 1 }}>
+                              {renderValue(value)}
+                            </span>
+                          </Tooltip>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}

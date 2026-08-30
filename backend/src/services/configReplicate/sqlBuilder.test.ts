@@ -5,6 +5,7 @@ import {
   buildDelete,
   buildInsert,
   buildUpdate,
+  overrideCast,
   quoteIdent,
 } from './sqlBuilder';
 
@@ -196,10 +197,6 @@ describe('buildDelete', () => {
 });
 
 describe('generated uuid columns that carry a database default', () => {
-  // Regression: a parent whose PK is `uuid DEFAULT gen_random_uuid()` used to be
-  // omitted from the INSERT and left to the database. The id was then unknown to
-  // the run, so any child in the group referencing it could not be resolved and
-  // the whole apply failed. Minting it app-side is what makes remapping possible.
   const defaulted: ColumnInfo[] = [
     column({ columnName: 'id', udtName: 'uuid', columnDefault: 'gen_random_uuid()' }),
     column({ columnName: 'city_id', udtName: 'int4' }),
@@ -288,5 +285,89 @@ describe('composite dimensions', () => {
   it('still binds every value and interpolates none', () => {
     const built = buildInsert(compositeCtx, base, {}, {});
     expect(hasNoLiterals(built.sql)).toBe(true);
+  });
+});
+
+describe('insert value overrides', () => {
+  const overridable: ColumnInfo[] = [
+    column({ columnName: 'city_id', udtName: 'int4' }),
+    column({ columnName: 'config_key' }),
+    column({ columnName: 'value' }),
+    column({ columnName: 'limit_count', udtName: 'int4', dataType: 'integer' }),
+    column({ columnName: 'payload', udtName: 'jsonb' }),
+    column({ columnName: 'tags', udtName: '_text' }),
+  ];
+
+  const overrideCtx: BuildContext = {
+    schema: 'app',
+    table: 'cfg',
+    columns: overridable,
+    classes: {
+      city_id: 'DIMENSION',
+      config_key: 'MATCH_KEY',
+      value: 'COPIED',
+      limit_count: 'COPIED',
+      payload: 'COPIED',
+      tags: 'COPIED',
+    },
+    columnAllowlist: new Set(overridable.map(c => c.columnName)),
+    dimensionColumns: ['city_id'],
+    newDimensionValues: { city_id: '9' },
+  };
+
+  const row = { city_id: 5, config_key: 'k', value: 'original', limit_count: 1, payload: { a: 1 }, tags: ['x'] };
+
+  it('writes the override instead of the base value', () => {
+    const built = buildInsert(overrideCtx, row, {}, {}, { value: 'typed by hand' });
+    expect(built.params).toContain('typed by hand');
+    expect(built.params).not.toContain('original');
+  });
+
+  it('casts a text override to the column type so Postgres parses it', () => {
+    const built = buildInsert(overrideCtx, row, {}, {}, { limit_count: '42' });
+    expect(built.sql).toMatch(/\$\d+::int4/);
+    expect(built.params).toContain('42');
+  });
+
+  it('casts jsonb and array overrides to their own types', () => {
+    const built = buildInsert(overrideCtx, row, {}, {}, { payload: '{"b":2}', tags: '{y,z}' });
+    expect(built.sql).toMatch(/\$\d+::jsonb/);
+    expect(built.sql).toMatch(/\$\d+::text\[\]/);
+  });
+
+  it('accepts an explicit null override', () => {
+    const built = buildInsert(overrideCtx, row, {}, {}, { value: null });
+    expect(built.params).toContain(null);
+  });
+
+  it('still binds every override rather than interpolating it', () => {
+    const built = buildInsert(overrideCtx, row, {}, {}, { value: "'; DROP TABLE x; --" });
+    expect(built.sql).not.toContain('DROP TABLE');
+    expect(built.params).toContain("'; DROP TABLE x; --");
+  });
+
+  it('leaves un-overridden columns on their copied values', () => {
+    const built = buildInsert(overrideCtx, row, {}, {}, { value: 'new' });
+    expect(built.params).toContain(1);
+  });
+
+  it('prefers an override over an fk-remapped value for the same column', () => {
+    const built = buildInsert(overrideCtx, row, {}, { value: 'remapped' }, { value: 'override' });
+    expect(built.params).toContain('override');
+    expect(built.params).not.toContain('remapped');
+  });
+});
+
+describe('overrideCast', () => {
+  it('casts scalars, arrays and json', () => {
+    expect(overrideCast('int4')).toBe('::int4');
+    expect(overrideCast('timestamptz')).toBe('::timestamptz');
+    expect(overrideCast('_text')).toBe('::text[]');
+    expect(overrideCast('jsonb')).toBe('::jsonb');
+  });
+
+  it('refuses to emit a cast built from an unexpected type name', () => {
+    expect(overrideCast('bad type; DROP TABLE x')).toBe('');
+    expect(overrideCast('_bad type')).toBe('::text[]');
   });
 });

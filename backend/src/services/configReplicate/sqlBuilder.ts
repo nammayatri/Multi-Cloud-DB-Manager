@@ -22,6 +22,17 @@ const castFor = (udtName: string): string => {
   return '';
 };
 
+const SAFE_UDT = /^[a-z_][a-z0-9_]*$/;
+
+export const overrideCast = (udtName: string): string => {
+  const udt = udtName.toLowerCase();
+  if (udt.startsWith('_')) {
+    const element = udt.slice(1);
+    return SAFE_UDT.test(element) ? `::${element}[]` : '::text[]';
+  }
+  return SAFE_UDT.test(udt) ? `::${udt}` : '';
+};
+
 const bindValue = (value: unknown, column: ColumnInfo): unknown => {
   const udt = column.udtName.toLowerCase();
   if (value === null || value === undefined) return null;
@@ -80,7 +91,8 @@ export const buildInsert = (
   ctx: BuildContext,
   baseRow: Record<string, unknown>,
   generatedValues: Record<string, unknown>,
-  remappedValues: Record<string, unknown>
+  remappedValues: Record<string, unknown>,
+  overrides: Record<string, string | null> = {}
 ): BuiltStatement => {
   const columnNames: string[] = [];
   const valueExpressions: string[] = [];
@@ -119,6 +131,13 @@ export const buildInsert = (
 
     assertKnownIdentifier(name, ctx.columnAllowlist);
     columnNames.push(quoteIdent(name));
+
+    if (Object.prototype.hasOwnProperty.call(overrides, name)) {
+      params.push(overrides[name]);
+      valueExpressions.push(`$${params.length}${overrideCast(column.udtName)}`);
+      continue;
+    }
+
     const value = Object.prototype.hasOwnProperty.call(remappedValues, name)
       ? remappedValues[name]
       : baseRow[name];

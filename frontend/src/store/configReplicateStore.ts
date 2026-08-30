@@ -51,6 +51,8 @@ interface ConfigReplicateState {
   expandedDiffs: Set<string>;
   opFilter: OpFilter;
   selectedDiffs: Set<string>;
+  retainedColumns: Record<string, string[]>;
+  overrides: Record<string, Record<string, string | null>>;
 
   setGroupId: (id: string) => void;
   setDatabase: (db: string) => void;
@@ -62,6 +64,9 @@ interface ConfigReplicateState {
   toggleDiffExpanded: (diffId: string) => void;
 
   toggleDiff: (diffId: string) => void;
+  toggleRetainedColumn: (diffId: string, column: string) => void;
+  setOverride: (diffId: string, column: string, value: string | null) => void;
+  clearOverride: (diffId: string, column: string) => void;
   selectAllInTable: (tableKey: string) => void;
   deselectAllInTable: (tableKey: string) => void;
   selectAllInSection: (tableKey: string, operation: ActionableOperation) => void;
@@ -112,6 +117,8 @@ export const useConfigReplicateStore = create<ConfigReplicateState>((set, get) =
   expandedDiffs: new Set<string>(),
   opFilter: 'all',
   selectedDiffs: new Set<string>(),
+  retainedColumns: {},
+  overrides: {},
 
   setGroupId: groupId => {
     const summary = get().groups.find(g => g.id === groupId);
@@ -121,24 +128,26 @@ export const useConfigReplicateStore = create<ConfigReplicateState>((set, get) =
       analysis: null,
       selectedDiffs: new Set(),
       lastRun: null,
+      retainedColumns: {},
+      overrides: {},
       baseValues: Array(arity).fill(''),
       newValues: Array(arity).fill(''),
     });
     if (groupId) void get().loadGroup(groupId);
   },
-  setDatabase: database => set({ database, analysis: null, selectedDiffs: new Set() }),
-  setCloud: cloud => set({ cloud, analysis: null, selectedDiffs: new Set() }),
+  setDatabase: database => set({ database, analysis: null, selectedDiffs: new Set(), retainedColumns: {}, overrides: {} }),
+  setCloud: cloud => set({ cloud, analysis: null, selectedDiffs: new Set(), retainedColumns: {}, overrides: {} }),
   setBaseValue: (index, value) =>
     set(state => {
       const baseValues = [...state.baseValues];
       baseValues[index] = value;
-      return { baseValues, analysis: null, selectedDiffs: new Set() };
+      return { baseValues, analysis: null, selectedDiffs: new Set(), retainedColumns: {}, overrides: {} };
     }),
   setNewValue: (index, value) =>
     set(state => {
       const newValues = [...state.newValues];
       newValues[index] = value;
-      return { newValues, analysis: null, selectedDiffs: new Set() };
+      return { newValues, analysis: null, selectedDiffs: new Set(), retainedColumns: {}, overrides: {} };
     }),
   setOpFilter: opFilter => set({ opFilter }),
 
@@ -164,6 +173,30 @@ export const useConfigReplicateStore = create<ConfigReplicateState>((set, get) =
       if (next.has(diffId)) next.delete(diffId);
       else next.add(diffId);
       return { selectedDiffs: next };
+    }),
+
+  toggleRetainedColumn: (diffId, column) =>
+    set(state => {
+      const current = state.retainedColumns[diffId] || [];
+      const next = current.includes(column)
+        ? current.filter(c => c !== column)
+        : [...current, column];
+      return { retainedColumns: { ...state.retainedColumns, [diffId]: next } };
+    }),
+
+  setOverride: (diffId, column, value) =>
+    set(state => ({
+      overrides: {
+        ...state.overrides,
+        [diffId]: { ...(state.overrides[diffId] || {}), [column]: value },
+      },
+    })),
+
+  clearOverride: (diffId, column) =>
+    set(state => {
+      const row = { ...(state.overrides[diffId] || {}) };
+      delete row[column];
+      return { overrides: { ...state.overrides, [diffId]: row } };
     }),
 
   selectAllInTable: tableKey =>
@@ -208,18 +241,38 @@ export const useConfigReplicateStore = create<ConfigReplicateState>((set, get) =
   getSelectedCount: () => get().selectedDiffs.size,
 
   getSelections: () => {
-    const { analysis, selectedDiffs } = get();
+    const { analysis, selectedDiffs, retainedColumns, overrides } = get();
     return allDiffs(analysis)
       .filter(d => isActionable(d) && selectedDiffs.has(d.diffId))
-      .map(selectionOf);
+      .map(diff => {
+        const selection = selectionOf(diff);
+        if (diff.operation === 'UPDATE') {
+          const retained = retainedColumns[diff.diffId] || [];
+          if (retained.length > 0) selection.excludeColumns = retained;
+        }
+        if (diff.operation === 'INSERT') {
+          const row = overrides[diff.diffId] || {};
+          if (Object.keys(row).length > 0) selection.overrides = row;
+        }
+        return selection;
+      });
   },
 
   getSelectedTotals: () => {
-    const selections = get().getSelections();
+    const { analysis, selectedDiffs, retainedColumns } = get();
+    const selected = allDiffs(analysis).filter(d => isActionable(d) && selectedDiffs.has(d.diffId));
+
+    const writtenUpdates = selected.filter(d => {
+      if (d.operation !== 'UPDATE') return false;
+      const changed = (d.columnDiffs || []).length;
+      const retained = (retainedColumns[d.diffId] || []).length;
+      return changed === 0 || retained < changed;
+    });
+
     return {
-      insert: selections.filter(s => s.operation === 'INSERT').length,
-      update: selections.filter(s => s.operation === 'UPDATE').length,
-      delete: selections.filter(s => s.operation === 'DELETE').length,
+      insert: selected.filter(d => d.operation === 'INSERT').length,
+      update: writtenUpdates.length,
+      delete: selected.filter(d => d.operation === 'DELETE').length,
     };
   },
 
@@ -309,11 +362,11 @@ export const useConfigReplicateStore = create<ConfigReplicateState>((set, get) =
           .map(tableKeyOf)
       );
 
-      set({ analysis, expandedTables: expanded, expandedDiffs: new Set() });
+      set({ analysis, expandedTables: expanded, expandedDiffs: new Set(), retainedColumns: {}, overrides: {} });
       get().selectAllDefaults();
     } catch (error: any) {
       const message = error?.response?.data?.error || error?.message || 'Analysis failed';
-      set({ error: message, analysis: null, selectedDiffs: new Set() });
+      set({ error: message, analysis: null, selectedDiffs: new Set(), retainedColumns: {}, overrides: {} });
       toastNonApiError(error, 'Analysis failed');
     } finally {
       set({ isAnalyzing: false });
@@ -383,6 +436,8 @@ export const useConfigReplicateStore = create<ConfigReplicateState>((set, get) =
       selectedDiffs: new Set(),
       expandedDiffs: new Set(),
       expandedTables: new Set(),
+      retainedColumns: {},
+      overrides: {},
       lastRun: null,
       error: null,
     }),

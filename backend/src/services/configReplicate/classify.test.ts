@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { ColumnInfo, UniqueKeyInfo } from '../../types/configReplicate';
-import { classifyColumns, comparableColumns, copiedColumns, suggestMatchKey } from './classify';
+import {
+  classifyColumns,
+  comparableColumns,
+  copiedColumns,
+  editableColumns,
+  suggestMatchKey,
+} from './classify';
 
 const column = (over: Partial<ColumnInfo> & { columnName: string }): ColumnInfo => ({
   ordinalPosition: 1,
@@ -259,5 +265,32 @@ describe('composite dimensions', () => {
     const suggestion = suggestMatchKey(keys, dimensions);
     expect(suggestion).not.toBeNull();
     expect(suggestion!.matchColumns).toEqual([]);
+  });
+});
+
+describe('editableColumns', () => {
+  const classes = {
+    city_id: 'DIMENSION' as const,
+    config_key: 'MATCH_KEY' as const,
+    id: 'GENERATED' as const,
+    created_at: 'TIMESTAMP' as const,
+    value: 'COPIED' as const,
+    parent_id: 'COPIED' as const,
+    junk: 'IGNORED' as const,
+  };
+
+  it('offers only plain copied payload', () => {
+    expect(editableColumns(classes).sort()).toEqual(['parent_id', 'value']);
+  });
+
+  it('withholds a foreign key the run rewrites', () => {
+    expect(editableColumns(classes, { parent_id: 'app.parent' })).toEqual(['value']);
+  });
+
+  it('never offers a dimension, generated id, timestamp or match key', () => {
+    const offered = editableColumns(classes);
+    for (const locked of ['city_id', 'id', 'created_at', 'config_key', 'junk']) {
+      expect(offered).not.toContain(locked);
+    }
   });
 });
