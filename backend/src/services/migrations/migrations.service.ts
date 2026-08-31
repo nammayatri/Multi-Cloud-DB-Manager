@@ -11,7 +11,7 @@ import {
   PathMapping,
 } from '../../types/migrations';
 import { getChangedFiles, getFileContent, getFileContentOrEmpty, getMergeBase, pullLatest } from './git.service';
-import { splitStatements, classifyStatement } from './sql-parser.service';
+import { splitStatements, classifyStatement, addedStatements } from './sql-parser.service';
 import { verifyStatement } from './verification.service';
 
 /**
@@ -155,32 +155,6 @@ function computeFileStatus(statements: MigrationStatement[]): MigrationFileResul
 /**
  * Run the full migration analysis pipeline.
  */
-/**
- * Canonical form of a SQL statement for identity comparison between two file
- * versions: lowercased, whitespace collapsed, trailing semicolons removed. Two
- * statements with the same canonical form are the "same" migration line, so
- * cosmetic reformatting between refs is not mistaken for a new statement.
- */
-export function canonicalizeStatement(sql: string): string {
-  return sql
-    .replace(/--[^\n]*/g, ' ')       // strip line comments
-    .replace(/\s+/g, ' ')
-    .replace(/;+\s*$/, '')
-    .trim()
-    .toLowerCase();
-}
-
-/**
- * Statements ADDED in `toRef` relative to `baseContent` — i.e. present in the
- * new file version but not the old one. This scopes analysis to the migrations
- * THIS diff introduced, instead of re-checking every (often years-old)
- * statement in the whole current file.
- */
-export function addedStatements(toStatements: string[], baseContent: string): string[] {
-  const baseSet = new Set(splitStatements(baseContent).map(canonicalizeStatement));
-  return toStatements.filter(s => !baseSet.has(canonicalizeStatement(s)));
-}
-
 export async function analyze(
   fromRef: string,
   toRef: string,

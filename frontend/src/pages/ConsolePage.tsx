@@ -54,6 +54,7 @@ const CsvBatchPanel = lazy(() => import('../components/CsvBatch/CsvBatchPanel'))
 const ShudhiPanel = lazy(() => import('../components/Shudhi/ShudhiPanel'));
 const ConfigReplicatePanel = lazy(() => import('../components/ConfigReplicate/ConfigReplicatePanel'));
 const QueryRequestsPanel = lazy(() => import('../components/QueryRequests/QueryRequestsPanel'));
+const LiteRunnerPanel = lazy(() => import('../components/Migrations/LiteRunner/LiteRunnerPanel'));
 
 // Fallback shown while a lazy panel chunk loads on first tab open.
 const panelLoader = (
@@ -215,6 +216,7 @@ const SYNC_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 let lastSyncTime = 0;
 
 const MigrationsContent = () => {
+  const migrationView = useAppStore((s) => s.migrationView);
   const loadConfig = useMigrationsStore((s) => s.loadConfig);
   const loadRefs = useMigrationsStore((s) => s.loadRefs);
   const refreshRepo = useMigrationsStore((s) => s.refreshRepo);
@@ -344,12 +346,20 @@ const MigrationsContent = () => {
         </Box>
       )}
 
-      <MigrationToolbar onRefresh={handleRefresh} />
-      <MigrationSummaryBar />
-      <Box sx={{ flex: 1, overflow: 'auto' }}>
-        <MigrationResultsView />
-      </Box>
-      <MigrationActionBar />
+      {migrationView === 'lite' ? (
+        <Suspense fallback={panelLoader}>
+          <LiteRunnerPanel />
+        </Suspense>
+      ) : (
+        <>
+          <MigrationToolbar onRefresh={handleRefresh} />
+          <MigrationSummaryBar />
+          <Box sx={{ flex: 1, overflow: 'auto' }}>
+            <MigrationResultsView />
+          </Box>
+          <MigrationActionBar />
+        </>
+      )}
     </Box>
   );
 };

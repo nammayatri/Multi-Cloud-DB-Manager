@@ -288,10 +288,21 @@ export class QueryValidator {
 
       // Check for ALTER operations (excluding ALTER ADD which is safe)
       if (/^\s*ALTER\s+/i.test(statement)) {
-        // ALTER ADD is considered safe (adding columns, indexes, constraints)
-        // ALTER DROP is dangerous (dropping columns, constraints)
+        // ALTER ADD is considered safe (adding columns, indexes, constraints).
+        // Everything below rewrites or removes something that already exists,
+        // so it can break running code and is gated behind the password.
         if (/\s+DROP\s+/i.test(statement)) {
           dangerousOperations.push('ALTER DROP');
+        }
+        // RENAME of a column, constraint, or the table itself.
+        if (/\bRENAME\b/i.test(statement)) {
+          dangerousOperations.push('ALTER RENAME');
+        }
+        // Column type change: "ALTER [COLUMN] <col> [SET DATA] TYPE <type>".
+        // Deliberately does NOT match "ALTER TYPE <enum> ADD VALUE", which is
+        // additive — there the token straight after ALTER is TYPE itself.
+        if (/\bALTER\s+(?:COLUMN\s+)?(?!COLUMN\b)\S+\s+(?:SET\s+DATA\s+)?TYPE\b/i.test(statement)) {
+          dangerousOperations.push('ALTER COLUMN TYPE');
         }
       }
 

@@ -17,6 +17,8 @@ export interface ValidationWarning {
  *   - TRUNCATE …
  *   - DELETE FROM … without WHERE
  *   - ALTER … containing DROP (e.g. ALTER TABLE … DROP COLUMN)
+ *   - ALTER … RENAME … (column, constraint, or table)
+ *   - ALTER … column TYPE change (breaks readers of the old type)
  *   - GRANT … / REVOKE …
  * If the lists drift, the backend rejects with "Password verification required"
  * and DatabaseSelector re-opens this dialog as a safety net — but keeping them
@@ -79,17 +81,25 @@ export const detectDangerousQueries = (
     }
 
     // ALTER (excluding plain ADD COLUMN/CONSTRAINT/INDEX, which is safe).
-    // Only ALTER … DROP … needs a password on the backend.
+    // ALTER … DROP, RENAME, and column TYPE changes need a password on the
+    // backend — each rewrites or removes something that already exists.
     if (upperStatement.match(/^\s*ALTER\s+/i)) {
       const isAlterDrop = /\s+DROP\s+/i.test(upperStatement);
-      if (isAlterDrop || !upperStatement.match(/\s+ADD\s+(COLUMN|CONSTRAINT|INDEX)/i)) {
+      const isAlterRename = /\bRENAME\b/i.test(upperStatement);
+      // Matches "ALTER [COLUMN] <col> [SET DATA] TYPE"; deliberately NOT
+      // "ALTER TYPE <enum> ADD VALUE", which is additive.
+      const isAlterColumnType =
+        /\bALTER\s+(?:COLUMN\s+)?(?!COLUMN\b)\S+\s+(?:SET\s+DATA\s+)?TYPE\b/i.test(upperStatement);
+      const needsPassword = isAlterDrop || isAlterRename || isAlterColumnType;
+
+      if (needsPassword || !upperStatement.match(/\s+ADD\s+(COLUMN|CONSTRAINT|INDEX)/i)) {
         dangerousStatements.push(statement);
         warningType = 'danger';
         warningTitle = 'ALTER Statement Detected';
         warningMessage = userRole && !isSuperRole(userRole)
           ? '⛔ ALTER operations can modify table structure!'
           : 'This will modify the table structure. Proceed with caution!';
-        if (isAlterDrop) requiresPassword = isSuper;
+        if (needsPassword) requiresPassword = isSuper;
       }
     }
 

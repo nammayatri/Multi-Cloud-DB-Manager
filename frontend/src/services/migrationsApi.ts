@@ -1,5 +1,5 @@
 import api from './api';
-import type { MigrationsConfigResponse, RefsResponse, AnalysisResult } from '../types/migrations';
+import type { MigrationsConfigResponse, RefsResponse, AnalysisResult, LiteDiffResult } from '../types/migrations';
 
 export type RepoCloneState = 'NOT_STARTED' | 'CLONING' | 'READY' | 'ERROR';
 
@@ -30,4 +30,7 @@ export const migrationsAPI = {
 
   refreshRepo: (): Promise<{ success: boolean; message: string; repoStatus?: RepoStatus }> =>
     api.post('/api/migrations/refresh-repo').then(r => r.data),
+
+  liteDiff: (compareUrl: string): Promise<LiteDiffResult> =>
+    api.post('/api/migrations/lite-diff', { compareUrl }).then(r => r.data),
 };

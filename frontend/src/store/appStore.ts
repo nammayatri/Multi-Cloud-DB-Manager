@@ -2,6 +2,9 @@ import { create } from 'zustand';
 import type { User, QueryExecution } from '../types';
 import type { editor } from 'monaco-editor';
 
+/** Migrations tab faces: the analyze-and-check verifier, or the compare-URL runner. */
+export type MigrationView = 'verifier' | 'lite';
+
 // Load persisted settings from localStorage
 const loadPersistedSetting = (key: string, defaultValue: boolean): boolean => {
   try {
@@ -44,6 +47,11 @@ interface AppState {
   // Manager mode
   managerMode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate';
   setManagerMode: (mode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'requests' | 'configreplicate') => void;
+
+  // Which face of the Migrations tab is showing. Lives here (not in a panel)
+  // because both panels' toolbars render the switch for it.
+  migrationView: MigrationView;
+  setMigrationView: (view: MigrationView) => void;
 
   // User state
   user: User | null;
@@ -98,6 +106,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setManagerMode: (mode) => {
     sessionStorage.setItem('managerMode', mode);
     set({ managerMode: mode });
+  },
+
+  migrationView: (sessionStorage.getItem('migrationView') as MigrationView) || 'verifier',
+  setMigrationView: (view) => {
+    sessionStorage.setItem('migrationView', view);
+    set({ migrationView: view });
   },
 
   // User

@@ -3,6 +3,7 @@ import logger from '../utils/logger';
 import * as migrationsService from '../services/migrations/migrations.service';
 import * as gitService from '../services/migrations/git.service';
 import repoState from '../services/migrations/repo-state.service';
+import * as liteDiffService from '../services/migrations/lite-diff.service';
 
 /**
  * If the repo isn't ready yet, short-circuit with a 503 carrying structured
@@ -202,6 +203,49 @@ export const getFileContent = async (
     res.json({ success: true, ref, path: filePath, content });
   } catch (error: any) {
     logger.error('Failed to get file content:', error);
+    next(error);
+  }
+};
+
+/**
+ * POST /api/migrations/lite-diff
+ * Resolve a GitHub compare URL into the SQL it introduces, grouped by
+ * directory. Read-only: this endpoint never executes SQL — running goes
+ * through /api/query/execute, which carries the role and audit gates.
+ * Body: { compareUrl }
+ */
+export const liteDiff = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { compareUrl } = req.body;
+
+    if (!compareUrl || typeof compareUrl !== 'string') {
+      return res.status(400).json({ error: 'compareUrl is required' });
+    }
+    if (compareUrl.length > 500) {
+      return res.status(400).json({ error: 'compareUrl too long' });
+    }
+
+    const cfg = migrationsService.getConfig();
+    if (gateOnRepoReady(res, cfg.repoPath)) return;
+
+    logger.info('Lite migration diff requested', {
+      user: (req.user as any)?.username,
+      compareUrl,
+    });
+
+    const result = await liteDiffService.getLiteDiff(compareUrl);
+    res.json(result);
+  } catch (error: any) {
+    // A bad compare URL is user error, not a server fault — surface the
+    // message instead of a generic 500 from the error handler.
+    if (/compare URL/i.test(error.message) || /Too many SQL files/i.test(error.message)) {
+      return res.status(400).json({ error: error.message });
+    }
+    logger.error('Lite migration diff failed:', error);
     next(error);
   }
 };

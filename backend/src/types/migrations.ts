@@ -81,3 +81,49 @@ export interface RepoStatus {
   error?: string;
   message?: string;
 }
+
+export type LiteStatementType = 'DDL' | 'NON_DDL';
+
+export interface LiteStatement {
+  sql: string;
+  type: LiteStatementType;
+  operation: string;
+  objectName: string;
+}
+
+/**
+ * DDL when every statement is DDL, NON_DDL when none are, MIXED otherwise.
+ * Drives the "Select All DDL" action and the per-file tag in the UI.
+ */
+export type LiteFileKind = 'DDL' | 'NON_DDL' | 'MIXED';
+
+export interface LiteDiffFile {
+  path: string;
+  directory: string;
+  filename: string;
+  statementCount: number;
+  ddlCount: number;
+  nonDdlCount: number;
+  kind: LiteFileKind;
+  statements: LiteStatement[];
+  sql: string;
+}
+
+export interface LiteDiffDirectory {
+  directory: string;
+  statementCount: number;
+  ddlCount: number;
+  files: LiteDiffFile[];
+}
+
+export interface LiteDiffResult {
+  success: boolean;
+  owner: string;
+  repo: string;
+  base: string;
+  head: string;
+  totalFiles: number;
+  totalStatements: number;
+  totalDdlStatements: number;
+  directories: LiteDiffDirectory[];
+}
