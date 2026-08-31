@@ -196,3 +196,29 @@ export function getRecentRefs(repoPath: string): { branches: string[]; tags: str
     throw new Error(`Git refs failed: ${err.message}`);
   }
 }
+
+/**
+ * Best-effort fetch of specific refs from origin.
+ *
+ * A compare URL carries raw commit SHAs, which a branch-tip fetch (`git fetch
+ * --all --prune`) does not necessarily bring in — e.g. a commit from a deleted
+ * branch, or a force-pushed head. Without this, `git diff base...head` fails
+ * with "bad revision". Failures are non-fatal: in the common case both commits
+ * are already local and this fetch is redundant.
+ */
+export function fetchRefs(repoPath: string, refs: string[]): void {
+  for (const ref of refs) {
+    validateRef(ref);
+  }
+  try {
+    execFileSync('git', ['fetch', 'origin', ...refs], {
+      ...execOpts(repoPath),
+      stdio: 'ignore',
+    });
+    logger.info('Git fetch of explicit refs completed', { repoPath, refs });
+  } catch (err: any) {
+    logger.warn('Git fetch of explicit refs failed (non-fatal)', {
+      repoPath, refs, error: err.message,
+    });
+  }
+}

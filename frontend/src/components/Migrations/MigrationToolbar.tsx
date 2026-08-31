@@ -16,6 +16,7 @@ import {
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SyncIcon from '@mui/icons-material/Sync';
 import { useMigrationsStore } from '../../store/migrationsStore';
+import MigrationViewToggle from './MigrationViewToggle';
 
 const MigrationToolbar = ({ onRefresh }: { onRefresh?: () => Promise<void> }) => {
   const config = useMigrationsStore((s) => s.config);
@@ -93,6 +94,7 @@ const MigrationToolbar = ({ onRefresh }: { onRefresh?: () => Promise<void> }) =>
               {isSyncing ? <CircularProgress size={20} /> : <SyncIcon />}
             </IconButton>
           </Tooltip>
+          <MigrationViewToggle disabled={isAnalyzing} />
         </Stack>
         <Stack direction="row" spacing={1.5} alignItems="center">
           <FormControl size="small" sx={{ flex: 1 }}>

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getConfig, getRefs, analyze, getFileContent, refreshRepo, getRepoStatus } from '../controllers/migrations.controller';
+import { getConfig, getRefs, analyze, getFileContent, refreshRepo, getRepoStatus, liteDiff } from '../controllers/migrations.controller';
 import { isAuthenticated } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -13,5 +13,6 @@ router.get('/refs', getRefs);
 router.post('/analyze', analyze);
 router.get('/file', getFileContent);
 router.post('/refresh-repo', refreshRepo);
+router.post('/lite-diff', liteDiff);
 
 export default router;

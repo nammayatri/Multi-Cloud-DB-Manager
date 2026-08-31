@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { normalizePgType } from './verification.service';
-import { canonicalizeStatement, addedStatements } from './migrations.service';
+import { canonicalizeStatement, addedStatements } from './sql-parser.service';
 
 describe('normalizePgType — type-change verification (Fix #2)', () => {
   const same = (a: string, b: string) => normalizePgType(a) === normalizePgType(b);
