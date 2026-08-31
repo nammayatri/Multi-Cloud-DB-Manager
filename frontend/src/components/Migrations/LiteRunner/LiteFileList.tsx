@@ -7,11 +7,13 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { useLiteRunnerStore, stmtKey, type FileRunState } from '../../../store/liteRunnerStore';
 import type { LiteDiffFile, LiteFileKind } from '../../../types/migrations';
 
 const DDL_COLOR = '#58a6ff';
 const NON_DDL_COLOR = '#d29922';
+const DANGER_COLOR = '#f85149';
 const ADDED_BG = 'rgba(46, 160, 67, 0.13)';
 const GUTTER = 52;
 
@@ -35,6 +37,21 @@ const KindChip = ({ kind }: { kind: LiteFileKind }) => {
         borderColor: isDdl ? DDL_COLOR : NON_DDL_COLOR,
       }}
     />
+  );
+};
+
+const DangerChip = ({ count }: { count: number }) => {
+  if (count === 0) return null;
+  return (
+    <Tooltip title={`${count} statement(s) drop, rename, retype or otherwise rewrite existing objects — each is selectable individually and your password is required to run them`}>
+      <Chip
+        size="small"
+        icon={<WarningAmberIcon sx={{ fontSize: 13, color: `${DANGER_COLOR} !important` }} />}
+        label={`${count} DANGEROUS`}
+        variant="outlined"
+        sx={{ height: 20, fontSize: 11, fontWeight: 700, color: DANGER_COLOR, borderColor: DANGER_COLOR }}
+      />
+    </Tooltip>
   );
 };
 
@@ -93,6 +110,7 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
   const selectedStatements = useLiteRunnerStore((s) => s.selectedStatements);
   const expandedFiles = useLiteRunnerStore((s) => s.expandedFiles);
   const toggleFile = useLiteRunnerStore((s) => s.toggleFile);
+  const selectFileRangeTo = useLiteRunnerStore((s) => s.selectFileRangeTo);
   const toggleStatement = useLiteRunnerStore((s) => s.toggleStatement);
   const toggleFileExpanded = useLiteRunnerStore((s) => s.toggleFileExpanded);
   const runState = useLiteRunnerStore((s) => s.runState);
@@ -101,10 +119,12 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
   const expanded = expandedFiles.has(file.path);
   const selectedCount = file.statements.filter((_s, i) => selectedStatements.has(stmtKey(file.path, i))).length;
 
-  // Only a mixed file needs per-statement checkboxes. When every statement in
-  // the file is the same kind, the file-level checkbox already says everything
-  // there is to say, and repeating it per statement is noise.
-  const perStatementSelection = file.kind === 'MIXED';
+  // Per-statement checkboxes appear when the choice actually matters: a mixed
+  // file (DDL alongside data changes), or any file holding a dangerous
+  // statement — dropping or renaming an object deserves an explicit, individual
+  // opt-in rather than being swept along by a file-level tick. A uniform, safe
+  // file needs only its top-level checkbox.
+  const perStatementSelection = file.kind === 'MIXED' || file.dangerousCount > 0;
 
   let lineCursor = 1;
 
@@ -131,7 +151,15 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
           sx={{ p: 0.25 }}
           checked={selectedCount === file.statementCount}
           indeterminate={selectedCount > 0 && selectedCount < file.statementCount}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            // Cmd/Ctrl or Shift extends from the last clicked file, so a long
+            // run of files can be picked without clicking each one.
+            if (e.metaKey || e.ctrlKey || e.shiftKey) {
+              e.preventDefault();
+              selectFileRangeTo(file.path);
+            }
+          }}
           onChange={() => toggleFile(file.path)}
           disabled={isRunning}
         />
@@ -146,6 +174,7 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
         </Typography>
 
         <StatusChip state={runState[file.path]} />
+        <DangerChip count={file.dangerousCount} />
         <KindChip kind={file.kind} />
         <Typography variant="caption" sx={{ color: '#3fb950', fontWeight: 700, whiteSpace: 'nowrap' }}>
           {selectedCount}/{file.statementCount}
@@ -172,7 +201,10 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
                     direction="row"
                     alignItems="center"
                     spacing={1}
-                    sx={{ px: 1, py: 0.4, bgcolor: 'rgba(255,255,255,0.02)' }}
+                    sx={{
+                      px: 1, py: 0.4,
+                      bgcolor: stmt.dangerous ? 'rgba(248,81,73,0.10)' : 'rgba(255,255,255,0.02)',
+                    }}
                   >
                     <Checkbox
                       size="small"
@@ -194,6 +226,17 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
                     <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
                       {stmt.operation}
                     </Typography>
+                    {stmt.dangerous && (
+                      <Tooltip title="Rewrites or removes an existing object — password required">
+                        <Chip
+                          size="small"
+                          icon={<WarningAmberIcon sx={{ fontSize: 12, color: `${DANGER_COLOR} !important` }} />}
+                          label="DANGEROUS"
+                          variant="outlined"
+                          sx={{ height: 18, fontSize: 10, fontWeight: 700, color: DANGER_COLOR, borderColor: DANGER_COLOR }}
+                        />
+                      </Tooltip>
+                    )}
                   </Stack>
                 )}
                 <SqlLines sql={`${stmt.sql};`} startLine={start} />

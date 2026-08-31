@@ -58,6 +58,8 @@ export interface LiteStatement {
   type: LiteStatementType;
   operation: string;
   objectName: string;
+  /** Requires password re-verification to run (DROP, ALTER DROP/RENAME/TYPE, ...). */
+  dangerous: boolean;
 }
 
 export type LiteFileKind = 'DDL' | 'NON_DDL' | 'MIXED';
@@ -69,6 +71,7 @@ export interface LiteDiffFile {
   statementCount: number;
   ddlCount: number;
   nonDdlCount: number;
+  dangerousCount: number;
   kind: LiteFileKind;
   statements: LiteStatement[];
   sql: string;
@@ -90,5 +93,6 @@ export interface LiteDiffResult {
   totalFiles: number;
   totalStatements: number;
   totalDdlStatements: number;
+  totalDangerousStatements: number;
   directories: LiteDiffDirectory[];
 }

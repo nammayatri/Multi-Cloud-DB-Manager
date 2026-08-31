@@ -89,6 +89,12 @@ export interface LiteStatement {
   type: LiteStatementType;
   operation: string;
   objectName: string;
+  /**
+   * True when the backend would demand password re-verification to run this
+   * statement (DROP, TRUNCATE, ALTER DROP/RENAME/TYPE, GRANT/REVOKE, DELETE
+   * without WHERE). Not all DDL is dangerous — an ADD COLUMN is not.
+   */
+  dangerous: boolean;
 }
 
 /**
@@ -104,6 +110,7 @@ export interface LiteDiffFile {
   statementCount: number;
   ddlCount: number;
   nonDdlCount: number;
+  dangerousCount: number;
   kind: LiteFileKind;
   statements: LiteStatement[];
   sql: string;
@@ -125,5 +132,6 @@ export interface LiteDiffResult {
   totalFiles: number;
   totalStatements: number;
   totalDdlStatements: number;
+  totalDangerousStatements: number;
   directories: LiteDiffDirectory[];
 }

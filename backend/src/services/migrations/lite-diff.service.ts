@@ -5,6 +5,7 @@ import { getConfig } from './migrations.service';
 import { getChangedFiles, getFileContent, getFileContentOrEmpty, getMergeBase, fetchRefs, pullLatest } from './git.service';
 import { splitStatements, addedStatements, classifyStatement } from './sql-parser.service';
 import { parseCompareURL, assertRepoMatchesConfig } from './compare-url.service';
+import QueryValidator from '../query/QueryValidator';
 
 const MAX_MIGRATION_FILES = 5000;
 const SQL_EXTENSION = '.sql';
@@ -22,6 +23,8 @@ function toLiteStatement(sql: string, defaultSchema: string): LiteStatement {
     type: parsed.type === 'DDL' || isUnclassifiedDdl(parsed) ? 'DDL' : 'NON_DDL',
     operation: parsed.operation,
     objectName: parsed.objectName,
+    // Same rule the execute endpoint enforces, so the UI cannot drift from it.
+    dangerous: QueryValidator.requiresPasswordVerification(parsed.sql) !== null,
   };
 }
 
@@ -117,6 +120,7 @@ export async function getLiteDiff(compareUrl: string): Promise<LiteDiffResult> {
     const classified = statements.map(s => toLiteStatement(s, 'public'));
     const ddlCount = classified.filter(s => s.type === 'DDL').length;
     const nonDdlCount = classified.length - ddlCount;
+    const dangerousCount = classified.filter(s => s.dangerous).length;
 
     const file: LiteDiffFile = {
       path: filePath,
@@ -125,6 +129,7 @@ export async function getLiteDiff(compareUrl: string): Promise<LiteDiffResult> {
       statementCount: classified.length,
       ddlCount,
       nonDdlCount,
+      dangerousCount,
       kind: fileKind(ddlCount, nonDdlCount),
       statements: classified,
       sql: classified.map(s => s.sql).join(';\n\n') + ';',
@@ -153,6 +158,9 @@ export async function getLiteDiff(compareUrl: string): Promise<LiteDiffResult> {
 
   const totalFiles = directories.reduce((sum, d) => sum + d.files.length, 0);
   const totalDdlStatements = directories.reduce((sum, d) => sum + d.ddlCount, 0);
+  const totalDangerousStatements = directories.reduce(
+    (sum, d) => sum + d.files.reduce((n, f) => n + f.dangerousCount, 0), 0
+  );
 
   logger.info('Lite migration diff complete', { totalFiles, totalStatements, totalDdlStatements });
 
@@ -165,6 +173,7 @@ export async function getLiteDiff(compareUrl: string): Promise<LiteDiffResult> {
     totalFiles,
     totalStatements,
     totalDdlStatements,
+    totalDangerousStatements,
     directories,
   };
 }

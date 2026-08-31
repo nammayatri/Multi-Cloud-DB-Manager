@@ -8,6 +8,8 @@ export type FileRunStatus = 'idle' | 'running' | 'success' | 'failed' | 'skipped
 export interface FileRunState {
   status: FileRunStatus;
   error?: string;
+  /** Each failing statement in this file — a continue-on-error run can fail several. */
+  statementErrors?: Array<{ statement: string; error: string }>;
   rowsAffected?: number;
   durationMs?: number;
 }
@@ -18,6 +20,8 @@ export interface SelectedFileSql {
   filename: string;
   sql: string;
   statementCount: number;
+  /** How many of the picked statements need password verification. */
+  dangerousCount: number;
 }
 
 export const ALL_FILES = 'all';
@@ -35,6 +39,9 @@ interface LiteRunnerState {
   /** View filters — these narrow what is shown, never what is selected. */
   directoryFilter: string;
   search: string;
+
+  /** Last file whose checkbox was clicked — the anchor for range selection. */
+  lastAnchorPath: string | null;
 
   database: string;
   mode: string;
@@ -54,6 +61,8 @@ interface LiteRunnerState {
 
   toggleStatement: (path: string, index: number) => void;
   toggleFile: (path: string) => void;
+  /** Select every file between the anchor and `path` (inclusive), in view order. */
+  selectFileRangeTo: (path: string) => void;
   toggleFileExpanded: (path: string) => void;
   expandAll: () => void;
   collapseAll: () => void;
@@ -105,6 +114,7 @@ export const useLiteRunnerStore = create<LiteRunnerState>((set, get) => ({
 
   directoryFilter: ALL_FILES,
   search: '',
+  lastAnchorPath: null,
 
   database: '',
   mode: '',
@@ -143,7 +153,50 @@ export const useLiteRunnerStore = create<LiteRunnerState>((set, get) => ({
         if (allSelected) next.delete(key);
         else next.add(key);
       });
-      return { selectedStatements: next };
+      return { selectedStatements: next, lastAnchorPath: path };
+    }),
+
+  // Range select across the visible list. Whether the range is selected or
+  // cleared follows the anchor file's current state, so a modifier-click
+  // extends what you just did rather than inverting each file individually.
+  selectFileRangeTo: (path) =>
+    set((state) => {
+      const inView = visible(state.diff, state.directoryFilter, state.search);
+      const to = inView.findIndex(f => f.path === path);
+      if (to === -1) return state;
+
+      const anchor = state.lastAnchorPath
+        ? inView.findIndex(f => f.path === state.lastAnchorPath)
+        : -1;
+      // No usable anchor — behave like a plain toggle.
+      if (anchor === -1) {
+        const next = new Set(state.selectedStatements);
+        const file = inView[to];
+        const allSelected = file.statements.every((_s, i) => next.has(stmtKey(file.path, i)));
+        file.statements.forEach((_s, i) => {
+          const key = stmtKey(file.path, i);
+          if (allSelected) next.delete(key);
+          else next.add(key);
+        });
+        return { selectedStatements: next, lastAnchorPath: path };
+      }
+
+      const [start, end] = anchor <= to ? [anchor, to] : [to, anchor];
+      const anchorFile = inView[anchor];
+      const anchorSelected = anchorFile.statements.some(
+        (_s, i) => state.selectedStatements.has(stmtKey(anchorFile.path, i))
+      );
+
+      const next = new Set(state.selectedStatements);
+      for (let i = start; i <= end; i++) {
+        const file = inView[i];
+        file.statements.forEach((_s, j) => {
+          const key = stmtKey(file.path, j);
+          if (anchorSelected) next.add(key);
+          else next.delete(key);
+        });
+      }
+      return { selectedStatements: next, lastAnchorPath: path };
     }),
 
   toggleFileExpanded: (path) =>
@@ -196,7 +249,7 @@ export const useLiteRunnerStore = create<LiteRunnerState>((set, get) => ({
     set({
       isFetching: true, error: null, diff: null,
       selectedStatements: new Set<string>(), runState: {},
-      directoryFilter: ALL_FILES, search: '',
+      directoryFilter: ALL_FILES, search: '', lastAnchorPath: null,
     });
 
     try {
@@ -247,6 +300,7 @@ export const useLiteRunnerStore = create<LiteRunnerState>((set, get) => ({
         path: file.path,
         filename: file.filename,
         statementCount: picked.length,
+        dangerousCount: picked.filter(s => s.dangerous).length,
         sql: picked.map(s => s.sql).join(';\n\n') + ';',
       });
     }
