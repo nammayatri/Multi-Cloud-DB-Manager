@@ -5,6 +5,7 @@ import LiteDiffHeader from './LiteDiffHeader';
 import LiteDiffControls from './LiteDiffControls';
 import LiteDiffStats from './LiteDiffStats';
 import LiteFileList from './LiteFileList';
+import LiteRunErrors from './LiteRunErrors';
 import LiteRunBar from './LiteRunBar';
 
 const LiteRunnerPanel = () => (
@@ -15,6 +16,7 @@ const LiteRunnerPanel = () => (
         <LiteDiffHeader />
         <LiteDiffControls />
         <LiteDiffStats />
+        <LiteRunErrors />
         <LiteFileList />
       </Stack>
     </Box>

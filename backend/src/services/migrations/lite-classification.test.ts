@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyStatement } from './sql-parser.service';
+import QueryValidator from '../query/QueryValidator';
 
 /**
  * Mirrors the DDL/NON_DDL mapping in lite-diff.service. Kept in sync by the
@@ -57,5 +58,40 @@ describe('lite runner DDL tagging', () => {
 
   it('is not fooled by a leading comment', () => {
     expect(kindOf("-- add a column\nALTER TABLE atlas_app.booking RENAME COLUMN a TO b")).toBe('DDL');
+  });
+});
+
+describe('lite runner dangerous tagging', () => {
+  // The runner's `dangerous` flag is the execute endpoint's own rule, so a
+  // statement flagged here is exactly one that will demand a password.
+  const dangerous = (sql: string) => QueryValidator.requiresPasswordVerification(sql) !== null;
+
+  it.each([
+    'ALTER TABLE atlas_app.booking DROP COLUMN c',
+    'ALTER TABLE atlas_app.booking RENAME COLUMN a TO b',
+    'ALTER TABLE atlas_app.booking ALTER COLUMN c TYPE text',
+    'DROP TABLE atlas_app.booking',
+    'TRUNCATE atlas_app.booking',
+  ])('flags %s as dangerous', (sql) => {
+    expect(dangerous(sql)).toBe(true);
+  });
+
+  // DDL, but purely additive — must not be flagged, or every migration would
+  // demand a password and the distinction would be worthless.
+  it.each([
+    'ALTER TABLE atlas_app.booking ADD COLUMN c text',
+    'ALTER TABLE atlas_app.booking ALTER COLUMN c SET NOT NULL',
+    'CREATE TABLE atlas_app.t (id text)',
+    'CREATE INDEX idx ON atlas_app.booking (id)',
+    "ALTER TYPE atlas_app.status ADD VALUE 'b'",
+  ])('does not flag additive DDL: %s', (sql) => {
+    expect(dangerous(sql)).toBe(false);
+  });
+
+  it('is independent of the DDL/NON-DDL axis', () => {
+    // Dangerous but not DDL-classified by the parser, and DDL but not dangerous.
+    expect(dangerous('DELETE FROM atlas_app.booking')).toBe(true);
+    expect(kindOf('ALTER TABLE atlas_app.booking ADD COLUMN c text')).toBe('DDL');
+    expect(dangerous('ALTER TABLE atlas_app.booking ADD COLUMN c text')).toBe(false);
   });
 });

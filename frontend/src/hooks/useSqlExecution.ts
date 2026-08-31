@@ -13,8 +13,15 @@ export interface RunSqlOptions {
   password?: string;
 }
 
+export interface StatementError {
+  statement: string;
+  error: string;
+}
+
 export interface RunSqlOutcome {
   success: boolean;
+  /** Every statement that failed, not just the first — a continue-on-error run can fail several. */
+  statementErrors?: StatementError[];
   /** The backend demanded password verification and none (or a bad one) was given. */
   needsPassword?: boolean;
   /** Populated when the run was refused by the role policy. */
@@ -30,11 +37,18 @@ export interface RunSqlOutcome {
  * error worth showing. A run targeting `both` clouds fails if either cloud
  * fails, so the caller can render one status per file.
  */
-function summarize(result: QueryResponse): { success: boolean; error?: string; durationMs: number; rowsAffected: number } {
+function summarize(result: QueryResponse): {
+  success: boolean;
+  error?: string;
+  statementErrors: StatementError[];
+  durationMs: number;
+  rowsAffected: number;
+} {
   let durationMs = 0;
   let rowsAffected = 0;
   let error: string | undefined;
   let success = true;
+  const statementErrors: StatementError[] = [];
 
   for (const [key, value] of Object.entries(result)) {
     if (key === 'id' || key === 'success' || !value || typeof value !== 'object') continue;
@@ -46,12 +60,20 @@ function summarize(result: QueryResponse): { success: boolean; error?: string; d
     if (cloud.success === false) {
       success = false;
       if (!error) error = cloud.error || `Failed on ${key}`;
+      // A whole-batch failure carries no per-statement breakdown.
+      if (!cloud.results?.length && cloud.error) {
+        statementErrors.push({ statement: '', error: cloud.error });
+      }
     }
 
     for (const stmt of cloud.results || []) {
       if (stmt.success === false) {
         success = false;
-        if (!error) error = stmt.error || `Failed on ${key}`;
+        const stmtError = stmt.error || `Failed on ${key}`;
+        if (!error) error = stmtError;
+        // With continueOnError the backend runs past a failure, so several
+        // statements in one file can fail — keep every one of them.
+        statementErrors.push({ statement: stmt.statement || '', error: stmtError });
       }
       rowsAffected += stmt.rowsAffected || 0;
     }
@@ -61,7 +83,7 @@ function summarize(result: QueryResponse): { success: boolean; error?: string; d
     }
   }
 
-  return { success, error, durationMs, rowsAffected };
+  return { success, error, statementErrors, durationMs, rowsAffected };
 }
 
 /**
@@ -129,6 +151,7 @@ export function useSqlExecution() {
             resolve({
               success: status.status === 'completed' && summary.success,
               error: summary.error || status.error,
+              statementErrors: summary.statementErrors,
               result: status.result,
               durationMs: summary.durationMs,
               rowsAffected: summary.rowsAffected,

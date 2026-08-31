@@ -46,6 +46,9 @@ const LiteDiffStats = () => {
             (filtered view)
           </Typography>
         )}
+        <Typography variant="caption" color="text.disabled" sx={{ whiteSpace: 'nowrap' }}>
+          ⌘/Shift-click a file to select a range
+        </Typography>
       </Stack>
     </Paper>
   );

@@ -56,6 +56,10 @@ const LiteRunBar = () => {
   // Destructive statements (ALTER DROP, DROP, TRUNCATE, ...) need the user's
   // password re-entered — collect it once here rather than failing per file.
   // Reuses the DB Manager's detector so both prompt on exactly the same rule.
+  // Files carrying at least one selected dangerous statement. Named in the
+  // password dialog so the user can see exactly what they are authorising.
+  const dangerousFiles = selected.filter(f => f.dangerousCount > 0);
+  const dangerousStatementCount = dangerousFiles.reduce((sum, f) => sum + f.dangerousCount, 0);
   const requiresPassword = selected.some(
     f => detectDangerousQueries(f.sql, user?.role)?.requiresPassword
   );
@@ -104,7 +108,11 @@ const LiteRunBar = () => {
         });
       } else {
         bad++;
-        setFileRunState(file.path, { status: 'failed', error: outcome.error });
+        setFileRunState(file.path, {
+          status: 'failed',
+          error: outcome.error,
+          statementErrors: outcome.statementErrors,
+        });
 
         // A bad or missing password fails identically for every remaining file
         // — stop rather than grinding through them all with the same error.
@@ -213,9 +221,21 @@ const LiteRunBar = () => {
           )}
           {requiresPassword && (
             <>
-              <Alert severity="info" sx={{ mt: 1 }}>
-                Some selected statements are destructive (DROP / ALTER DROP / TRUNCATE),
-                so your password is required to run them.
+              <Alert severity="error" sx={{ mt: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, mb: dangerousFiles.length ? 1 : 0 }}>
+                  {dangerousStatementCount} destructive statement(s) in {dangerousFiles.length} file(s)
+                  {' '}— DROP, RENAME, column type change or TRUNCATE. Your password is required.
+                </Typography>
+                <Box component="ul" sx={{ m: 0, pl: 2.5, maxHeight: 160, overflow: 'auto' }}>
+                  {dangerousFiles.map(f => (
+                    <Box component="li" key={f.path} sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                      {f.filename}
+                      <Box component="span" sx={{ opacity: 0.7 }}>
+                        {' '}({f.dangerousCount} of {f.statementCount} selected)
+                      </Box>
+                    </Box>
+                  ))}
+                </Box>
               </Alert>
               <TextField
                 fullWidth
