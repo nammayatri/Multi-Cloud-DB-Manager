@@ -661,4 +661,24 @@ export const shudhiAPI = {
   },
 };
 
+export const systemConfigsAPI = {
+  /** Known lean_flow feature names per app, from the backend's leanFlowFeatures.json config. */
+  getLeanFlowFeatures: async (): Promise<import('../types').LeanFlowFeaturesConfig> => {
+    const response = await api.get('/api/system-configs/lean-flow-features');
+    return response.data;
+  },
+
+  /** List all system_configs rows for a database/cloud/schema. */
+  list: async (database: string, cloud: string, pgSchema: string): Promise<import('../types').SystemConfigRow[]> => {
+    const response = await api.get('/api/system-configs/list', { params: { database, cloud, pgSchema } });
+    return response.data.configs ?? [];
+  },
+
+  /** Update one system_configs row's config_value. MASTER/ADMIN only server-side. */
+  update: async (request: import('../types').SystemConfigUpdateRequest): Promise<import('../types').SystemConfigRow> => {
+    const response = await api.post('/api/system-configs/update', request);
+    return response.data.config;
+  },
+};
+
 export default api;

@@ -322,3 +322,24 @@ export interface ShudhiStatusResponse {
   app?: boolean;
   message?: string;
 }
+
+// GET /api/system-configs/lean-flow-features
+export interface LeanFlowFeaturesConfig {
+  driver: string[];
+  rider: string[];
+}
+
+// GET /api/system-configs/list — one row of the system_configs table
+export interface SystemConfigRow {
+  id: string;
+  configValue: string | null;
+}
+
+// POST /api/system-configs/update
+export interface SystemConfigUpdateRequest {
+  database: string;
+  cloud: string;
+  pgSchema: string;
+  id: string;
+  configValue: string;
+}
