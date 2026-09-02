@@ -145,7 +145,10 @@ const SyncRunPanel = () => {
   const [error, setError] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  // Absolute index of the next log line we haven't received yet. Lives in a
+  // ref rather than state so the interval callback always reads the current
+  // value instead of the one captured when the interval was created.
+  const logCursorRef = useRef(0);
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -153,55 +156,29 @@ const SyncRunPanel = () => {
       pollRef.current = null;
     }
   };
-  const stopStream = () => {
-    eventSourceRef.current?.close();
-    eventSourceRef.current = null;
-  };
 
   useEffect(() => {
-    return () => {
-      stopPolling();
-      stopStream();
-    };
+    return () => stopPolling();
   }, []);
 
-  // Live console output — additive to the 1s status poll, which stays the
-  // authority for the running -> completed/failed/cancelled transition and
-  // the final full log/result. If the stream drops or is unavailable
-  // (job already finished on connect, etc.) nothing regresses — the poll
-  // still delivers the full log once the job completes.
-  //
-  // Deliberately does NOT close the EventSource on 'error': a dropped
-  // connection (idle LB timeout, transient network blip) is exactly the
-  // case the browser's built-in EventSource reconnect exists for — it
-  // retries the same URL on its own a couple seconds later, and the backend
-  // resumes the subscription against the same still-running job. Closing
-  // here on every error would silence that recovery permanently the first
-  // time any drop happens, which is what made this look "stuck" before.
-  const startStream = useCallback((execId: string) => {
-    const es = new EventSource(configSyncAPI.streamUrl(execId), { withCredentials: true });
-    eventSourceRef.current = es;
-    es.onmessage = (evt) => {
-      try {
-        setLiveLog(prev => [...prev, JSON.parse(evt.data)]);
-      } catch {
-        setLiveLog(prev => [...prev, evt.data]);
-      }
-    };
-    es.addEventListener('unavailable', () => stopStream());
-    es.addEventListener('done', () => stopStream());
-  }, []);
-
+  // One 1s poll carries both the status and the new log lines. SSE was tried
+  // here first and the connection opens 200 but never delivers a byte through
+  // this deployment's proxy chain; ordinary JSON responses get through fine,
+  // so the log is served incrementally off the same request rather than a
+  // separate streaming one.
   const startPolling = useCallback((execId: string) => {
     pollRef.current = setInterval(async () => {
       try {
-        const data = await configSyncAPI.getStatus(execId);
+        const data = await configSyncAPI.getStatus(execId, logCursorRef.current);
+        if (data.liveLog && data.liveLog.lines.length > 0) {
+          setLiveLog(prev => [...prev, ...data.liveLog!.lines]);
+          logCursorRef.current = data.liveLog.nextFrom;
+        }
         if (data.result?.configSync) {
           setResult(data.result.configSync);
         }
         if (data.status !== 'running') {
           stopPolling();
-          stopStream();
           setStatus(data.status);
           if (data.status === 'completed') {
             toast.success('Config Sync job completed');
@@ -222,6 +199,7 @@ const SyncRunPanel = () => {
     setError(null);
     setResult(null);
     setLiveLog([]);
+    logCursorRef.current = 0;
     setStatus('running');
     try {
       const response = await configSyncAPI.startExportAndPatch({
@@ -236,7 +214,6 @@ const SyncRunPanel = () => {
       });
       setExecutionId(response.executionId);
       startPolling(response.executionId);
-      startStream(response.executionId);
     } catch (err: any) {
       setStatus('failed');
       setError(err?.response?.data?.error || err?.message || 'Failed to start Export & Patch');
@@ -248,7 +225,6 @@ const SyncRunPanel = () => {
     try {
       await configSyncAPI.cancel(executionId);
       stopPolling();
-      stopStream();
       setStatus('cancelled');
     } catch (err) {
       toastNonApiError(err, 'Failed to cancel');
