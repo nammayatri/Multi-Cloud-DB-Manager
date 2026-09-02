@@ -78,12 +78,6 @@ export const streamLog = async (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  // Correct Content-Type/Cache-Control alone doesn't stop an nginx-based
-  // ingress/reverse-proxy from buffering this response — it needs to be told
-  // explicitly. Without this, every deployment behind such a proxy shows
-  // nothing until the job finishes and the connection closes, then the whole
-  // buffered stream flushes at once — looks identical to "not live" even
-  // though the backend is writing each line immediately.
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
@@ -101,9 +95,20 @@ export const streamLog = async (req: Request, res: Response) => {
     cleanup();
     res.end();
   };
+  // The ingress in front of every deployment is GCE-class (GCP's HTTP(S) LB,
+  // confirmed via `kubectl get ingress`), whose backend service kills a
+  // connection after 30s with zero bytes sent, independent of Content-Type.
+  // A comment line (leading ':') is invisible to EventSource's onmessage but
+  // still counts as traffic — sending one periodically keeps the connection
+  // looking active for as long as the job is genuinely still running,
+  // even through stretches where config_transfer.py itself prints nothing.
+  const keepAlive = setInterval(() => {
+    res.write(': ping\n\n');
+  }, 15000);
   const cleanup = () => {
     emitter.off('line', onLine);
     emitter.off('done', onDone);
+    clearInterval(keepAlive);
   };
 
   emitter.on('line', onLine);
