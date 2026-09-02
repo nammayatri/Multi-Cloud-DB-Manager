@@ -40,6 +40,7 @@ const ClickhouseToolbar = lazy(() => import('../components/Clickhouse/Clickhouse
 const CsvBatchPanel = lazy(() => import('../components/CsvBatch/CsvBatchPanel'));
 const ShudhiPanel = lazy(() => import('../components/Shudhi/ShudhiPanel'));
 const ConfigReplicatePanel = lazy(() => import('../components/ConfigReplicate/ConfigReplicatePanel'));
+const ConfigSyncPanel = lazy(() => import('../components/ConfigSync/ConfigSyncPanel'));
 const SystemConfigsPanel = lazy(() => import('../components/SystemConfigs/SystemConfigsPanel'));
 const QueryRequestsPanel = lazy(() => import('../components/QueryRequests/QueryRequestsPanel'));
 const LiteRunnerPanel = lazy(() => import('../components/Migrations/LiteRunner/LiteRunnerPanel'));
@@ -616,6 +617,29 @@ const ConsolePage = () => {
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
                   {visitedModes.has('configreplicate') && <Suspense fallback={panelLoader}><ConfigReplicatePanel /></Suspense>}
+                </Stack>
+              </Box>
+            </Box>
+
+            {/* Config Sync View — always mounted */}
+            <Box
+              key="configsync-view"
+              sx={{
+                position: managerMode === 'configsync' ? 'relative' : 'absolute',
+                inset: managerMode === 'configsync' ? undefined : 0,
+                opacity: managerMode === 'configsync' ? 1 : 0,
+                pointerEvents: managerMode === 'configsync' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'configsync' ? 1 : undefined,
+                display: canSee('configsync') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'configsync' ? 0 : 2,
+              }}
+            >
+              <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
+                  {visitedModes.has('configsync') && <Suspense fallback={panelLoader}><ConfigSyncPanel /></Suspense>}
                 </Stack>
               </Box>
             </Box>
