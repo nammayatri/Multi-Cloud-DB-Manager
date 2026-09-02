@@ -268,6 +268,10 @@ export const configSyncAssetUpdateSchema = z.object({
   content: z.record(z.any()),
 });
 
+export const configSyncVersionStatusSchema = z.object({
+  status: z.enum(['stable', 'not_stable', 'not_verified']),
+});
+
 export const configReplicateApplySchema = z
   .object({
     ...replicateTarget,

@@ -16,6 +16,7 @@ import historyService from './services/history.service';
 import queryRequestsService from './services/queryRequests.service';
 import configReplicateGroupsService from './services/configReplicate/groups.service';
 import configSyncAssetsService from './services/configSync/configSyncAssets.service';
+import configSyncVersionsService from './services/configSync/configSyncVersions.service';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
@@ -278,6 +279,9 @@ const startServer = async () => {
         console.log('[STARTUP] Initializing config sync assets schema...');
         await configSyncAssetsService.initializeSchema();
         console.log('[STARTUP] Config sync assets schema initialized');
+        console.log('[STARTUP] Initializing config sync versions schema...');
+        await configSyncVersionsService.initializeSchema();
+        console.log('[STARTUP] Config sync versions schema initialized');
     } else {
       console.log('[STARTUP] Schema initialization skipped (RUN_MIGRATIONS not set)');
     }

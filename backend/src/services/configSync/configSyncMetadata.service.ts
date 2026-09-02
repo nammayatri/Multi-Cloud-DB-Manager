@@ -1,45 +1,23 @@
-import { S3Client, GetObjectCommand, PutObjectCommand, NotFound } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import logger from '../../utils/logger';
 
-export interface AvailableVersion {
+export interface PublishedVersionEntry {
   version: number;
   metadata: string;
-}
-
-interface MetadataFile {
-  available_versions: AvailableVersion[];
-}
-
-async function streamToString(body: any): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of body) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks).toString('utf8');
+  created_at: string;
+  uploaded_by: string | null;
+  status: 'stable' | 'not_stable' | 'not_verified';
+  verified_by: string | null;
+  verified_at: string | null;
 }
 
 /**
- * Publishes patched config to the SAME versioned layout the public bucket
- * already uses for `import --fetch` defaults (config_transfer.py's own
- * DEFAULT_FETCH_VERSIONS, e.g. "master_to_local": "v3") — NOT an
- * independent path DB Manager invented. Each successful patch+push gets
- * the next integer version for its direction:
- *
- *   s3://<bucket>/<direction>/v<n>/<direction>.zip   (the actual patched data,
- *                                                      pushed by config_transfer.py
- *                                                      itself via --s3-prefix)
- *   s3://<bucket>/<direction>/metadata.json           (this service — NOT
- *                                                      versioned, always
- *                                                      updated in place)
- *
- * metadata.json shape is intentionally minimal — this is read by
- * nammayatri's separate test dashboard as a version picker, so the fields
- * are exactly what was asked for and nothing else:
- *   { "available_versions": [ { "version": 3, "metadata": "..." }, ... ] }
- *
- * Publishing metadata.json is best-effort: the zip push already succeeded
- * by the time this runs, which is what actually matters operationally —
- * callers should log a warning on failure here, not fail the whole job.
+ * Pure S3 writer for metadata.json — no read-modify-write logic here at all.
+ * Postgres (config_sync_versions table, see configSyncVersions.service.ts)
+ * is the actual source of truth for versions/status; this class just mirrors
+ * whatever list it's handed out to S3, wholesale, for external consumers
+ * (the nammayatri test-dashboard's config-sync server) that read
+ * metadata.json directly and have no access to this database.
  */
 export class ConfigSyncMetadataService {
   private client(): S3Client {
@@ -52,63 +30,17 @@ export class ConfigSyncMetadataService {
     return `${direction}/metadata.json`;
   }
 
-  /**
-   * Next integer version for this direction — current highest + 1, or 1 if
-   * metadata.json doesn't exist yet. Must be computed BEFORE the patch
-   * subprocess runs, since the version number determines the --s3-prefix
-   * (<direction>/v<n>) it pushes the zip to.
-   */
-  public async getNextVersion(bucket: string, direction: string): Promise<number> {
-    const existing = await this.readExisting(bucket, direction);
-    if (existing.available_versions.length === 0) return 1;
-    return Math.max(...existing.available_versions.map(v => v.version)) + 1;
-  }
-
-  public async publishVersion(params: {
-    bucket: string;
-    direction: string;
-    version: number;
-    description: string;
-  }): Promise<void> {
-    const { bucket, direction, version, description } = params;
-    const existing = await this.readExisting(bucket, direction);
-
-    // Newest first — a version picker showing this list wants the latest at
-    // the top. Guard against re-publishing the same version twice (e.g. a
-    // retried request) clobbering the list with a duplicate entry.
-    const withoutThisVersion = existing.available_versions.filter(v => v.version !== version);
-    const updated: MetadataFile = {
-      available_versions: [{ version, metadata: description }, ...withoutThisVersion]
-        .sort((a, b) => b.version - a.version),
-    };
-
+  public async writeVersions(bucket: string, direction: string, versions: PublishedVersionEntry[]): Promise<void> {
+    const sorted = [...versions].sort((a, b) => b.version - a.version);
     await this.client().send(new PutObjectCommand({
       Bucket: bucket,
       Key: this.metadataKey(direction),
-      Body: JSON.stringify(updated, null, 2),
+      Body: JSON.stringify({ available_versions: sorted }, null, 2),
       ContentType: 'application/json',
     }));
-
-    logger.info('Config Sync: published S3 metadata.json', {
-      bucket, direction, version, versionCount: updated.available_versions.length,
+    logger.info('Config Sync: synced metadata.json to S3', {
+      bucket, direction, versionCount: sorted.length,
     });
-  }
-
-  private async readExisting(bucket: string, direction: string): Promise<MetadataFile> {
-    try {
-      const resp = await this.client().send(new GetObjectCommand({ Bucket: bucket, Key: this.metadataKey(direction) }));
-      const text = await streamToString(resp.Body);
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed?.available_versions)) {
-        return { available_versions: parsed.available_versions };
-      }
-      return { available_versions: [] };
-    } catch (err: any) {
-      if (err instanceof NotFound || err?.name === 'NoSuchKey' || err?.$metadata?.httpStatusCode === 404) {
-        return { available_versions: [] };
-      }
-      throw err;
-    }
   }
 }
 
