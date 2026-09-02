@@ -170,6 +170,14 @@ const SyncRunPanel = () => {
   // the final full log/result. If the stream drops or is unavailable
   // (job already finished on connect, etc.) nothing regresses — the poll
   // still delivers the full log once the job completes.
+  //
+  // Deliberately does NOT close the EventSource on 'error': a dropped
+  // connection (idle LB timeout, transient network blip) is exactly the
+  // case the browser's built-in EventSource reconnect exists for — it
+  // retries the same URL on its own a couple seconds later, and the backend
+  // resumes the subscription against the same still-running job. Closing
+  // here on every error would silence that recovery permanently the first
+  // time any drop happens, which is what made this look "stuck" before.
   const startStream = useCallback((execId: string) => {
     const es = new EventSource(configSyncAPI.streamUrl(execId), { withCredentials: true });
     eventSourceRef.current = es;
@@ -182,7 +190,6 @@ const SyncRunPanel = () => {
     };
     es.addEventListener('unavailable', () => stopStream());
     es.addEventListener('done', () => stopStream());
-    es.onerror = () => stopStream();
   }, []);
 
   const startPolling = useCallback((execId: string) => {
