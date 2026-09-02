@@ -48,17 +48,7 @@ app.set('trust proxy', 1);
 // Gzip-compress all responses. JSON payloads (configuration, query results,
 // Shudhi key listings) are highly repetitive and shrink ~80-90%, so this is
 // applied before the routes. The threshold skips tiny responses.
-//
-// SSE (config-sync/stream) is excluded: compression buffers writes waiting
-// to fill a chunk, which defeats a stream meant to deliver each line as it
-// happens — the whole point of that endpoint.
-app.use(compression({
-  threshold: 1024,
-  filter: (req, res) => {
-    if (req.path.includes('/config-sync/stream/')) return false;
-    return compression.filter(req, res);
-  },
-}));
+app.use(compression({ threshold: 1024 }));
 
 // Middleware
 // Use Helmet but disable CSP in production (Pomerium handles authentication redirects)
