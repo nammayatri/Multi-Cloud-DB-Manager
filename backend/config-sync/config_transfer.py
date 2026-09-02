@@ -1,0 +1,2401 @@
+#!/usr/bin/env python3
+"""
+NammayYatri Config Transfer
+
+Three-step workflow, all file-based:
+
+  1. export — read from source DB table-by-table, validate dims, write each
+     table as a separate JSON file to tmp, then promote to assets/data/<env>/.
+  2. patch  — apply overrides (URL replacements, re-encryption, merge_json).
+              Writes to assets/data/<from>_to_<to>/ locally. Pass --s3 to
+              additionally zip that directory and upload it to S3 as
+              <prefix>/<from>_to_<to>.zip for CloudFront consumers.
+  3. import — read patched JSON from assets/data/<from>_to_<to>/, generate SQL,
+              execute. Pass --fetch to download the zip from the public
+              CloudFront URL and extract it locally if the directory is
+              missing.
+
+Storage layout:
+  assets/data/<env>/<schema>/<table>.json            # raw export
+  assets/data/<from>_to_<to>/<schema>/<table>.json   # patched
+  assets/data/tmp/<schema>/<table>.json              # promoted on successful export
+
+Usage:
+  python config_transfer.py export --from master
+  python config_transfer.py patch  --from master --to local
+  python config_transfer.py patch  --from master --to local --s3
+  python config_transfer.py import --from master --to local --fetch
+  python config_transfer.py import --from master --to local --dry-run
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import sys
+import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, time, timezone
+from decimal import Decimal
+from pathlib import Path
+from uuid import UUID
+
+import csv as _csv_module
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
+
+# Config tables can have huge JSON blobs (e.g., rider_config, system_configs)
+_csv_module.field_size_limit(100 * 1024 * 1024)  # 100MB
+
+load_dotenv()
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = SCRIPT_DIR / "assets"
+DATA_DIR = ASSETS_DIR / "data"
+TMP_DIR = DATA_DIR / "tmp"
+# Repo root: Backend/dev/config-sync/ → up 3 levels in a checkout.
+# Container layouts flatten this (script lives at /app/config-sync), so allow
+# CONFIG_SYNC_REPO_ROOT to override and fall back to SCRIPT_DIR's parent when
+# parents[2] isn't reachable.
+# The sync marker (data/config-sync/metadata.json) is written by
+# context-api's run_config_sync after a successful local import — *not* here,
+# since the export+patch+publish flow doesn't change local state.
+_repo_root_env = os.getenv("CONFIG_SYNC_REPO_ROOT")
+if _repo_root_env:
+    REPO_ROOT = Path(_repo_root_env)
+else:
+    _parents = list(SCRIPT_DIR.parents)
+    REPO_ROOT = _parents[2] if len(_parents) > 2 else _parents[-1]
+MARKER_PATH = REPO_ROOT / "data" / "config-sync" / "metadata.json"
+
+_RE_ENCRYPT = re.compile(r'0\.1\.0\|[0-9]+\|[A-Za-z0-9+/=]{16,}')
+
+VALID_ENVS = {"prod", "prod_international", "master", "env", "local"}
+ALLOWED_TRANSFERS = {
+    ("prod", "local"), ("prod", "master"),
+    ("prod_international", "local"), ("prod_international", "master"),
+    ("master", "local"), ("env", "local"),
+}
+
+DEFAULT_S3_BUCKET = os.getenv("CONFIG_SYNC_S3_BUCKET", "")
+DEFAULT_S3_PREFIX = os.getenv("CONFIG_SYNC_S3_PREFIX", "config-sync")
+DEFAULT_CLOUDFRONT_URL = os.getenv(
+    "CONFIG_SYNC_CLOUDFRONT_URL",
+    "",
+)
+
+# Per-direction default fetch URLs. Used when neither --fetch-url nor
+# CONFIG_SYNC_CLOUDFRONT_URL is provided. master is on v1 (older zip layout);
+# prod / prod_international are on v2. Override per-direction with
+# CONFIG_SYNC_FETCH_URL_<DIRECTION_UPPER> env var if needed.
+DEFAULT_S3_PUBLIC_BUCKET = os.getenv(
+    "CONFIG_SYNC_PUBLIC_BUCKET_URL",
+    "https://backend-ny-config-sync.s3.ap-south-1.amazonaws.com",
+)
+DEFAULT_FETCH_VERSIONS = {
+    "master_to_local": "v3",
+    "prod_to_local": "v2",
+    "prod_international_to_local": "v2",
+}
+
+
+def default_fetch_url_for(direction: str) -> str:
+    """Construct the per-direction default S3 prefix for pre-patched config zips.
+
+    Returns "" if the direction has no known default — caller should fall back
+    to --fetch-url / CONFIG_SYNC_CLOUDFRONT_URL or error out.
+    """
+    env_override = os.getenv(f"CONFIG_SYNC_FETCH_URL_{direction.upper()}")
+    if env_override:
+        return env_override.rstrip("/")
+    version = DEFAULT_FETCH_VERSIONS.get(direction)
+    if not version:
+        return ""
+    return f"{DEFAULT_S3_PUBLIC_BUCKET.rstrip('/')}/{direction}/{version}"
+
+# Cap each export-side query (precheck SELECT, COPY, etc.) at 2 minutes so a
+# slow query / flaky link aborts cleanly instead of hanging the whole export.
+# Override with $CONFIG_SYNC_EXPORT_STATEMENT_TIMEOUT_MS (in milliseconds).
+EXPORT_STATEMENT_TIMEOUT_MS = int(os.getenv("CONFIG_SYNC_EXPORT_STATEMENT_TIMEOUT_MS", "120000"))
+
+
+# ── Loaders ──────────────────────────────────────────────────────────────────
+
+
+def load_json_file(path, label=""):
+    if not path.exists():
+        example = path.with_suffix(".json.example")
+        if not example.exists():
+            sys.exit(f"Missing {path}\n  cp {example} {path}")
+        # Seed it from the template instead of dying — a fresh checkout (or a
+        # rsynced dev-box, where the gitignored file never existed) would
+        # otherwise fail every sync until someone ran the cp by hand.
+        try:
+            shutil.copyfile(example, path)
+        except OSError as exc:
+            sys.exit(f"Missing {path}\n  cp {example} {path}\n  (auto-copy failed: {exc})")
+        print(f"Missing {path} — copied from {example.name}", flush=True)
+    with open(path) as f:
+        return json.load(f)
+
+
+def load_config_tables():
+    data = load_json_file(ASSETS_DIR / "config.json")
+    return {k: v for k, v in data.items() if not k.startswith("_")}
+
+
+def table_names_for_schema(schema_config):
+    return list(schema_config.keys())
+
+
+def get_dim_columns(schema_config, table_name):
+    return schema_config.get(table_name, {}).get("dim", [])
+
+
+def load_environments():
+    return load_json_file(ASSETS_DIR / "environments.json")
+
+
+def load_patches():
+    path = ASSETS_DIR / "patches.json"
+    return json.load(open(path)) if path.exists() else {}
+
+
+# ── DB helpers ───────────────────────────────────────────────────────────────
+
+
+def get_db_config(env_config, environment, schema):
+    env = env_config.get(environment)
+    if not env:
+        sys.exit(f"Environment '{environment}' not in environments.json")
+    base = dict(env.get("default", {}))
+    schema_cfg = env.get("schemas", {}).get(schema, {})
+    base.update(schema_cfg)
+    if environment == "local":
+        if os.getenv("CONFIG_SYNC_LOCAL_DB_HOST"):
+            base["host"] = os.environ["CONFIG_SYNC_LOCAL_DB_HOST"]
+        if os.getenv("CONFIG_SYNC_LOCAL_DB_PORT"):
+            base["port"] = int(os.environ["CONFIG_SYNC_LOCAL_DB_PORT"])
+    if "db_schema" not in base:
+        base["db_schema"] = schema
+    # Resolve execPod: schema-level overrides merge onto env-level
+    env_pod = env.get("execPod")
+    schema_pod = schema_cfg.get("execPod")
+    if env_pod or schema_pod:
+        pod_cfg = dict(env_pod or {})
+        if schema_pod:
+            pod_cfg.update(schema_pod)
+        base["_execPod"] = pod_cfg
+    return base
+
+
+def get_connection(db_config, statement_timeout_ms: int | None = None):
+    """Open a psycopg2 connection. If `statement_timeout_ms` is set, the
+    server-side `statement_timeout` GUC is applied to the session immediately
+    so any subsequent SELECT/COPY that runs longer than that aborts cleanly
+    (instead of hanging indefinitely on a flaky network or huge query)."""
+    if "_execPod" in db_config:
+        raise RuntimeError(
+            "Direct psycopg2 connection not available for kubectl-based environments. "
+            "Use kubectl_* functions instead."
+        )
+    conn = psycopg2.connect(
+        host=db_config["host"], port=db_config.get("port", 5432),
+        database=db_config.get("database", "postgres"),
+        user=db_config["user"], password=db_config.get("password", ""),
+    )
+    if statement_timeout_ms is not None:
+        cur = conn.cursor()
+        cur.execute(f"SET statement_timeout TO {int(statement_timeout_ms)}")
+        cur.close()
+        conn.commit()
+    return conn
+
+
+def is_kubectl_env(db_config):
+    """Check if this DB config requires kubectl exec access."""
+    return "_execPod" in db_config
+
+
+# ── kubectl exec helpers ──────────────────────────────────────────────────────
+
+
+def _kubectl_base_cmd(db_config):
+    """Build the kubectl exec prefix: ['kubectl', 'exec', pod, '-n', ns, '--']."""
+    pod_cfg = db_config["_execPod"]
+    cmd = ["kubectl"]
+    ctx = pod_cfg.get("context", "")
+    if ctx:
+        cmd += ["--context", ctx]
+    ns = pod_cfg.get("namespace", "")
+    if ns:
+        cmd += ["-n", ns]
+    cmd += ["exec", pod_cfg["pod"], "--"]
+    return cmd
+
+
+def _kubectl_cp_cmd(db_config, src, dst):
+    """Build: kubectl [--context X] [-n NS] cp <src> <dst>.
+    src/dst is either 'pod:path' or 'localpath'."""
+    pod_cfg = db_config["_execPod"]
+    cmd = ["kubectl"]
+    ctx = pod_cfg.get("context", "")
+    if ctx:
+        cmd += ["--context", ctx]
+    ns = pod_cfg.get("namespace", "")
+    if ns:
+        cmd += ["-n", ns]
+    cmd += ["cp", src, dst]
+    return cmd
+
+
+def _kubectl_rm_pod_file(db_config, pod_path):
+    """Best-effort delete of a file inside the pod."""
+    import subprocess
+    cmd = _kubectl_base_cmd(db_config) + ["rm", "-f", pod_path]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except Exception:
+        pass
+
+
+def _kubectl_psql_cmd(db_config, sql, flags=None):
+    """Build a full kubectl exec psql command.
+
+    Uses 'env PGPASSWORD=... psql ...' inside the pod to set the password
+    without needing bash -c or complex shell quoting.
+    """
+    cmd = _kubectl_base_cmd(db_config)
+    password = db_config.get("password", "")
+    cmd += [
+        "env", f"PGPASSWORD={password}",
+        "psql",
+        "-h", db_config["host"],
+        "-p", str(db_config.get("port", 5432)),
+        "-U", db_config["user"],
+        "-d", db_config.get("database", "postgres"),
+    ]
+    if flags:
+        cmd += flags
+    cmd += ["-c", sql]
+    return cmd
+
+
+def kubectl_table_exists(db_config, schema, table):
+    """Check if table exists using kubectl exec psql."""
+    import subprocess
+    sql = (
+        f"SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+        f"WHERE table_schema = '{schema}' AND table_name = '{table}')"
+    )
+    cmd = _kubectl_psql_cmd(db_config, sql, ["-tA"])
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0 and result.stderr:
+        print(f"    [debug] kubectl stderr: {result.stderr.strip()[:200]}", flush=True)
+    return result.stdout.strip() == "t"
+
+
+def kubectl_get_columns(db_config, schema, table):
+    """Get column names for a table using kubectl exec psql."""
+    import subprocess
+    sql = (
+        f"SELECT column_name FROM information_schema.columns "
+        f"WHERE table_schema = '{schema}' AND table_name = '{table}' "
+        f"ORDER BY ordinal_position"
+    )
+    cmd = _kubectl_psql_cmd(db_config, sql, ["-tA"])
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(f"kubectl psql failed: {result.stderr}")
+    return [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
+
+
+def kubectl_precheck_tables(db_config, schema, tables):
+    """Batch pre-check: get all existing tables and their columns in 2 kubectl calls.
+
+    Returns dict of {table_name: [columns]} for tables that exist.
+    Much faster than per-table kubectl calls (2 calls instead of 2*N).
+    """
+    import subprocess
+
+    # 1. Get all table names in one call
+    table_list = ",".join(f"'{t}'" for t in tables)
+    sql = (
+        f"SELECT table_name FROM information_schema.tables "
+        f"WHERE table_schema = '{schema}' AND table_name IN ({table_list}) "
+        f"ORDER BY table_name"
+    )
+    cmd = _kubectl_psql_cmd(db_config, sql, ["-tA"])
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        print(f"    [debug] kubectl stderr: {result.stderr.strip()[:300]}", flush=True)
+        return {}
+    existing = {t.strip() for t in result.stdout.strip().split("\n") if t.strip()}
+
+    if not existing:
+        return {}
+
+    # 2. Get columns for all existing tables in one call
+    existing_list = ",".join(f"'{t}'" for t in existing)
+    sql = (
+        f"SELECT table_name, column_name FROM information_schema.columns "
+        f"WHERE table_schema = '{schema}' AND table_name IN ({existing_list}) "
+        f"ORDER BY table_name, ordinal_position"
+    )
+    cmd = _kubectl_psql_cmd(db_config, sql, ["-tA"])
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"kubectl psql columns failed: {result.stderr}")
+
+    table_columns = {}
+    for line in result.stdout.strip().split("\n"):
+        if "|" in line:
+            tbl, col = line.split("|", 1)
+            table_columns.setdefault(tbl.strip(), []).append(col.strip())
+
+    return table_columns
+
+
+def kubectl_export_table(base_dir, env_name, schema, table, meta, db_config, db_schema, columns):
+    """Export table using kubectl exec psql, persisting CSV to a file inside the pod
+    and then `kubectl cp`-ing it back. Returns (path_or_dir, total_rows).
+
+    Why not stream to STDOUT?
+      kubectl exec uses SPDY/websocket framing over the apiserver. Under load or
+      timing hiccups, bytes inside an in-flight stream frame can silently disappear
+      — corrupting very long single CSV cells (tens of KB+) without any error.
+      Row count and CSV framing usually survive (commas/quotes are at edges of the
+      bytes), so the local CSV parser happily parses a row whose JSON value has
+      mid-string truncation. See kubernetes/kubernetes#74870 for the upstream issue.
+
+      `kubectl cp` uses tar (with length headers + integrity), so it is robust
+      against this whole class of bug at the cost of one tmp file inside the pod.
+    """
+    import subprocess, csv, uuid, gzip, time, shutil
+
+    d = table_dir_path(base_dir, env_name, schema)
+    csv_tmp    = d / f"_{table}.csv"
+    csv_gz_tmp = d / f"_{table}.csv.gz"
+
+    pod_cfg  = db_config["_execPod"]
+    pod_name = pod_cfg["pod"]
+    pod_csv  = f"/tmp/cfgsync_{table}_{uuid.uuid4().hex}.csv"
+    pod_gz   = pod_csv + ".gz"
+
+    # 1) Inside the pod: \copy to a file, then gzip it.
+    #    Streaming \copy over kubectl exec STDOUT can silently drop bytes
+    #    inside very long single CSV cells. Writing to a pod-local file
+    #    avoids that. Gzipping shrinks the payload by ~10x for JSON/text
+    #    columns, which makes the subsequent kubectl cp transfer well
+    #    short of any apiserver keep-alive / max-request thresholds that
+    #    cause `unexpected EOF` mid-tar on long transfers.
+    copy_sql = f"\\copy \"{db_schema}\".\"{table}\" TO '{pod_csv}' WITH CSV HEADER"
+    proc = subprocess.run(_kubectl_psql_cmd(db_config, copy_sql),
+                          capture_output=True, text=True, timeout=1800)
+    if proc.returncode != 0:
+        _kubectl_rm_pod_file(db_config, pod_csv)
+        raise RuntimeError(
+            f"kubectl \\copy → pod file failed for {db_schema}.{table}: {proc.stderr.strip()}"
+        )
+
+    gz_proc = subprocess.run(_kubectl_base_cmd(db_config) + ["gzip", "-f", pod_csv],
+                             capture_output=True, text=True, timeout=600)
+    if gz_proc.returncode != 0:
+        # gzip not present? fall back to ungzipped transfer.
+        pod_gz = pod_csv
+
+    # 2) kubectl cp the (gzipped) file out, retrying on EOF/transient errors.
+    last_err = ""
+    csv_gz_tmp.unlink(missing_ok=True)
+    csv_tmp.unlink(missing_ok=True)
+    target = csv_gz_tmp if pod_gz.endswith(".gz") else csv_tmp
+    for attempt in range(1, 4):  # 3 tries
+        cp_proc = subprocess.run(
+            _kubectl_cp_cmd(db_config, f"{pod_name}:{pod_gz}", str(target)),
+            capture_output=True, text=True, timeout=1800,
+        )
+        if cp_proc.returncode == 0 and target.exists() and target.stat().st_size > 0:
+            last_err = ""
+            break
+        last_err = cp_proc.stderr.strip() or "(empty file or unknown error)"
+        target.unlink(missing_ok=True)
+        if attempt < 3:
+            print(f"    [warn] kubectl cp {table} attempt {attempt} failed: {last_err}; retrying", flush=True)
+            time.sleep(2 * attempt)
+    if last_err:
+        _kubectl_rm_pod_file(db_config, pod_gz)
+        raise RuntimeError(
+            f"kubectl cp failed for {db_schema}.{table} after 3 attempts: {last_err}"
+        )
+
+    # 3) Decompress locally if we transferred a gzipped file.
+    if target is csv_gz_tmp:
+        with gzip.open(csv_gz_tmp, "rb") as gzf, open(csv_tmp, "wb") as outf:
+            shutil.copyfileobj(gzf, outf)
+        csv_gz_tmp.unlink(missing_ok=True)
+
+    # 4) Clean up the pod-side temp file (best-effort).
+    _kubectl_rm_pod_file(db_config, pod_gz)
+
+    # Parse CSV and write batches — same logic as export_table
+    table_d = d / table
+    table_d.mkdir(parents=True, exist_ok=True)
+
+    batch = []
+    batch_num = 0
+    total = 0
+
+    with open(csv_tmp, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            batch.append(dict(row))
+            total += 1
+            if len(batch) >= BATCH_SIZE:
+                (table_d / f"batch_{batch_num:04d}.json").write_text(
+                    json.dumps(batch, default=json_serializer))
+                batch_num += 1
+                batch = []
+    if batch:
+        (table_d / f"batch_{batch_num:04d}.json").write_text(
+            json.dumps(batch, default=json_serializer))
+        batch_num += 1
+
+    csv_tmp.unlink()
+
+    if total == 0:
+        shutil.rmtree(table_d)
+        data = {**meta, "columns": columns, "rows": []}
+        path = d / f"{table}.json"
+        path.write_text(json.dumps(data, default=json_serializer, indent=2))
+        return path, 0
+
+    if batch_num == 1:
+        only_batch = json.loads((table_d / "batch_0000.json").read_text())
+        shutil.rmtree(table_d)
+        data = {**meta, "columns": columns, "rows": only_batch}
+        path = d / f"{table}.json"
+        path.write_text(json.dumps(data, default=json_serializer, indent=2))
+        return path, total
+
+    meta_data = {**meta, "columns": columns, "total_rows": total, "batched": True}
+    (table_d / "_meta.json").write_text(json.dumps(meta_data, default=json_serializer, indent=2))
+    return table_d, total
+
+
+def table_exists(cursor, schema, table):
+    cursor.execute(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = %s AND table_name = %s)", (schema, table))
+    row = cursor.fetchone()
+    return list(row.values())[0] if isinstance(row, dict) else row[0]
+
+
+# ── Serialization ────────────────────────────────────────────────────────────
+
+
+def json_serializer(obj):
+    if isinstance(obj, (datetime, date, time)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return str(obj)
+    if isinstance(obj, UUID):
+        return str(obj)
+    if isinstance(obj, (bytes, memoryview)):
+        b = obj.tobytes() if isinstance(obj, memoryview) else obj
+        return "\\x" + b.hex()
+    raise TypeError(f"Type {type(obj).__name__} not serializable")
+
+
+def _pg_array_literal(vals):
+    """Render a Python list as a Postgres array literal: '{...}'.
+
+    Works for text[], int[], bool[] etc. Strings are double-quoted with
+    backslash/quote escaping; numbers and booleans are emitted bare.
+    Empty list returns '{}'.
+    """
+    parts = []
+    for v in vals:
+        if v is None:
+            parts.append("NULL")
+        elif isinstance(v, bool):
+            parts.append("t" if v else "f")
+        elif isinstance(v, (int, float, Decimal)):
+            parts.append(str(v))
+        else:
+            s = str(v).replace("\\", "\\\\").replace('"', '\\"')
+            parts.append(f'"{s}"')
+    inner = ",".join(parts)
+    return "'{" + inner.replace("'", "''") + "}'"
+
+
+def escape_sql_value(val, col_type=None):
+    if val is None:
+        return "NULL"
+    if isinstance(val, bool):
+        return "TRUE" if val else "FALSE"
+    if isinstance(val, (int, float, Decimal)):
+        return str(val)
+    if isinstance(val, str):
+        if val.startswith("\\x"):
+            return f"'{val}'"
+        return "'" + val.replace("'", "''") + "'"
+    if isinstance(val, list):
+        # Postgres array column (text[], int[], etc.) — use {} literal, not JSON.
+        if col_type == "ARRAY":
+            return _pg_array_literal(val)
+        # jsonb/json column — keep JSON literal.
+        return "'" + json.dumps(val).replace("'", "''") + "'::jsonb"
+    if isinstance(val, dict):
+        return "'" + json.dumps(val).replace("'", "''") + "'::jsonb"
+    return "'" + str(val).replace("'", "''") + "'"
+
+
+# ── File I/O (table-level, batched for large tables) ─────────────────────────
+
+BATCH_SIZE = 10000  # rows per batch file
+
+
+def table_dir_path(base_dir, env_name, schema):
+    d = base_dir / env_name / schema
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def export_table(base_dir, env_name, schema, table, meta, conn, db_schema, columns):
+    """Export table using COPY TO CSV — streams raw data from Postgres.
+
+    Writes CSV to a temp file on disk, then parses in batches of BATCH_SIZE
+    to write JSON. Never holds more than one batch in memory.
+
+    Small tables (<=BATCH_SIZE) -> single table.json
+    Large tables -> table/_meta.json + table/batch_NNNN.json
+
+    Returns (path_or_dir, total_rows).
+    """
+    import csv
+
+    d = table_dir_path(base_dir, env_name, schema)
+
+    # Stream COPY to temp CSV on disk
+    csv_tmp = d / f"_{table}.csv"
+    copy_cur = conn.cursor()
+    with open(csv_tmp, "w", newline="") as f:
+        copy_cur.copy_expert(
+            f'COPY "{db_schema}"."{table}" TO STDOUT WITH CSV HEADER', f
+        )
+    copy_cur.close()
+
+    # Parse CSV and write batches to disk — never hold more than one batch in memory.
+    # First pass: write batch files to a temp dir.
+    table_d = d / table
+    table_d.mkdir(parents=True, exist_ok=True)
+
+    batch = []
+    batch_num = 0
+    total = 0
+
+    with open(csv_tmp, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            batch.append(dict(row))
+            total += 1
+            if len(batch) >= BATCH_SIZE:
+                (table_d / f"batch_{batch_num:04d}.json").write_text(
+                    json.dumps(batch, default=json_serializer))
+                batch_num += 1
+                batch = []
+    if batch:
+        (table_d / f"batch_{batch_num:04d}.json").write_text(
+            json.dumps(batch, default=json_serializer))
+        batch_num += 1
+
+    csv_tmp.unlink()
+
+    if total == 0:
+        # Empty table — clean up dir, write single empty file
+        shutil.rmtree(table_d)
+        data = {**meta, "columns": columns, "rows": []}
+        path = d / f"{table}.json"
+        path.write_text(json.dumps(data, default=json_serializer, indent=2))
+        return path, 0
+
+    if batch_num == 1:
+        # Single batch — convert dir to single file
+        only_batch = json.loads((table_d / "batch_0000.json").read_text())
+        shutil.rmtree(table_d)
+        data = {**meta, "columns": columns, "rows": only_batch}
+        path = d / f"{table}.json"
+        path.write_text(json.dumps(data, default=json_serializer, indent=2))
+        return path, total
+
+    # Multiple batches — write meta
+    meta_data = {**meta, "columns": columns, "total_rows": total, "batched": True}
+    (table_d / "_meta.json").write_text(json.dumps(meta_data, default=json_serializer, indent=2))
+    return table_d, total
+
+
+def iter_table_rows(base_dir, env_name, schema, table):
+    """Yield (meta, rows_batch) for a table. Handles both single JSON and batched.
+    Each yield is at most BATCH_SIZE rows.
+    """
+    d = table_dir_path(base_dir, env_name, schema)
+
+    # Check if batched (directory) or single file
+    table_d = d / table
+    single_f = d / f"{table}.json"
+
+    if table_d.exists() and (table_d / "_meta.json").exists():
+        # Batched
+        meta = json.loads((table_d / "_meta.json").read_text())
+        for batch_file in sorted(table_d.glob("batch_*.json")):
+            rows = json.loads(batch_file.read_text())
+            yield meta, rows
+    elif single_f.exists():
+        data = json.loads(single_f.read_text())
+        yield data, data.get("rows", [])
+    else:
+        return
+
+
+def read_table_meta(base_dir, env_name, schema, table):
+    """Read just the metadata (columns, etc.) without loading all rows."""
+    d = table_dir_path(base_dir, env_name, schema)
+    table_d = d / table
+    single_f = d / f"{table}.json"
+
+    if table_d.exists() and (table_d / "_meta.json").exists():
+        return json.loads((table_d / "_meta.json").read_text())
+    elif single_f.exists():
+        data = json.loads(single_f.read_text())
+        # Don't return rows, just meta
+        return {k: v for k, v in data.items() if k != "rows"}
+    return None
+
+
+# ── Env-template resolver ───────────────────────────────────────────────────
+#
+# Patched data files (downloaded from CloudFront or produced locally by
+# cmd_patch) can carry ${VAR:default} placeholders inside string column
+# values — e.g. patches.json rewrites prod URLs to
+# `http://localhost:${RIDER_APP_PORT:8013}`. We resolve those once at the
+# start of cmd_import (see _expand_patched_data_inplace) so the downstream
+# SQL generator sees plain strings. Each developer's nix-shell env supplies
+# their remapped ports; default applies when running outside the shell.
+
+_ENV_TEMPLATE_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::([^}]*))?\}")
+
+
+def _expand_env_templates(node):
+    """Recursively expand ${VAR:default} in string leaves of a JSON-loaded
+    dict / list. Non-string scalars pass through unchanged."""
+    if isinstance(node, dict):
+        return {k: _expand_env_templates(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_expand_env_templates(v) for v in node]
+    if isinstance(node, str):
+        return _ENV_TEMPLATE_RE.sub(
+            lambda m: os.environ.get(m.group(1), m.group(2) or ""),
+            node,
+        )
+    return node
+
+
+def _expand_patched_data_inplace(patched_base):
+    """Walk every *.json file under the patched data dir and resolve
+    ${VAR:default} templates. Idempotent: a second pass finds no templates
+    and rewrites nothing."""
+    count = 0
+    for jf in patched_base.rglob("*.json"):
+        try:
+            data = json.loads(jf.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        expanded = _expand_env_templates(data)
+        if expanded != data:
+            jf.write_text(json.dumps(expanded, ensure_ascii=False))
+            count += 1
+    if count:
+        print(f"[import] resolved env-templates in {count} patched JSON file(s)")
+
+
+def list_table_files(base_dir, env_name, schema):
+    d = base_dir / env_name / schema
+    if not d.exists():
+        return []
+    names = set()
+    for f in d.iterdir():
+        if f.is_file() and f.suffix == ".json":
+            names.add(f.stem)
+        elif f.is_dir() and (f / "_meta.json").exists():
+            names.add(f.name)
+    return sorted(names)
+
+
+# ── S3 / CloudFront ─────────────────────────────────────────────────────────
+#
+# Patch → S3 push and Import → CloudFront fetch transfer the *whole*
+# `assets/data/<direction>/` directory as a single zip at
+# `<prefix>/<direction>.zip` on S3 (and CloudFront).
+
+
+def s3_client():
+    import boto3
+    return boto3.client("s3", region_name=os.getenv("AWS_REGION", "ap-south-1"))
+
+
+def _zip_dir(local_dir: Path, zip_path: Path) -> int:
+    """Zip every file under local_dir into zip_path, preserving paths relative
+    to local_dir. Returns the number of files archived.
+    """
+    import zipfile
+
+    count = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted(local_dir.rglob("*")):
+            if p.is_file():
+                zf.write(p, arcname=str(p.relative_to(local_dir)))
+                count += 1
+    return count
+
+
+def push_patch_zip_to_s3(local_dir: Path, direction: str, bucket: str, prefix: str):
+    """Zip local_dir and upload to s3://<bucket>/<prefix>/<direction>.zip."""
+    import tempfile
+
+    if not local_dir.exists() or not any(local_dir.iterdir()):
+        print(f"  [s3] {local_dir} is empty, nothing to push")
+        return
+
+    key = f"{prefix.rstrip('/')}/{direction}.zip"
+    vpn_hint = (
+        "\n  → The config-sync bucket is behind the corp network. "
+        "Connect to the VPN and try again."
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / f"{direction}.zip"
+        file_count = _zip_dir(local_dir, zip_path)
+        size_mb = zip_path.stat().st_size / (1024 * 1024)
+        try:
+            s3_client().put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=zip_path.read_bytes(),
+                ContentType="application/zip",
+            )
+        except Exception as e:
+            # boto3 surfaces ConnectionError / EndpointConnectionError when the
+            # VPN is off; AccessDenied / 403 also typically means VPN/policy.
+            name = type(e).__name__
+            msg = str(e)
+            if any(s in msg for s in ("Could not connect", "EndpointConnection",
+                                      "Name or service not known", "AccessDenied",
+                                      "403", "Forbidden", "timed out")) \
+               or name in ("EndpointConnectionError", "ConnectionError",
+                           "ConnectTimeoutError", "ReadTimeoutError"):
+                sys.exit(f"S3 push to s3://{bucket}/{key} failed: {name}: {msg}{vpn_hint}")
+            raise
+    print(f"  [s3] Pushed {file_count} files ({size_mb:.2f} MB zip) to s3://{bucket}/{key}")
+
+
+def fetch_patch_zip_from_cloudfront(direction: str, cloudfront_url: str, dest_dir: Path):
+    """Download <cloudfront_url>/<direction>.zip and unzip into dest_dir."""
+    import tempfile
+    import urllib.error
+    import urllib.request
+    import zipfile
+
+    zip_url = f"{cloudfront_url.rstrip('/')}/{direction}.zip"
+    print(f"  [fetch] {zip_url}")
+    vpn_hint = (
+        "\n  → The config-sync bucket is behind the corp network. "
+        "Connect to the VPN and try again."
+    )
+    try:
+        with urllib.request.urlopen(zip_url, timeout=120) as resp:
+            zip_bytes = resp.read()
+    except urllib.error.HTTPError as e:
+        # 403 / 404 typically means the object isn't there OR the VPN is denying.
+        sys.exit(f"Zip not found at {zip_url}: HTTP {e.code}{vpn_hint}")
+    except urllib.error.URLError as e:
+        # DNS / TCP / TLS failures almost always = VPN off.
+        sys.exit(f"Cannot reach {zip_url}: {e.reason}{vpn_hint}")
+    except (TimeoutError, OSError) as e:
+        sys.exit(f"Cannot reach {zip_url}: {e}{vpn_hint}")
+
+    size_mb = len(zip_bytes) / (1024 * 1024)
+
+    # Write to a temp file first so ZipFile gets a seekable handle, then extract.
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(zip_bytes)
+        tmp_path = Path(tmp.name)
+    try:
+        with zipfile.ZipFile(tmp_path) as zf:
+            # Guard against zip-slip: reject any entry that escapes dest_dir.
+            resolved_dest = dest_dir.resolve()
+            for name in zf.namelist():
+                target = (dest_dir / name).resolve()
+                if resolved_dest not in target.parents and target != resolved_dest:
+                    sys.exit(f"Refusing to extract entry outside dest: {name}")
+            zf.extractall(dest_dir)
+            extracted = len(zf.namelist())
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    print(f"  [fetch] Downloaded {size_mb:.2f} MB, extracted {extracted} files to {dest_dir}")
+
+
+# ── Patches ──────────────────────────────────────────────────────────────────
+
+
+def apply_patches_to_table(table_name, table_data, schema, patch_config):
+    if not patch_config:
+        return table_data, 0
+
+    global_reps = patch_config.get("global_replacements", [])
+    schema_reps = patch_config.get("schema_replacements", {}).get(schema, [])
+    table_ovr = patch_config.get("table_overrides", {}).get(schema, {}).get(table_name, [])
+    dim_ovr = patch_config.get("dimension_overrides", {}).get(schema, {}).get(table_name, [])
+    all_reps = [r for r in global_reps + schema_reps if "find" in r]
+    count = 0
+
+    reencrypt = patch_config.get("reencrypt_foreign_values", True)
+
+    for row in table_data["rows"]:
+        for col in list(row.keys()):
+            if not isinstance(row[col], str):
+                continue
+            orig = row[col]
+            # Global string replacements (URLs etc)
+            for r in all_reps:
+                row[col] = row[col].replace(r["find"], r["replace"])
+            # Re-encrypt foreign Passetto values with local keys
+            if reencrypt and _RE_ENCRYPT.search(row[col]):
+                row[col] = _reencrypt_foreign_values(row[col])
+            if row[col] != orig:
+                count += 1
+
+        for ovr in table_ovr:
+            if ovr["field"] in row:
+                row[ovr["field"]] = ovr["value"]
+                count += 1
+
+        for rule in dim_ovr:
+            # Empty where = match all rows
+            where = rule.get("where", {})
+            if not all(str(row.get(k)) == str(v) for k, v in where.items()):
+                continue
+            # "set" — full field replacement, supports eval:{field} templates
+            # "set" — full field replacement
+            for f, v in rule.get("set", {}).items():
+                if f in row:
+                    row[f] = _resolve_value(v, row)
+                    count += 1
+            # "merge_json" — merge fields into existing JSON value
+            for f, fields in rule.get("merge_json", {}).items():
+                if f in row and row[f]:
+                    try:
+                        existing = json.loads(row[f]) if isinstance(row[f], str) else row[f]
+                        if isinstance(existing, dict) and isinstance(fields, dict):
+                            _deep_merge_encrypt(existing, fields)
+                            row[f] = json.dumps(existing)
+                            count += 1
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+    return table_data, count
+
+
+def _deep_merge_encrypt(target, patch):
+    """Recursively merge *patch* into *target* dict, encrypting ENCRYPT: values."""
+    for k, v in patch.items():
+        if isinstance(v, str) and v.startswith("ENCRYPT:"):
+            target[k] = _encrypt_via_obj(v[8:])
+        elif isinstance(v, dict):
+            if k not in target or not isinstance(target[k], dict):
+                target[k] = {}
+            _deep_merge_encrypt(target[k], v)
+        else:
+            target[k] = v
+
+
+def _resolve_value(val, row):
+    """Resolve a patch value. Supports:
+    - Plain string: used as-is
+    - "eval:prefix-{field_name}-suffix": interpolates row field values
+    - "ENCRYPT:plaintext": encrypts via passetto /encrypt/obj
+    """
+    if not isinstance(val, str):
+        return val
+    if val.startswith("eval:"):
+        template = val[5:]
+        # Replace {field_name} with row values
+        def _sub(m):
+            field = m.group(1)
+            return str(row.get(field, ""))
+        return re.sub(r'\{(\w+)\}', _sub, template)
+    if val.startswith("ENCRYPT:"):
+        return _encrypt_via_obj(val[8:])
+    return val
+
+
+_reencrypt_cache = {}
+
+def _reencrypt_foreign_values(text):
+    """Replace all 0.1.0|N|... encrypted tokens with locally-encrypted dummy values.
+
+    Master and local Passetto use different keys, so master-encrypted values
+    can't be decrypted locally. For local testing, re-encrypt a dummy placeholder
+    so the app can decrypt without errors. Mock services don't check real credentials.
+    """
+    def _replace(m):
+        orig = m.group(0)
+        if orig in _reencrypt_cache:
+            return _reencrypt_cache[orig]
+        replacement = _encrypt_via_obj("test-dummy-key")
+        _reencrypt_cache[orig] = replacement
+        return replacement
+    return _RE_ENCRYPT.sub(_replace, text)
+
+
+_encrypt_cache = {}
+
+# Points to the passetto-server the patch step should talk to.
+# Set by _start_temp_passetto() when the patch command spawns a throwaway
+# instance against the `test_dashboard` DB; otherwise defaults to the
+# mobility-stack passetto (which uses local dev keys). The default honors
+# the nix-shell PASSETTO_SERVICE_PORT so it tracks per-user port remapping.
+_PASSETTO_URL = os.environ.get(
+    "PASSETTO_SERVICE_URL",
+    f"http://localhost:{os.environ.get('PASSETTO_SERVICE_PORT', '8079')}",
+)
+
+def _encrypt_via_obj(plaintext):
+    """Encrypt using passetto /encrypt with S"value" format.
+
+    Passetto expects S-prefix for string values: S"actual-value"
+    This matches how the seed geninis tool and the app encrypt data.
+
+    Uses keyId=1 to force the first deterministic init key (derived from
+    master password). Rotated keys (keyId 4+) are random and lost on
+    Passetto restart, so encrypted values using them become invalid.
+    """
+    if plaintext in _encrypt_cache:
+        return _encrypt_cache[plaintext]
+    import requests
+    try:
+        s_val = f'S"{plaintext}"'
+        resp = requests.post(f"{_PASSETTO_URL}/encrypt", json={"value": s_val, "keyId": 1}, timeout=5)
+        val = resp.json()["value"]
+        _encrypt_cache[plaintext] = val
+        return val
+    except Exception:
+        return f"UNENCRYPTED:{plaintext}"
+
+
+# ── SQL generation (per table) ───────────────────────────────────────────────
+
+
+# ── Target DB helpers (per table, no bulk load) ──────────────────────────────
+
+
+def fetch_target_table_columns(cursor, db_schema, table):
+    """Returns ([column_names], {col: data_type}, set_of_not_null_cols, set_of_cols_with_default)."""
+    cursor.execute("""SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position""",
+        (db_schema, table))
+    rows = cursor.fetchall()
+    if rows and isinstance(rows[0], dict):
+        cols = [r["column_name"] for r in rows]
+        types = {r["column_name"]: r["data_type"] for r in rows}
+        not_null = {r["column_name"] for r in rows if r["is_nullable"] == "NO"}
+        has_default = {r["column_name"] for r in rows if r["column_default"] is not None}
+    else:
+        cols = [r[0] for r in rows]
+        types = {r[0]: r[1] for r in rows}
+        not_null = {r[0] for r in rows if r[2] == "NO"}
+        has_default = {r[0] for r in rows if r[3] is not None}
+    return cols, types, not_null, has_default
+
+
+def fetch_target_table_head(cursor, db_schema, table):
+    if not table_exists(cursor, db_schema, table):
+        return {}
+    cursor.execute(f'SELECT * FROM "{db_schema}"."{table}" LIMIT 1')
+    row = cursor.fetchone()
+    return dict(row) if row else {}
+
+
+def check_target_coverage_from_dims(cursor, db_schema, table, source_dims, dim_cols):
+    """Returns list of warning strings for dim values in target not in source.
+    Takes pre-collected source_dims set instead of full rows."""
+    if not dim_cols:
+        return []
+    if not table_exists(cursor, db_schema, table):
+        return []
+
+    source_dims_str = {tuple(str(v) for v in dv) for dv in source_dims}
+    dim_select = ", ".join(f'"{c}"' for c in dim_cols)
+    cursor.execute(f'SELECT {dim_select}, COUNT(*) FROM "{db_schema}"."{table}" GROUP BY {dim_select}')
+
+    warnings = []
+    for group_row in cursor.fetchall():
+        dim_val = tuple(str(v) for v in group_row[:-1])
+        if dim_val not in source_dims_str:
+            dim_display = ", ".join(f"{c}={v}" for c, v in zip(dim_cols, dim_val))
+            warnings.append(f"({dim_display}): {group_row[-1]} rows")
+    return warnings
+
+
+def generate_delete_sql(schema, table, dim_cols, dim_values, total_rows):
+    """Generate DELETE statements for a table."""
+    lines = []
+    if not dim_cols:
+        lines.append(f"-- {schema}.{table}: {total_rows} rows (DELETE all + INSERT)")
+        lines.append(f'DELETE FROM "{schema}"."{table}";')
+    else:
+        dim_str = ", ".join(dim_cols)
+        lines.append(f"-- {schema}.{table}: {total_rows} rows (DELETE by {dim_str}: {len(dim_values)} values)")
+        for dv in sorted(dim_values, key=str):
+            where = " AND ".join(f'"{c}" = {escape_sql_value(v)}' for c, v in zip(dim_cols, dv))
+            lines.append(f'DELETE FROM "{schema}"."{table}" WHERE {where};')
+    return "\n".join(lines) + "\n"
+
+
+def _zero_value_for_type(col_type):
+    """Return a type-safe SQL literal for a NOT-NULL column that has no DEFAULT.
+
+    Used when the source dump is missing a column that the target requires
+    — we must supply *some* value or the INSERT fails.
+    """
+    t = (col_type or "").lower()
+    if t in {"text", "character varying", "character", "citext", "name"}:
+        return "''"
+    if t in {"integer", "bigint", "smallint", "numeric", "decimal", "real", "double precision"}:
+        return "0"
+    if t == "boolean":
+        return "FALSE"
+    if t in {"timestamp without time zone", "timestamp with time zone", "timestamp", "date"}:
+        return "CURRENT_TIMESTAMP"
+    if t == "time without time zone" or t == "time with time zone" or t == "time":
+        return "CURRENT_TIME"
+    if t in {"json", "jsonb"}:
+        return "'{}'" + ("::jsonb" if t == "jsonb" else "")
+    if t == "array":
+        return "'{}'"
+    if t == "uuid":
+        return "'00000000-0000-0000-0000-000000000000'"
+    return "''"
+
+
+def generate_insert_sql(schema, table, rows, src_columns, target_cols, head_row,
+                        not_null_cols=None, col_types=None, has_default_cols=None):
+    """Generate INSERT statements for a batch of rows.
+
+    CSV COPY exports NULL as empty string. Convert empty strings back to NULL,
+    except for NOT NULL text columns where empty string is kept as-is.
+    For non-text NOT NULL columns (integer, etc.), empty strings become DEFAULT.
+
+    For columns present in the *target* but missing from the source export:
+      - if NOT NULL with no DEFAULT: include the column, supply a type-safe zero
+        value (so the INSERT doesn't fail).
+      - if it has a DEFAULT (or is nullable): skip the column, let Postgres
+        fill in the default / NULL.
+    """
+    if not rows:
+        return ""
+
+    not_null_cols = not_null_cols or set()
+    col_types = col_types or {}
+    has_default_cols = has_default_cols or set()
+    _text_types = {"text", "character", "character varying", "json", "jsonb"}
+    # Only include columns that exist in the target schema.
+    # Source may have extra columns (deprecated in local, still in prod).
+    if target_cols is not None:
+        tgt_set = set(target_cols)
+        src_set = set(src_columns) | set(head_row.keys())
+        # target-only columns we must supply a value for (NOT NULL, no DEFAULT)
+        must_supply = [
+            c for c in target_cols
+            if c not in src_set and c in not_null_cols and c not in has_default_cols
+        ]
+        insert_cols = [c for c in target_cols if c in src_columns or c in head_row or c in must_supply]
+        skipped = [c for c in src_columns if c not in tgt_set]
+        if skipped:
+            print(f"    [info] {schema}.{table}: dropping {len(skipped)} source-only columns: {skipped}", flush=True)
+        if must_supply:
+            print(f"    [info] {schema}.{table}: supplying zero-value for {len(must_supply)} NOT-NULL-no-default target-only columns: {must_supply}", flush=True)
+    else:
+        insert_cols = list(src_columns)
+        must_supply = []
+    must_supply_set = set(must_supply)
+    col_list = ", ".join(f'"{c}"' for c in insert_cols)
+
+    lines = []
+    for row in rows:
+        vals = []
+        for c in insert_cols:
+            if c in row:
+                val = row[c]
+                if val == "":
+                    if c not in not_null_cols:
+                        vals.append("NULL")
+                    elif col_types.get(c) not in _text_types:
+                        # NOT NULL non-text column (e.g., integer): empty string is invalid, use DEFAULT
+                        vals.append("DEFAULT")
+                    else:
+                        vals.append(escape_sql_value(val, col_types.get(c)))
+                else:
+                    vals.append(escape_sql_value(val, col_types.get(c)))
+            elif c in head_row:
+                vals.append(escape_sql_value(head_row[c], col_types.get(c)))
+            elif c in must_supply_set:
+                vals.append(_zero_value_for_type(col_types.get(c)))
+            else:
+                vals.append("NULL")
+        lines.append(f'INSERT INTO "{schema}"."{table}" ({col_list}) VALUES ({", ".join(vals)});')
+    return "\n".join(lines) + "\n"
+
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+
+def cmd_export(args):
+    """Export: read source DB table-by-table -> tmp -> promote to data/<env>/."""
+    from_env = args.source_env
+    print(f"Exporting from {from_env}\n")
+
+    env_config = load_environments()
+    config_tables = load_config_tables()
+
+    if args.schemas:
+        config_tables = {s: config_tables[s] for s in args.schemas if s in config_tables}
+
+    table_filter = set(args.tables) if hasattr(args, 'tables') and args.tables else None
+
+    # Clean tmp (only for filtered tables if specified)
+    for schema in config_tables:
+        tmp_schema_dir = TMP_DIR / from_env / schema
+        if table_filter:
+            for t in table_filter:
+                tf = tmp_schema_dir / f"{t}.json"
+                td = tmp_schema_dir / t
+                if tf.exists(): tf.unlink()
+                if td.exists(): shutil.rmtree(td)
+        elif tmp_schema_dir.exists():
+            shutil.rmtree(tmp_schema_dir)
+
+    max_workers = args.parallel if hasattr(args, 'parallel') and args.parallel else 4
+    results = {}
+
+    for schema, schema_config in sorted(config_tables.items()):
+        tables = table_names_for_schema(schema_config)
+        if table_filter:
+            tables = [t for t in tables if t in table_filter]
+            if not tables:
+                continue
+        print(f"{'=' * 60}")
+        print(f"{schema} ({len(tables)} tables, {max_workers} parallel)")
+        print(f"{'=' * 60}")
+
+        source_db = get_db_config(env_config, from_env, schema)
+        db_schema = source_db.get("db_schema", schema)
+        use_kubectl = is_kubectl_env(source_db)
+
+        if use_kubectl:
+            pod_name = source_db["_execPod"]["pod"]
+            print(f"  (kubectl exec {pod_name})")
+
+        # Pre-check: get columns and validate dims
+        export_tasks = []  # (table, meta, columns)
+        dim_warnings = []
+
+        if use_kubectl:
+            # Batch pre-check: 2 kubectl calls for ALL tables
+            print(f"  Pre-checking {len(tables)} tables...", end="", flush=True)
+            kubectl_table_cols = kubectl_precheck_tables(source_db, db_schema, tables)
+            print(f" {len(kubectl_table_cols)} found", flush=True)
+
+            for table in tables:
+                if table not in kubectl_table_cols:
+                    print(f"    [skip] {db_schema}.{table} — does not exist", flush=True)
+                    continue
+                columns = kubectl_table_cols[table]
+                dim_cols = get_dim_columns(schema_config, table)
+                missing = [c for c in dim_cols if c not in columns]
+                if missing:
+                    print(f"    [DIM WARN] {table}: dim columns {missing} not in data — skipping table", flush=True)
+                    dim_warnings.append(table)
+                    continue
+                meta = {
+                    "schema": schema, "db_schema": db_schema, "table": table,
+                    "source_env": from_env,
+                    "exported_at": datetime.now(timezone.utc).isoformat(),
+                }
+                export_tasks.append((table, meta, columns))
+        else:
+            check_conn = None
+            check_cur = None
+            try:
+                check_conn = get_connection(source_db, statement_timeout_ms=EXPORT_STATEMENT_TIMEOUT_MS)
+                check_cur = check_conn.cursor()
+            except Exception as e:
+                print(f"  CONNECTION FAILED: {e}", file=sys.stderr)
+                results[schema] = {"status": "failed", "error": str(e)}
+                continue
+
+            for table in tables:
+                if not table_exists(check_cur, db_schema, table):
+                    print(f"    [skip] {db_schema}.{table} — does not exist", flush=True)
+                    continue
+                check_cur.execute(f'SELECT * FROM "{db_schema}"."{table}" LIMIT 0')
+                columns = [desc[0] for desc in check_cur.description]
+                dim_cols = get_dim_columns(schema_config, table)
+                missing = [c for c in dim_cols if c not in columns]
+                if missing:
+                    print(f"    [DIM WARN] {table}: dim columns {missing} not in data — skipping table", flush=True)
+                    dim_warnings.append(table)
+                    continue
+                meta = {
+                    "schema": schema, "db_schema": db_schema, "table": table,
+                    "source_env": from_env,
+                    "exported_at": datetime.now(timezone.utc).isoformat(),
+                }
+                export_tasks.append((table, meta, columns))
+
+            if check_cur:
+                check_cur.close()
+            if check_conn:
+                check_conn.close()
+
+        # Export tables — kubectl mode runs sequentially, direct mode in parallel
+        table_count = 0
+        row_count = 0
+
+        def _export_one(task):
+            tbl, meta, cols = task
+            t0 = _time.time()
+            if use_kubectl:
+                result_path, total = kubectl_export_table(
+                    TMP_DIR, from_env, schema, tbl, meta, source_db, db_schema, cols
+                )
+            else:
+                conn = get_connection(source_db, statement_timeout_ms=EXPORT_STATEMENT_TIMEOUT_MS)
+                try:
+                    result_path, total = export_table(
+                        TMP_DIR, from_env, schema, tbl, meta, conn, db_schema, cols
+                    )
+                finally:
+                    conn.close()
+            elapsed = _time.time() - t0
+            label = result_path.name if result_path.is_file() else f"{tbl}/ ({total // BATCH_SIZE + 1} batches)"
+            return tbl, total, label, elapsed
+
+        export_errors = []
+        effective_workers = 1 if use_kubectl else max_workers
+        with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+            futures = {pool.submit(_export_one, t): t for t in export_tasks}
+            for future in as_completed(futures):
+                try:
+                    tbl, total, label, elapsed = future.result()
+                    print(f"    [ok] {db_schema}.{tbl}: {total} rows -> {label} ({elapsed:.1f}s)", flush=True)
+                    table_count += 1
+                    row_count += total
+                except Exception as e:
+                    tbl = futures[future][0]
+                    print(f"    [FAIL] {db_schema}.{tbl}: {e}", file=sys.stderr, flush=True)
+                    export_errors.append(tbl)
+
+        # Promote tmp -> data
+        tmp_schema_dir = TMP_DIR / from_env / schema
+        if not tmp_schema_dir.exists() or not any(tmp_schema_dir.iterdir()):
+            print(f"  No tables exported for {schema}, skipping promote", flush=True)
+            results[schema] = {"status": "ok", "tables": 0, "rows": 0}
+            continue
+
+        dest = DATA_DIR / from_env / schema
+        if table_filter and dest.exists():
+            # Merge: only replace exported tables, keep others
+            for item in tmp_schema_dir.iterdir():
+                target = dest / item.name
+                if target.exists():
+                    if target.is_dir():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink()
+                shutil.move(str(item), str(target))
+            shutil.rmtree(tmp_schema_dir)
+        else:
+            if dest.exists():
+                shutil.rmtree(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(tmp_schema_dir), str(dest))
+        print(f"  Promoted to {dest}")
+
+        warns = dim_warnings + export_errors
+        if warns:
+            results[schema] = {"status": "ok", "tables": table_count, "rows": row_count,
+                               "warnings": f"skipped: {', '.join(warns)}"}
+        else:
+            results[schema] = {"status": "ok", "tables": table_count, "rows": row_count}
+        print()
+
+    # Clean empty tmp dirs
+    if TMP_DIR.exists():
+        shutil.rmtree(TMP_DIR, ignore_errors=True)
+
+    print(f"\n{'=' * 60}")
+    print(f"EXPORT SUMMARY ({from_env})")
+    print(f"{'=' * 60}")
+    for s, r in sorted(results.items()):
+        if r["status"] == "ok":
+            warn = f"  ({r['warnings']})" if r.get('warnings') else ""
+            print(f"  {s}: {r['tables']} tables, {r['rows']} rows{warn}")
+        else:
+            print(f"  {s}: FAILED — {r.get('error', r['status'])}")
+
+    if any(r["status"] != "ok" for r in results.values()):
+        sys.exit(1)
+
+# ── Temp passetto-server (per --to direction) ──────────────────────────────
+#
+# The patch step re-encrypts foreign Passetto blobs into values the target
+# environment can decrypt. To do that we need a passetto-server running with
+# the *target's* keys, not the keys of whichever mobility stack is running
+# locally. Convention: a pre-seeded database `test_dashboard_<to>` lives on
+# the same Postgres cluster as the `--from` env (creds come from that env's
+# `default` block in environments.json), with a `"Passetto"` schema holding
+# the per-environment Master/Keys rows. `_start_temp_passetto` boots a
+# throwaway passetto-server against it; `_stop_temp_passetto` tears it down.
+
+_TEMP_PASSETTO_PROC = None
+_TEMP_PASSETTO_DEFAULT_PORT = 8089
+
+
+def _kill_port_holders(port):
+    """SIGKILL anything listening on `port` (best-effort). Used to clear an
+    orphan passetto-server before binding our own. lsof is on PATH inside
+    the Backend nix shell and on most Linux base images."""
+    import shutil as _sh, subprocess as _sp
+    if not _sh.which("lsof"):
+        return
+    try:
+        out = _sp.run(["lsof", "-ti", f":{port}"],
+                      capture_output=True, text=True, timeout=5)
+    except Exception:
+        return
+    pids = [p for p in out.stdout.split() if p.strip()]
+    for pid in pids:
+        try:
+            os.kill(int(pid), 9)
+            print(f"  Killed orphan PID {pid} holding port {port}")
+        except Exception:
+            pass
+
+def _start_temp_passetto(from_env, to_env, env_config):
+    """Spawn passetto-server pointed at <from_env>.test_dashboard_<to_env>.
+
+    Sets the module-level `_PASSETTO_URL` so `_encrypt_via_obj` talks to this
+    instance instead of the mobility-stack one on 8079. Returns the subprocess
+    handle; caller is responsible for calling `_stop_temp_passetto()` on exit
+    (we wire that via try/finally in cmd_patch).
+    """
+    global _TEMP_PASSETTO_PROC, _PASSETTO_URL
+    import subprocess, time, requests
+
+    src_env = env_config.get(from_env)
+    if not src_env:
+        sys.exit(f"Environment '{from_env}' not in environments.json")
+    src = src_env.get("default", {})
+    if "_execPod" in src or src_env.get("execPod"):
+        sys.exit(
+            f"`patch --from {from_env}` needs direct DB access to spawn the "
+            f"temp passetto-server. kubectl-exec-only envs are not supported "
+            f"for the patch step. Run patch on a host with direct access."
+        )
+
+    db_name = f"test_dashboard_{to_env}"
+    port = int(os.environ.get("CONFIG_SYNC_PASSETTO_PORT", _TEMP_PASSETTO_DEFAULT_PORT))
+    conn_str = (
+        f"host={src['host']} port={src.get('port', 5432)} "
+        f"dbname={db_name} user={src['user']} password='{src.get('password', '')}'"
+    )
+
+    # Reap any orphan passetto-server holding the port from a previous run
+    # (process died before `_stop_temp_passetto` ran, e.g. SIGKILL on the
+    # parent). Without this the new server can't bind.
+    _kill_port_holders(port)
+
+    print(f"  Starting temp passetto-server on :{port} -> {src['host']}:{src.get('port', 5432)}/{db_name}")
+
+    env = os.environ.copy()
+    env["PASSETTO_PG_BACKEND_CONN_STRING"] = conn_str
+    env["MASTER_PASSWORD"] = env.get("MASTER_PASSWORD", "1")
+    env["PORT"] = str(port)
+
+    # Prefer an arch-specific binary bundled under bin/ (arm64/aarch64 binary
+    # for Apple Silicon dev, x86_64 binary for Linux containers). Fall back to
+    # the unsuffixed bundle path and then to PATH so the same code keeps
+    # working inside a nix devshell where passetto-server is already on PATH.
+    import platform
+    arch = platform.machine().lower()
+    if arch in ("arm64", "aarch64"):
+        arch_key = "aarch64"
+    elif arch in ("x86_64", "amd64"):
+        arch_key = "x86_64"
+    else:
+        arch_key = arch
+    candidates = [
+        SCRIPT_DIR / "bin" / f"passetto-server-{arch_key}",
+        SCRIPT_DIR / "passetto-server",
+    ]
+    exe = next((str(p) for p in candidates if p.exists()), "passetto-server")
+
+    log_path = SCRIPT_DIR / "passetto-server.log"
+    log = open(log_path, "w")
+    try:
+        _TEMP_PASSETTO_PROC = subprocess.Popen(
+            [exe], env=env, stdout=log, stderr=subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        sys.exit(
+            f"passetto-server not found at {candidates[0]}, {candidates[1]}, or on PATH. "
+            f"Drop a binary for arch={arch_key} into {SCRIPT_DIR}/bin/, "
+            f"or run config_transfer.py from inside the Backend nix shell."
+        )
+
+    url = f"http://localhost:{port}"
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if _TEMP_PASSETTO_PROC.poll() is not None:
+            sys.exit(
+                f"passetto-server exited (code {_TEMP_PASSETTO_PROC.returncode}). "
+                f"Check {log_path}. Common causes: MASTER_PASSWORD wrong for the "
+                f"seeded Master row, or `{db_name}` not seeded on {src['host']}."
+            )
+        try:
+            r = requests.post(f"{url}/encrypt",
+                              json={"value": 'S"ping"', "keyId": 1}, timeout=2)
+            if r.status_code == 200:
+                _PASSETTO_URL = url
+                print(f"  passetto-server ready on {url} (db={db_name})")
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
+    _stop_temp_passetto()
+    sys.exit(f"passetto-server did not become ready within 30s. See {log_path}.")
+
+
+def _stop_temp_passetto():
+    global _TEMP_PASSETTO_PROC
+    if _TEMP_PASSETTO_PROC is None:
+        return
+    if _TEMP_PASSETTO_PROC.poll() is None:
+        _TEMP_PASSETTO_PROC.terminate()
+        try:
+            _TEMP_PASSETTO_PROC.wait(timeout=5)
+        except Exception:
+            _TEMP_PASSETTO_PROC.kill()
+    _TEMP_PASSETTO_PROC = None
+
+
+def cmd_patch(args):
+    """Patch: read raw export, apply all overrides, write patched dump.
+
+    Reads from: assets/data/<from_env>/
+    Writes to:  assets/data/<from>_to_<to>/
+    Applies: global replacements, re-encryption via passetto /encrypt/obj, merge_json.
+    Spawns a temp passetto-server against <from_env>.test_dashboard_<to_env>
+    so re-encryption uses the target env's keys; tears it down on exit.
+    """
+    from_env = args.source_env
+    to_env = args.target_env
+    direction = f"{from_env}_to_{to_env}"
+
+    print(f"Patching: {from_env} -> {to_env}\n")
+
+    env_config = load_environments()
+    _start_temp_passetto(from_env, to_env, env_config)
+    try:
+        _cmd_patch_inner(args, from_env, to_env, direction)
+    finally:
+        _stop_temp_passetto()
+
+
+def _cmd_patch_inner(args, from_env, to_env, direction):
+
+    config_tables = load_config_tables()
+    patch_config = load_patches().get(direction, {})
+
+    if not patch_config:
+        print(f"WARNING: No patches for '{direction}'\n")
+
+    schemas = args.schemas or list(config_tables.keys())
+    src_base = DATA_DIR / from_env
+    dst_base = DATA_DIR / direction
+
+    if dst_base.exists():
+        shutil.rmtree(dst_base)
+
+    # Accumulate per-table failures so the patch phase keeps making progress
+    # on the remaining tables instead of bailing on the first error. Printed
+    # as a grouped summary at the end.
+    failures = []  # list of (schema, table, reason)
+
+    for schema in schemas:
+        if schema not in config_tables:
+            continue
+        available = list_table_files(src_base, "", schema)
+        if not available:
+            print(f"[skip] No data for {schema}")
+            continue
+
+        print(f"{'=' * 60}")
+        print(f"{schema} ({len(available)} tables)")
+        print(f"{'=' * 60}")
+
+        # If there are any global or schema-level find/replace rules, every table
+        # needs patching — the 10-row sample can miss rows that contain the target string.
+        has_global_reps = bool([r for r in patch_config.get("global_replacements", [])
+                                if "find" in r]
+                               + [r for r in patch_config.get("schema_replacements", {}).get(schema, [])
+                                  if "find" in r])
+
+        for table in available:
+            try:
+                # First pass: check if this table needs patching at all
+                needs_patch = has_global_reps
+                total_rows = 0
+                for meta, batch_rows in iter_table_rows(src_base, "", schema, table):
+                    total_rows += len(batch_rows)
+                    if not needs_patch:
+                        test_data = {"columns": meta.get("columns", []), "rows": batch_rows[:10]}
+                        _, pc = apply_patches_to_table(table, test_data, schema, patch_config)
+                        if pc > 0:
+                            needs_patch = True
+
+                if total_rows == 0:
+                    print(f"    [skip] {table}: 0 rows")
+                    continue
+
+                if not needs_patch:
+                    # No patches needed — copy raw export as-is
+                    src_table_dir = src_base / schema / table
+                    src_table_file = src_base / schema / f"{table}.json"
+                    dst_schema_dir = table_dir_path(dst_base, "", schema)
+
+                    if src_table_dir.exists():
+                        shutil.copytree(str(src_table_dir), str(dst_schema_dir / table))
+                    elif src_table_file.exists():
+                        shutil.copy2(str(src_table_file), str(dst_schema_dir / f"{table}.json"))
+
+                    print(f"    [copy] {table}: {total_rows} rows (no patches)")
+                    continue
+
+                # Needs patching — process batch by batch
+                patch_count = 0
+                batch_idx = 0
+
+                for meta, batch_rows in iter_table_rows(src_base, "", schema, table):
+                    batch_data = {"columns": meta.get("columns", []), "rows": batch_rows}
+                    batch_data, pc = apply_patches_to_table(table, batch_data, schema, patch_config)
+                    patch_count += pc
+
+                    out_meta = {k: v for k, v in meta.items() if k != "rows"}
+                    out_meta["patched"] = True
+                    out_meta["direction"] = direction
+
+                    out_dir = table_dir_path(dst_base, "", schema) / table
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    (out_dir / f"batch_{batch_idx:04d}.json").write_text(
+                        json.dumps(batch_data["rows"], default=json_serializer))
+                    batch_idx += 1
+
+                # Write meta
+                out_dir = table_dir_path(dst_base, "", schema) / table
+                meta_data = {**out_meta, "total_rows": total_rows, "batched": True}
+                (out_dir / "_meta.json").write_text(json.dumps(meta_data, default=json_serializer, indent=2))
+
+                # If single batch, collapse to single file
+                if batch_idx == 1:
+                    batch_file = out_dir / "batch_0000.json"
+                    rows = json.loads(batch_file.read_text())
+                    shutil.rmtree(out_dir)
+                    single = {**meta_data, "rows": rows}
+                    del single["batched"]
+                    del single["total_rows"]
+                    (table_dir_path(dst_base, "", schema) / f"{table}.json").write_text(
+                        json.dumps(single, default=json_serializer, indent=2))
+
+                print(f"    [ok] {table}: {total_rows} rows, {patch_count} patches")
+            except Exception as _patch_err:
+                # One bad table shouldn't kill the whole patch phase. Capture
+                # the reason, print a one-line marker, and keep going.
+                reason = f"{type(_patch_err).__name__}: {_patch_err}"
+                # Truncate very long messages to keep the log readable
+                if len(reason) > 240:
+                    reason = reason[:237] + "..."
+                print(f"    [FAIL] {table}: {reason}", flush=True)
+                failures.append((schema, table, reason))
+
+        print()
+
+    # ── Per-table failure summary ──────────────────────────────────────
+    # Group failures by reason so identical errors across many tables collapse
+    # into one entry. Useful when (e.g.) passetto re-encryption is broken and
+    # 30+ tables fail with the same message.
+    if failures:
+        print(f"\n{'=' * 60}")
+        print(f"PATCH FAILURES — {len(failures)} table(s) across {len({s for s,_,_ in failures})} schema(s)")
+        print(f"{'=' * 60}")
+        from collections import defaultdict
+        by_reason = defaultdict(list)
+        for schema, table, reason in failures:
+            by_reason[reason].append(f"{schema}.{table}")
+        for reason, tables in sorted(by_reason.items(), key=lambda x: -len(x[1])):
+            print(f"\n  Reason: {reason}")
+            print(f"  Affected ({len(tables)}):")
+            # Print up to 20 tables per reason; if more, show count
+            for t in tables[:20]:
+                print(f"    - {t}")
+            if len(tables) > 20:
+                print(f"    … and {len(tables) - 20} more")
+        print()
+
+    # ── Post-patch audit: scan output for remaining sensitive patterns ──
+    audit_warnings = _audit_patched_output(dst_base, src_base, config_tables, schemas)
+    if audit_warnings:
+        print(f"\n{'=' * 60}")
+        print(f"PATCH AUDIT WARNINGS ({len(audit_warnings)} issues)")
+        print(f"{'=' * 60}")
+        for w in audit_warnings:
+            print(f"  {w}")
+        print()
+
+    print(f"Patched data written to {dst_base}/")
+
+    if getattr(args, "s3", False):
+        bucket = args.s3_bucket or DEFAULT_S3_BUCKET
+        if not bucket:
+            sys.exit(
+                "--s3 was requested but no bucket configured. "
+                "Pass --s3-bucket or set CONFIG_SYNC_S3_BUCKET."
+            )
+        prefix = args.s3_prefix or DEFAULT_S3_PREFIX
+        push_patch_zip_to_s3(dst_base, direction, bucket, prefix)
+
+    print(f"Run: python config_transfer.py import --from {from_env} --to {to_env}")
+
+    if failures:
+        sys.exit(1)
+
+
+# ── Post-patch audit ───────────────────────────────────────────────────
+
+
+# Safe URL domains: CDN/content/app-links — not service endpoints
+_AUDIT_SAFE_DOMAINS = {
+    # CDN / static assets
+    "firebasestorage.googleapis.com", "fonts.googleapis.com",
+    "cdn.britannica.com", "sandbox.assets.moving.tech",
+    "assets.moving.tech", "assets.juspay.in", "ny.assets.juspay.in",
+    "raw.githubusercontent.com",
+    # Content / docs
+    "docs.google.com",
+    "youtube.com", "www.youtube.com", "youtu.be",
+    # App store / deep links
+    "play.google.com", "apps.apple.com", "dl.flipkart.com",
+    "manayatri.page.link", "yatrisathi.page.link",
+    # Consumer-facing websites
+    "nammayatri.in", "www.nammayatri.in",
+    "manayatri.in", "yatrisathi.in", "odishayatri.in",
+    "www.getyatri.com", "app-nammayatri.redbus.in",
+    "web.yatrisathi.in", "www.chennaione.in",
+    "metro-terms.triffy.in",
+    # Social media
+    "twitter.com", "x.com", "www.instagram.com", "www.facebook.com",
+    "medium.com", "t.me", "in.linkedin.com", "whatsapp.com",
+    # Internal dashboards (user-facing, not API endpoints)
+    "control-center.moving.tech", "logs.moving.tech", "moving.tech",
+    # Placeholder domains
+    "example.com", "dummyurl", "test.org",
+    "www.ondcTextApi.com", "sandbox.assets.moving.techmaster",
+    "webhook.site", "www.google.com",
+    # Misc — bitbucket/internal (not API)
+    "bitbucket.juspay.net",
+    # Dead/test endpoints in registry (third-party BPP stubs)
+    "cabs.dev.bap.urownsite.xyz", "fmd-test.free.beeceptor.com",
+    "shop.pinpark.co.in", "api-d2c.marutisuzukicollatex.com",
+    # Dead ngrok tunnels
+    "12d0-65-2-105-122.ngrok-free.app",
+}
+
+_RE_HTTPS = re.compile(r'https://([^/\s"\\,}{)\]]+)([^\s"\\,}{)\]]*)')
+_RE_HTTP_NON_LOCAL = re.compile(
+    r'http://(?!localhost)(?!0\.0\.0\.0)(?!127\.0\.0\.1)([^\s"\\,}{)\]]+)')
+_RE_SVC_CLUSTER = re.compile(r'[a-z0-9-]+\.[a-z]+\.svc\.cluster\.local')
+_RE_IP_PORT = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)')
+
+
+def _audit_patched_output(patched_base, source_base, config_tables, schemas):
+    """Scan patched output for remaining sensitive patterns.
+
+    Returns a list of warning strings.
+    """
+    from collections import defaultdict
+
+    warnings = []
+
+    # Collect all encrypted values from source for comparison
+    source_encrypted = set()
+    for schema in schemas:
+        if schema not in config_tables:
+            continue
+        for table in list_table_files(source_base, "", schema):
+            for _, batch in iter_table_rows(source_base, "", schema, table):
+                for row in batch:
+                    for val in row.values():
+                        if isinstance(val, str):
+                            source_encrypted.update(_RE_ENCRYPT.findall(val))
+
+    # Scan patched output
+    ext_urls = defaultdict(set)       # domain -> set of files
+    non_local_http = defaultdict(set)  # host -> set of files
+    unchanged_enc = defaultdict(int)   # file -> count
+    cluster_urls = defaultdict(set)    # url -> set of files
+    ip_ports = defaultdict(set)        # ip:port -> set of files
+
+    for schema in schemas:
+        if schema not in config_tables:
+            continue
+        for table in list_table_files(patched_base, "", schema):
+            rel = f"{schema}/{table}"
+            for _, batch in iter_table_rows(patched_base, "", schema, table):
+                for row in batch:
+                    for val in row.values():
+                        if not isinstance(val, str):
+                            continue
+
+                        # External HTTPS
+                        for domain, _ in _RE_HTTPS.findall(val):
+                            host = domain.split(":")[0]
+                            if host not in _AUDIT_SAFE_DOMAINS and host != "localhost":
+                                ext_urls[host].add(rel)
+
+                        # Non-localhost HTTP
+                        for host_path in _RE_HTTP_NON_LOCAL.findall(val):
+                            host = host_path.split("/")[0].split(":")[0]
+                            if host not in _AUDIT_SAFE_DOMAINS and \
+                               host not in ("dummyReturnUrl", "dummyUrl", "string"):
+                                non_local_http[host].add(rel)
+
+                        # Unchanged encrypted values
+                        for enc in _RE_ENCRYPT.findall(val):
+                            if enc in source_encrypted:
+                                unchanged_enc[rel] += 1
+
+                        # K8s cluster URLs
+                        for svc in _RE_SVC_CLUSTER.findall(val):
+                            cluster_urls[svc].add(rel)
+
+                        # IP:port
+                        for ip, port in _RE_IP_PORT.findall(val):
+                            if ip not in ("0.0.0.0", "127.0.0.1"):
+                                ip_ports[f"{ip}:{port}"].add(rel)
+
+    # Build warnings
+    if ext_urls:
+        warnings.append(f"[URL] {len(ext_urls)} external HTTPS domains still present:")
+        for domain, files in sorted(ext_urls.items()):
+            warnings.append(f"       https://{domain}  ({', '.join(sorted(files))})")
+
+    if non_local_http:
+        warnings.append(f"[URL] {len(non_local_http)} non-localhost HTTP hosts:")
+        for host, files in sorted(non_local_http.items()):
+            warnings.append(f"       http://{host}  ({', '.join(sorted(files))})")
+
+    if unchanged_enc:
+        total = sum(unchanged_enc.values())
+        warnings.append(f"[ENCRYPT] {total} encrypted values unchanged from source:")
+        for rel, count in sorted(unchanged_enc.items(), key=lambda x: -x[1]):
+            warnings.append(f"       {rel}: {count} values")
+
+    if cluster_urls:
+        warnings.append(f"[K8S] {len(cluster_urls)} cluster-internal URLs:")
+        for url, files in sorted(cluster_urls.items()):
+            warnings.append(f"       {url}  ({', '.join(sorted(files))})")
+
+    if ip_ports:
+        warnings.append(f"[IP] {len(ip_ports)} raw IP:port addresses:")
+        for addr, files in sorted(ip_ports.items()):
+            warnings.append(f"       {addr}  ({', '.join(sorted(files))})")
+
+    return warnings
+
+
+def cmd_import(args):
+    """Import: read patched table files, validate, write SQL per table. No patching.
+
+    SQL output structure (--dry-run):
+      <direction>_sql/
+        _warnings.txt              — coverage warnings for review
+        _run_order.txt             — ordered list of SQL files to execute
+        <schema>/
+          <table>_delete.sql       — DELETE statements
+          <table>_insert_0000.sql  — INSERT batch 0
+          <table>_insert_0001.sql  — INSERT batch 1 (large tables)
+          ...
+
+    Without --dry-run: executes all SQL files in order within BEGIN/COMMIT.
+    """
+    from_env = args.source_env
+    to_env = args.target_env
+
+    if to_env in ("prod", "prod_international"):
+        sys.exit(f"FATAL: Importing into {to_env} is NEVER allowed.")
+    if (from_env, to_env) not in ALLOWED_TRANSFERS:
+        allowed = ", ".join(f"{s}->{t}" for s, t in sorted(ALLOWED_TRANSFERS))
+        sys.exit(f"Transfer {from_env}->{to_env} not allowed.\nAllowed: {allowed}")
+
+    direction = f"{from_env}_to_{to_env}"
+    print(f"Import: {from_env} -> {to_env}\n")
+
+    env_config = load_environments()
+    config_tables = load_config_tables()
+
+    # ── --only-feature-migrations: skip the data import phase entirely. ──
+    # Used by callers that want to interleave another step (e.g. seeding test
+    # data) between the import and the feature-migration phase. The caller is
+    # expected to run this AFTER a normal `import --skip-feature-migrations`
+    # plus their own seed step.
+    if getattr(args, "only_feature_migrations", False):
+        run_feature_migrations(env_config, to_env, config_tables)
+        return
+
+    schemas = args.schemas or list(config_tables.keys())
+
+    # Read from patched data directory. --force-fetch wipes any existing
+    # patched copy so we always re-download from CloudFront.
+    patched_base = DATA_DIR / direction
+    if getattr(args, "force_fetch", False) and patched_base.exists():
+        print(f"--force-fetch: removing existing patched data at {patched_base}")
+        shutil.rmtree(patched_base)
+    if not patched_base.exists():
+        if getattr(args, "fetch", False) or getattr(args, "force_fetch", False):
+            # Resolution order: explicit --fetch-url, then CONFIG_SYNC_CLOUDFRONT_URL,
+            # then per-direction baked-in default (master→v1, prod/prod_international→v2).
+            fetch_url = args.fetch_url or DEFAULT_CLOUDFRONT_URL or default_fetch_url_for(direction)
+            if not fetch_url:
+                sys.exit(
+                    "--fetch was requested but no CloudFront URL configured "
+                    f"and no per-direction default exists for '{direction}'. "
+                    "Pass --fetch-url, set CONFIG_SYNC_CLOUDFRONT_URL, or set "
+                    f"CONFIG_SYNC_FETCH_URL_{direction.upper()}."
+                )
+            print(f"Patched data missing locally; fetching from {fetch_url}")
+            fetch_patch_zip_from_cloudfront(direction, fetch_url, patched_base)
+        else:
+            sys.exit(
+                f"Patched data not found at {patched_base}\n"
+                f"Run: python config_transfer.py patch --from {from_env} --to {to_env}\n"
+                f"Or re-run import with --fetch to pull from CloudFront."
+            )
+
+    # Resolve ${VAR:default} port-templates carried in the patched data
+    # against this user's nix-shell env. Idempotent — safe to re-run.
+    _expand_patched_data_inplace(patched_base)
+
+    # SQL output directory
+    sql_dir = SCRIPT_DIR / f"{direction}_sql"
+    if sql_dir.exists():
+        shutil.rmtree(sql_dir)
+    sql_dir.mkdir()
+
+    all_warnings = []
+    run_order = []  # ordered list of SQL file paths (relative to sql_dir)
+
+    for schema in schemas:
+        if schema not in config_tables:
+            continue
+        schema_config = config_tables[schema]
+
+        base = Path(args.local_dir) if args.local_dir else patched_base
+        available = list_table_files(base, "", schema)
+
+        if not available:
+            print(f"[skip] No data for {schema}")
+            continue
+
+        target_db = get_db_config(env_config, to_env, schema)
+        target_db_schema = target_db.get("db_schema", schema)
+
+        target_cursor = None
+        target_conn = None
+        try:
+            target_conn = get_connection(target_db)
+            # Autocommit: each query is its own transaction so one failure doesn't poison subsequent reads
+            target_conn.autocommit = True
+            target_cursor = target_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        except Exception as e:
+            print(f"  WARNING: Cannot connect to target ({e}), using source columns")
+
+        schema_sql_dir = sql_dir / schema
+        schema_sql_dir.mkdir()
+
+        print(f"{'=' * 60}")
+        print(f"{schema} -> {target_db_schema} ({len(available)} tables)")
+        print(f"{'=' * 60}")
+
+        for table in available:
+            dim_cols = get_dim_columns(schema_config, table)
+
+            meta = read_table_meta(base, "", schema, table)
+            if not meta:
+                print(f"    [skip] {table}: no data")
+                continue
+
+            columns = meta.get("columns", [])
+
+            tgt_cols = None
+            not_null_cols = set()
+            has_default_cols = set()
+            col_types = {}
+            head_row = {}
+            if target_cursor:
+                try:
+                    cols_result, col_types, not_null_cols, has_default_cols = fetch_target_table_columns(target_cursor, target_db_schema, table)
+                    tgt_cols = cols_result if cols_result else None
+                    if not tgt_cols:
+                        print(f"    [skip] {table}: target table doesn't exist in {target_db_schema} (deprecated locally or missing migration)", flush=True)
+                        continue
+                    head_row = fetch_target_table_head(target_cursor, target_db_schema, table)
+                except Exception as e:
+                    print(f"    [WARN] {table}: cannot read target schema ({e}) — INSERT will use source columns", flush=True)
+
+            # ── First pass: collect dim values ──
+            source_dims = set()
+            total_rows = 0
+            for _, batch_rows in iter_table_rows(base, "", schema, table):
+                total_rows += len(batch_rows)
+                for row in batch_rows:
+                    if dim_cols:
+                        source_dims.add(tuple(row.get(c) for c in dim_cols))
+
+            if total_rows == 0:
+                print(f"    [skip] {table}: 0 rows")
+                continue
+
+            # ── Coverage warnings ──
+            if target_cursor and dim_cols:
+                try:
+                    warns = check_target_coverage_from_dims(
+                        target_cursor, target_db_schema, table, source_dims, dim_cols
+                    )
+                    if warns:
+                        all_warnings.append(f"{target_db_schema}.{table}: {len(warns)} dim values left untouched:")
+                        for w in warns:
+                            all_warnings.append(f"    {w}")
+                except Exception:
+                    pass
+
+            # ── Write DELETE SQL file ──
+            delete_sql = generate_delete_sql(target_db_schema, table, dim_cols, source_dims, total_rows)
+            delete_file = schema_sql_dir / f"{table}_delete.sql"
+            delete_file.write_text(delete_sql)
+            run_order.append(f"{schema}/{table}_delete.sql")
+
+            # ── Second pass: write INSERT SQL files batch by batch (data already patched) ──
+            batch_idx = 0
+            for _, batch_rows in iter_table_rows(base, "", schema, table):
+                insert_sql = generate_insert_sql(
+                    target_db_schema, table, batch_rows, columns,
+                    tgt_cols, head_row, not_null_cols=not_null_cols, col_types=col_types,
+                    has_default_cols=has_default_cols
+                )
+                insert_file = schema_sql_dir / f"{table}_insert_{batch_idx:04d}.sql"
+                insert_file.write_text(insert_sql)
+                run_order.append(f"{schema}/{table}_insert_{batch_idx:04d}.sql")
+                batch_idx += 1
+
+            files_msg = f", {batch_idx + 1} sql files" if batch_idx > 1 else ""
+            print(f"    [ok] {table}: {total_rows} rows{files_msg}")
+
+        if target_cursor:
+            target_cursor.close()
+            target_conn.close()
+        print()
+
+    if not run_order:
+        print("Nothing to import.")
+        shutil.rmtree(sql_dir)
+        return
+
+    # ── Write run order + warnings ──
+    (sql_dir / "_run_order.txt").write_text("\n".join(run_order) + "\n")
+    if all_warnings:
+        (sql_dir / "_warnings.txt").write_text("\n".join(all_warnings) + "\n")
+
+    print(f"Generated {len(run_order)} SQL files in {sql_dir}/")
+    if all_warnings:
+        print(f"{len(all_warnings)} coverage warnings (see {sql_dir}/_warnings.txt)")
+
+    if args.dry_run:
+        print(f"\nDry run complete. Review SQL files, then run without --dry-run to execute.")
+        return
+
+    # ── Discover feature-migration SQL files (will be executed after all schema imports) ──
+    feature_migrations_dir = SCRIPT_DIR.parent / "feature-migrations"
+    feature_migration_files = []
+    if feature_migrations_dir.is_dir():
+        feature_migration_files = sorted(
+            f for f in feature_migrations_dir.iterdir()
+            if f.suffix == ".sql" and not f.name.startswith("_")
+        )
+    if feature_migration_files:
+        print(f"  Found {len(feature_migration_files)} feature-migration(s) to run after import.")
+
+    # ── Execute SQL files per schema (each schema may need a different DB user) ──
+    # Group run_order by schema
+    from collections import OrderedDict
+    schema_files = OrderedDict()
+    for rel_path in run_order:
+        schema_name = rel_path.split("/")[0]
+        schema_files.setdefault(schema_name, []).append(rel_path)
+
+    print(f"\nExecuting {len(run_order)} SQL files against {to_env}...")
+    total_executed = 0
+
+    for schema_name, files in schema_files.items():
+        target_db = get_db_config(env_config, to_env, schema_name)
+        print(f"  {schema_name} ({len(files)} files, user={target_db['user']})...")
+
+        conn = get_connection(target_db)
+        cursor = conn.cursor()
+        try:
+            db_schema = target_db.get("db_schema", schema_name)
+            cursor.execute("BEGIN;")
+            cursor.execute("SET session_replication_role = 'replica';")  # disable FK checks
+
+            # Collect PK constraints + their columns, then drop
+            # (master often has no PKs; source data may have duplicates on local PK columns)
+            tables_touched = list(set(
+                f.split("/")[1].rsplit("_delete", 1)[0].rsplit("_insert_", 1)[0] for f in files
+            ))
+            # Drop PK + UNIQUE constraints on touched tables (master often has none)
+            cursor.execute("""
+                SELECT tc.constraint_name, tc.table_name, tc.constraint_type,
+                       kcu.column_name, kcu.ordinal_position
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                WHERE tc.table_schema = %s AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+                  AND tc.table_name = ANY(%s)
+                ORDER BY tc.table_name, kcu.ordinal_position
+            """, (db_schema, tables_touched))
+            constraint_info = {}  # {(constraint_name, table_name, type): [columns]}
+            for cname, tname, ctype, col, _ in cursor.fetchall():
+                constraint_info.setdefault((cname, tname, ctype), []).append(col)
+
+            for (cname, tname, _) in constraint_info:
+                cursor.execute(f'ALTER TABLE "{db_schema}"."{tname}" DROP CONSTRAINT IF EXISTS "{cname}" CASCADE;')
+            if constraint_info:
+                pk_count = sum(1 for (_, _, t) in constraint_info if t == 'PRIMARY KEY')
+                uq_count = sum(1 for (_, _, t) in constraint_info if t == 'UNIQUE')
+                print(f"    Dropped {pk_count} PK + {uq_count} UNIQUE constraints")
+
+            for i, rel_path in enumerate(files):
+                sql_file = sql_dir / rel_path
+                sql = sql_file.read_text()
+                if sql.strip():
+                    cursor.execute(sql)
+                if (i + 1) % 100 == 0:
+                    print(f"    {i + 1}/{len(files)}...")
+
+            # Re-add constraints (skip if data has duplicates — matches master)
+            re_added = 0
+            skipped = []
+            for (cname, tname, ctype), cols in constraint_info.items():
+                col_list = ", ".join(f'"{c}"' for c in cols)
+                cursor.execute(f"SAVEPOINT constraint_restore;")
+                try:
+                    if ctype == 'PRIMARY KEY':
+                        cursor.execute(f'ALTER TABLE "{db_schema}"."{tname}" ADD CONSTRAINT "{cname}" PRIMARY KEY ({col_list});')
+                    else:
+                        cursor.execute(f'ALTER TABLE "{db_schema}"."{tname}" ADD CONSTRAINT "{cname}" UNIQUE ({col_list});')
+                    cursor.execute(f"RELEASE SAVEPOINT constraint_restore;")
+                    re_added += 1
+                except Exception:
+                    cursor.execute(f"ROLLBACK TO SAVEPOINT constraint_restore;")
+                    skipped.append(f"{tname}.{cname}")
+            if re_added:
+                print(f"    Re-added {re_added}/{len(constraint_info)} constraints")
+            if skipped:
+                print(f"    Skipped (data has dupes): {', '.join(skipped)}")
+
+            cursor.execute("SET session_replication_role = 'origin';")  # re-enable FK checks
+            cursor.execute("COMMIT;")
+            total_executed += len(files)
+            print(f"    Done — {len(files)} files.")
+        except Exception as e:
+            conn.rollback()
+            print(f"    FAILED at {rel_path}: {e}", file=sys.stderr)
+            print(f"    SQL files preserved in {sql_dir}/", file=sys.stderr)
+            # Postgres truncates its LINE/CONTEXT excerpts to ~80 chars. Re-read the failing
+            # line from disk and dump a generous chunk around the offending fragment to stderr
+            # so the operator can see the surrounding bytes without opening the file.
+            try:
+                import re as _re
+                err_text = str(e)
+                m = _re.search(r"LINE\s+(\d+):", err_text)
+                line_no = int(m.group(1)) if m else None
+                full_path = sql_dir / rel_path
+                if line_no and full_path.exists():
+                    target_line = ""
+                    with open(full_path) as _f:
+                        for i, _line in enumerate(_f, 1):
+                            if i == line_no:
+                                target_line = _line
+                                break
+                    fragment_m = _re.search(r"CONTEXT:\s*JSON data[^\n]*?\.\.\.([^\n]{20,200})", err_text)
+                    fragment = fragment_m.group(1).rstrip() if fragment_m else None
+                    print(f"\n    ── failure context: {rel_path}:{line_no} (line length {len(target_line)}) ──", file=sys.stderr)
+                    if fragment and fragment in target_line:
+                        idx   = target_line.find(fragment)
+                        start = max(0, idx - 800)
+                        end   = min(len(target_line), idx + len(fragment) + 800)
+                        print(f"    bytes [{start}:{end}] around offending fragment:\n", file=sys.stderr)
+                        print(target_line[start:end], file=sys.stderr)
+                    else:
+                        print(f"    (could not anchor on JSON fragment) first 1500 chars:\n", file=sys.stderr)
+                        print(target_line[:1500], file=sys.stderr)
+                        print(f"\n    last 1500 chars:\n", file=sys.stderr)
+                        print(target_line[-1500:], file=sys.stderr)
+                    print("    ── end failure context ──\n", file=sys.stderr)
+            except Exception as _dump_err:
+                print(f"    (could not dump failure context: {_dump_err})", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ── Run feature-migrations (each file may reference multiple schemas) ──
+    if feature_migration_files and not getattr(args, "skip_feature_migrations", False):
+        _run_feature_migrations_inner(feature_migration_files, env_config, to_env,
+                                       fallback_schema=list(schema_files.keys())[0])
+    elif feature_migration_files:
+        print(f"\nSkipping {len(feature_migration_files)} feature-migration(s) "
+              f"(--skip-feature-migrations). Caller will run them.")
+
+    print(f"\nAll done — {total_executed} SQL files executed across {len(schema_files)} schemas.")
+
+
+def _discover_feature_migrations():
+    feature_migrations_dir = SCRIPT_DIR.parent / "feature-migrations"
+    if not feature_migrations_dir.is_dir():
+        return []
+    return sorted(
+        f for f in feature_migrations_dir.iterdir()
+        if f.suffix == ".sql" and not f.name.startswith("_")
+    )
+
+
+def _run_feature_migrations_inner(feature_migration_files, env_config, to_env, fallback_schema):
+    fm_db = get_db_config(env_config, to_env, fallback_schema)
+    fm_conn = get_connection(fm_db)
+    fm_cursor = fm_conn.cursor()
+    try:
+        print(f"\nRunning {len(feature_migration_files)} feature-migration(s)...")
+        for fm_file in feature_migration_files:
+            print(f"  {fm_file.name}...")
+            fm_cursor.execute("BEGIN;")
+            fm_cursor.execute(fm_file.read_text())
+            fm_cursor.execute("COMMIT;")
+        print(f"  Feature-migrations complete.")
+    except Exception as e:
+        fm_conn.rollback()
+        print(f"  FAILED at {fm_file.name}: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        fm_cursor.close()
+        fm_conn.close()
+
+
+def run_feature_migrations(env_config, to_env, config_tables):
+    """Public entry-point for `--only-feature-migrations`. Picks the first
+    config-tables schema as the fallback connection (any schema works on local
+    since the same DB hosts them all)."""
+    feature_migration_files = _discover_feature_migrations()
+    if not feature_migration_files:
+        print("No feature-migration files found.")
+        return
+    fallback_schema = next(iter(config_tables.keys()))
+    _run_feature_migrations_inner(feature_migration_files, env_config, to_env, fallback_schema)
+
+
+def cmd_list(args):
+    config_tables = load_config_tables()
+    schemas = args.schemas or list(config_tables.keys())
+    env_config = load_environments() if args.env else None
+
+    for schema in schemas:
+        sc = config_tables.get(schema, {})
+        tables = table_names_for_schema(sc)
+        print(f"\n{schema} ({len(tables)} tables):")
+
+        if env_config:
+            db = get_db_config(env_config, args.env, schema)
+            db_schema = db.get("db_schema", schema)
+            try:
+                conn = get_connection(db)
+                cur = conn.cursor()
+                for t in tables:
+                    dim = get_dim_columns(sc, t)
+                    dim_str = ", ".join(dim) if dim else "(full replace)"
+                    if table_exists(cur, db_schema, t):
+                        cur.execute(f'SELECT COUNT(*) FROM "{db_schema}"."{t}"')
+                        cnt = cur.fetchone()[0]
+                        print(f"  {t}: {cnt} rows  (dim: {dim_str})")
+                    else:
+                        print(f"  {t}: (missing)  (dim: {dim_str})")
+                cur.close(); conn.close()
+            except Exception as e:
+                print(f"  DB error: {e}")
+        else:
+            for t in tables:
+                dim = get_dim_columns(sc, t)
+                dim_str = ", ".join(dim) if dim else "(full replace)"
+                print(f"  {t}  (dim: {dim_str})")
+
+
+def cmd_show_patches(args):
+    direction = f"{args.source_env}_to_{args.target_env}"
+    pc = load_patches().get(direction, {})
+    if not pc:
+        print(f"No patches for {direction}")
+        return
+
+    print(f"Patches for {direction}:\n")
+    gr = pc.get("global_replacements", [])
+    if gr:
+        print(f"  Global replacements ({len(gr)}):")
+        for r in gr:
+            if not r.get("find"):
+                continue
+            print(f"    '{r['find']}' -> '{r['replace']}'")
+
+    for schema, rules in pc.get("schema_replacements", {}).items():
+        if schema.startswith("_") or not rules:
+            continue
+        print(f"\n  Schema replacements for {schema}:")
+        for r in rules:
+            print(f"    '{r['find']}' -> '{r['replace']}'")
+
+    for schema, tables in pc.get("table_overrides", {}).items():
+        if schema.startswith("_"):
+            continue
+        for tbl, ovrs in tables.items():
+            if ovrs:
+                print(f"\n  Field overrides for {schema}.{tbl}:")
+                for o in ovrs:
+                    print(f"    {o['field']} = {json.dumps(o['value'])}")
+
+    for schema, tables in pc.get("dimension_overrides", {}).items():
+        if schema.startswith("_"):
+            continue
+        for tbl, rules in tables.items():
+            if rules:
+                print(f"\n  Dimension overrides for {schema}.{tbl}:")
+                for rule in rules:
+                    w = ", ".join(f"{k}={v}" for k, v in rule["where"].items())
+                    s = ", ".join(f"{k}={json.dumps(v)}" for k, v in rule["set"].items())
+                    print(f"    WHERE ({w}) SET ({s})")
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="NammayYatri Config Transfer",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Three-step workflow:
+  1. export — reads source DB table-by-table, stores raw JSON
+  2. patch  — applies overrides (URL replacements, re-encryption, merge_json).
+              Pass --s3 to zip the patched directory and upload it to S3 as
+              <prefix>/<from>_to_<to>.zip.
+  3. import — reads patched JSON, generates SQL, executes.
+              Pass --fetch to download <from>_to_<to>.zip from the public
+              CloudFront URL and extract it if the directory is missing.
+
+Examples:
+  python config_transfer.py export --from master --parallel 10
+  python config_transfer.py patch  --from master --to local
+  python config_transfer.py patch  --from master --to local --s3
+  python config_transfer.py import --from master --to local --dry-run
+  python config_transfer.py import --from master --to local --fetch
+        """,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_exp = sub.add_parser("export", help="Export raw config from source DB")
+    p_exp.add_argument("--from", dest="source_env", required=True, choices=VALID_ENVS)
+    p_exp.add_argument("--schema", dest="schemas", action="append")
+    p_exp.add_argument("--table", dest="tables", action="append", help="Export only specific tables (e.g. --table fare_policy --table fare_product)")
+    p_exp.add_argument("--parallel", type=int, default=4, help="Number of parallel table exports")
+
+    p_pat = sub.add_parser("patch", help="Apply overrides to exported data")
+    p_pat.add_argument("--from", dest="source_env", required=True, choices=VALID_ENVS)
+    p_pat.add_argument("--to", dest="target_env", required=True, choices=VALID_ENVS)
+    p_pat.add_argument("--schema", dest="schemas", action="append")
+    p_pat.add_argument("--s3", action="store_true",
+                       help="Zip assets/data/<from>_to_<to>/ and upload it to s3://<bucket>/<prefix>/<from>_to_<to>.zip")
+    p_pat.add_argument("--s3-bucket", default=None,
+                       help=f"S3 bucket for --s3 upload (default: $CONFIG_SYNC_S3_BUCKET = {DEFAULT_S3_BUCKET!r})")
+    p_pat.add_argument("--s3-prefix", default=None,
+                       help=f"S3 key prefix for --s3 upload (default: $CONFIG_SYNC_S3_PREFIX = {DEFAULT_S3_PREFIX!r})")
+
+    p_imp = sub.add_parser("import", help="Import patched config into target DB")
+    p_imp.add_argument("--from", dest="source_env", required=True, choices=VALID_ENVS)
+    p_imp.add_argument("--to", dest="target_env", required=True, choices=VALID_ENVS)
+    p_imp.add_argument("--schema", dest="schemas", action="append")
+    p_imp.add_argument("--dry-run", action="store_true")
+    p_imp.add_argument("--local-dir", help="Read from custom dir instead of patched data")
+    p_imp.add_argument("--fetch", action="store_true",
+                       help="If the patched directory is missing locally, download <from>_to_<to>.zip from the public CloudFront URL and extract it")
+    p_imp.add_argument("--force-fetch", action="store_true",
+                       help="Always re-download from CloudFront, wiping any existing patched data. Implies --fetch.")
+    p_imp.add_argument("--fetch-url", default=None,
+                       help=("Base URL for --fetch. Resolution order: this flag, then "
+                             f"$CONFIG_SYNC_CLOUDFRONT_URL (={DEFAULT_CLOUDFRONT_URL!r}), then per-direction defaults: "
+                             + ", ".join(f"{d}={DEFAULT_S3_PUBLIC_BUCKET.rstrip('/')}/{d}/{v}" for d, v in DEFAULT_FETCH_VERSIONS.items())))
+    p_imp.add_argument("--skip-feature-migrations", action="store_true",
+                       help="Skip running dev/feature-migrations/*.sql at the end of import (caller will run them separately)")
+    p_imp.add_argument("--only-feature-migrations", action="store_true",
+                       help="Run ONLY dev/feature-migrations/*.sql (skip the prod data import). Use after a separate import + seed step.")
+
+    p_list = sub.add_parser("list", help="List config tables")
+    p_list.add_argument("--schema", dest="schemas", action="append")
+    p_list.add_argument("--env")
+
+    p_patch = sub.add_parser("show-patches", help="Show patches for a direction")
+    p_patch.add_argument("--from", dest="source_env", required=True, choices=VALID_ENVS)
+    p_patch.add_argument("--to", dest="target_env", required=True, choices=VALID_ENVS)
+
+    args = parser.parse_args()
+    if args.command == "export":
+        cmd_export(args)
+    elif args.command == "patch":
+        cmd_patch(args)
+    elif args.command == "import":
+        cmd_import(args)
+    elif args.command == "list":
+        cmd_list(args)
+    elif args.command == "show-patches":
+        cmd_show_patches(args)
+
+
+if __name__ == "__main__":
+    main()

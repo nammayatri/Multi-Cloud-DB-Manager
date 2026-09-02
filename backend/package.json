@@ -11,6 +11,7 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1121.0",
     "@clickhouse/client": "^1.17.0",
     "@kubernetes/client-node": "^1.4.0",
     "bcryptjs": "^2.4.3",

@@ -238,6 +238,40 @@ export const configReplicateAnalyzeSchema = z
     path: ['newValues'],
   });
 
+// ---------------------------------------------------------------------------
+// Config Sync — wraps nammayatri's config_transfer.py export/patch commands.
+// No env fields here at all — which environment a run means is resolved
+// entirely server-side from CONFIG_SYNC_ALLOWED_ENVS (per review: env
+// selection is not a client concern). Identifier shape mirrors the python
+// script's own table-name conventions; the service layer re-validates
+// independently before ever touching the subprocess argv.
+// ---------------------------------------------------------------------------
+const configSyncIdentifier = z.string().trim().regex(/^[a-zA-Z0-9_]+$/, 'Only letters, numbers, and underscores are allowed');
+
+// Shown to whoever picks a version in the test dashboard later — required
+// whenever s3 is set (every real run, now that the UI always pushes),
+// enforced again server-side in configTransfer.service.ts's buildPatchStep.
+const versionDescriptionSchema = z.string().trim().min(1, 'A version description is required').max(500).optional();
+
+// The single combined export+patch flow — the only way to trigger a run.
+export const configSyncExportAndPatchSchema = z.object({
+  schemas: z.array(configSyncIdentifier).max(20).optional(),
+  tables: z.array(configSyncIdentifier).max(50).optional(),
+  parallel: z.number().int().min(1).max(16).optional(),
+  s3: z.boolean().optional(),
+  versionDescription: versionDescriptionSchema,
+});
+
+// config.json / patches.json, now owned by DB Manager's own Postgres and
+// edited via the UI instead of being static files in the nammayatri repo.
+export const configSyncAssetUpdateSchema = z.object({
+  content: z.record(z.any()),
+});
+
+export const configSyncVersionStatusSchema = z.object({
+  status: z.enum(['stable', 'not_stable', 'not_verified']),
+});
+
 export const configReplicateApplySchema = z
   .object({
     ...replicateTarget,

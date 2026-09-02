@@ -26,6 +26,7 @@ import HubIcon from '@mui/icons-material/Hub';
 import CachedIcon from '@mui/icons-material/Cached';
 import RuleIcon from '@mui/icons-material/Rule';
 import DifferenceIcon from '@mui/icons-material/Difference';
+import CloudSyncIcon from '@mui/icons-material/CloudSync';
 import SettingsSuggestIcon from '@mui/icons-material/SettingsSuggest';
 import { authAPI, schemaAPI, queryRequestsAPI, toastNonApiError } from '../services/api';
 import { Role } from '../constants/roles';
@@ -54,6 +55,7 @@ const ClickhouseToolbar = lazy(() => import('../components/Clickhouse/Clickhouse
 const CsvBatchPanel = lazy(() => import('../components/CsvBatch/CsvBatchPanel'));
 const ShudhiPanel = lazy(() => import('../components/Shudhi/ShudhiPanel'));
 const ConfigReplicatePanel = lazy(() => import('../components/ConfigReplicate/ConfigReplicatePanel'));
+const ConfigSyncPanel = lazy(() => import('../components/ConfigSync/ConfigSyncPanel'));
 const SystemConfigsPanel = lazy(() => import('../components/SystemConfigs/SystemConfigsPanel'));
 const QueryRequestsPanel = lazy(() => import('../components/QueryRequests/QueryRequestsPanel'));
 const LiteRunnerPanel = lazy(() => import('../components/Migrations/LiteRunner/LiteRunnerPanel'));
@@ -66,7 +68,7 @@ const panelLoader = (
 );
 
 
-type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate';
+type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate' | 'configsync';
 
 // Batch Query (CSV) — destructive arbitrary parametrized SQL that only writers
 // may run. Mirrors the backend gate (`requireBatchWriter` = MASTER/ADMIN/USER):
@@ -110,6 +112,7 @@ const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNod
   // group of config tables, so it stays at the MASTER/ADMIN tier — same gate the
   // routes enforce server-side.
   { mode: 'configreplicate', label: 'Config Replicate', icon: <DifferenceIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN] },
+  { mode: 'configsync', label: 'Config Sync', icon: <CloudSyncIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN] },
 ];
 
 // Only these two views render a history side-panel (QueryHistory / RedisHistory).
@@ -829,6 +832,29 @@ const ConsolePage = () => {
               <Box sx={{ overflowY: 'auto', flex: 1 }}>
                 <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
                   {visitedModes.has('configreplicate') && <Suspense fallback={panelLoader}><ConfigReplicatePanel /></Suspense>}
+                </Stack>
+              </Box>
+            </Box>
+
+            {/* Config Sync View — always mounted */}
+            <Box
+              key="configsync-view"
+              sx={{
+                position: managerMode === 'configsync' ? 'relative' : 'absolute',
+                inset: managerMode === 'configsync' ? undefined : 0,
+                opacity: managerMode === 'configsync' ? 1 : 0,
+                pointerEvents: managerMode === 'configsync' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'configsync' ? 1 : undefined,
+                display: canSee('configsync') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'configsync' ? 0 : 2,
+              }}
+            >
+              <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={2} sx={{ p: 1, height: '100%' }}>
+                  {visitedModes.has('configsync') && <Suspense fallback={panelLoader}><ConfigSyncPanel /></Suspense>}
                 </Stack>
               </Box>
             </Box>

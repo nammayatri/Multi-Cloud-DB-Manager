@@ -7,6 +7,8 @@
 # - Replace <IMAGE_REGISTRY>/dual-db-backend:<TAG> with your container image
 # - Replace <FRONTEND_URL> with your frontend service URL
 # - Replace <REDIS_HOST> with your Redis service hostname
+# - Replace <CONFIG_SYNC_S3_SERVICE_ACCOUNT> with a ServiceAccount that has S3 access
+# - Replace <CONFIG_SYNC_ALLOWED_ENVS> with the ONE env THIS deployment may Export/Patch
 
 apiVersion: apps/v1
 kind: Deployment
@@ -81,6 +83,10 @@ spec:
           value: "false"  # Set to "true" if using Redis Cluster (e.g., AWS ElastiCache cluster mode)
         - name: RUN_MIGRATIONS
           value: "false"  # Set to "true" on first deploy to auto-create tables (users, history)
+        - name: CONFIG_SYNC_ALLOWED_ENVS
+          value: "<CONFIG_SYNC_ALLOWED_ENVS>"  # Exactly ONE env THIS deployment may Export/Patch, e.g. "master" or "prod" — must match the deployment's own network/creds. 'local' is always implicitly included. Leave unset only for local/dev.
+        - name: CONFIG_SYNC_S3_BUCKET
+          value: "<CONFIG_SYNC_S3_BUCKET>"  # S3 bucket Config Sync publishes patched config + metadata.json to. Required for any run with S3 publish enabled.
 
         # Optional tuning (defaults shown)
         - name: SESSION_TTL_SECONDS
@@ -135,6 +141,9 @@ spec:
       - name: repo-volume
         emptyDir:
           sizeLimit: 5Gi
+      # ServiceAccount with S3 access for Config Sync — mechanism differs per
+      # cloud (GKE Workload Identity vs EKS IRSA), so no keys live in this file.
+      serviceAccountName: <CONFIG_SYNC_S3_SERVICE_ACCOUNT>
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       schedulerName: default-scheduler
