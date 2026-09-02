@@ -122,9 +122,12 @@ export class ConfigSyncVersionsService {
   }
 
   /**
-   * Mark an existing version's stability. verified_by/verified_at are always
-   * refreshed on every call, even re-marking the same status — so it's
-   * always clear who most recently vouched for (or against) a version.
+   * Mark an existing version's stability. verified_by/verified_at are
+   * refreshed on every stable/not_stable call, even re-marking the same
+   * status — so it's always clear who most recently vouched for (or
+   * against) a version. Resetting to not_verified clears them instead —
+   * "not verified" means nobody's vouching for it right now, so leaving a
+   * stale name/timestamp there would be misleading.
    */
   public async setStatus(params: {
     bucket: string;
@@ -135,12 +138,19 @@ export class ConfigSyncVersionsService {
     verifiedByUsername: string | undefined;
   }): Promise<ConfigSyncVersion> {
     const { bucket, direction, version, status, verifiedBy, verifiedByUsername } = params;
+    const isReset = status === 'not_verified';
     const result = await this.pool.query(
       `UPDATE dual_db_manager.config_sync_versions
-       SET status = $1, verified_by = $2, verified_by_username = $3, verified_at = NOW()
-       WHERE direction = $4 AND version = $5
+       SET status = $1, verified_by = $2, verified_by_username = $3, verified_at = $4
+       WHERE direction = $5 AND version = $6
        RETURNING *`,
-      [status, verifiedBy || null, verifiedByUsername || null, direction, version]
+      [
+        status,
+        isReset ? null : verifiedBy || null,
+        isReset ? null : verifiedByUsername || null,
+        isReset ? null : new Date(),
+        direction, version,
+      ]
     );
     if (result.rowCount === 0) {
       throw new Error(`Version ${version} not found for direction '${direction}'`);

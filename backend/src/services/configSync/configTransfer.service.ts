@@ -81,9 +81,25 @@ export interface ConfigSyncResult {
   exitCode: number | null;
 }
 
-interface JobHandle {
+export interface JobHandle {
   proc: ChildProcess | null;
   emitter: EventEmitter;
+  /**
+   * Every line emitted so far. Kept on the handle (not just in runSteps'
+   * local closure) so a stream client that connects late — or reconnects
+   * mid-job — can be replayed the lines it missed. Without this, a client
+   * only ever sees lines emitted strictly after its connection went live,
+   * which in practice means it misses the opening stage banner every time,
+   * and loses everything sent during any reconnect gap.
+   */
+  logLines: string[];
+  /**
+   * How many lines have been trimmed off the front of logLines by the
+   * 5000-line cap. Needed so SSE event ids stay absolute and monotonic
+   * across trimming — a client's Last-Event-ID has to keep meaning the
+   * same thing even after the buffer has rolled.
+   */
+  dropped: number;
 }
 
 const activeJobs = new Map<string, JobHandle>();
@@ -140,9 +156,13 @@ class ConfigTransferService {
    * Relies on the backend Service's sessionAffinity: ClientIP (k8s/backend.yaml)
    * to guarantee a reconnecting client keeps hitting the pod that spawned the
    * process — there is no cross-pod fan-out here by design.
+   *
+   * Returns the whole handle rather than just the emitter so the caller can
+   * replay already-buffered lines before subscribing to new ones (see
+   * JobHandle.logLines).
    */
-  public subscribe(executionId: string): EventEmitter | null {
-    return activeJobs.get(executionId)?.emitter ?? null;
+  public subscribe(executionId: string): JobHandle | null {
+    return activeJobs.get(executionId) ?? null;
   }
 
   /**
@@ -307,6 +327,7 @@ class ConfigTransferService {
     // actually starts running).
     let executionId: string;
     let emitter: EventEmitter;
+    const logLines: string[] = [];
     try {
       ensureEnvironmentsJsonInPlace();
       await configSyncAssetsService.writeToDisk();
@@ -314,7 +335,7 @@ class ConfigTransferService {
       executionId = uuidv4();
       emitter = new EventEmitter();
       emitter.setMaxListeners(20);
-      activeJobs.set(executionId, { proc: null, emitter });
+      activeJobs.set(executionId, { proc: null, emitter, logLines, dropped: 0 });
 
       await this.executionManager.initializeExecution(executionId, userId);
       await this.executionManager.updateProgress(executionId, 0, steps.length);
@@ -325,15 +346,26 @@ class ConfigTransferService {
 
     const kind: ConfigSyncResult['kind'] = steps.length > 1 ? 'export+patch' : steps[0].kind;
     const allArgv: string[] = [];
-    const logLines: string[] = [];
     const auditWarnings: string[] = [];
 
-    const STAGE_TITLES: Record<string, string> = { export: 'EXPORT', patch: 'PATCH' };
-    const emitStageLine = (line: string) => {
+    // The single append path for every log line — stage banners and raw
+    // subprocess output alike — so the buffer, the trim bookkeeping and the
+    // live emit can never drift apart. The sequence number emitted alongside
+    // each line is what becomes its SSE event id, letting a reconnecting
+    // client resume from exactly where it dropped off.
+    const appendLine = (line: string) => {
+      const handle = activeJobs.get(executionId);
       logLines.push(line);
-      if (logLines.length > 5000) logLines.shift();
-      activeJobs.get(executionId)?.emitter.emit('line', line);
+      if (logLines.length > 5000) {
+        logLines.shift();
+        if (handle) handle.dropped += 1;
+      }
+      const seq = (handle?.dropped ?? 0) + logLines.length - 1;
+      handle?.emitter.emit('line', line, seq);
     };
+
+    const STAGE_TITLES: Record<string, string> = { export: 'EXPORT', patch: 'PATCH' };
+    const emitStageLine = appendLine;
     const emitStageStart = (title: string) => {
       emitStageLine('');
       emitStageLine('━'.repeat(60));
@@ -364,7 +396,7 @@ class ConfigTransferService {
           const stageTitle = STAGE_TITLES[step.kind] || step.kind.toUpperCase();
           const stageStart = Date.now();
           emitStageStart(stageTitle);
-          exitCode = await this.runStep(executionId, step, label, logLines, auditWarnings);
+          exitCode = await this.runStep(executionId, step, label, appendLine, auditWarnings);
           emitStageEnd(stageTitle, exitCode === 0, stageStart);
           await this.executionManager.updateProgress(executionId, i + 1, steps.length);
 
@@ -416,7 +448,7 @@ class ConfigTransferService {
     executionId: string,
     step: JobStep,
     logPrefix: string,
-    logLines: string[],
+    appendLine: (line: string) => void,
     auditWarnings: string[]
   ): Promise<number | null> {
     const { scriptPath, scriptDir } = resolveConfigSyncPaths();
@@ -433,10 +465,7 @@ class ConfigTransferService {
 
       let capturingAudit = false;
       const onLine = (rawLine: string): void => {
-        const line = logPrefix + rawLine;
-        logLines.push(line);
-        if (logLines.length > 5000) logLines.shift();
-        job?.emitter.emit('line', line);
+        appendLine(logPrefix + rawLine);
 
         if (rawLine.includes('PATCH AUDIT WARNINGS')) {
           capturingAudit = true;
@@ -460,8 +489,7 @@ class ConfigTransferService {
 
       proc.on('error', (err) => {
         logger.error('Config Sync subprocess failed to start', { executionId, step: step.kind, error: err.message });
-        logLines.push(`${logPrefix}ERROR: failed to start: ${err.message}`);
-        job?.emitter.emit('line', `${logPrefix}ERROR: failed to start: ${err.message}`);
+        appendLine(`${logPrefix}ERROR: failed to start: ${err.message}`);
         resolve(1);
       });
     });

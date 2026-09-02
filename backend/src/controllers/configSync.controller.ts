@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import configTransferService from '../services/configSync/configTransfer.service';
 import configSyncAssetsService, { ConfigSyncAssetName } from '../services/configSync/configSyncAssets.service';
 import { AppError } from '../middleware/error.middleware';
+import logger from '../utils/logger';
 
 // The single combined flow — one button, export then patch as one job.
 // From/To env are never taken from the request — resolved entirely
@@ -73,7 +74,7 @@ export const cancel = async (req: Request, res: Response, next: NextFunction) =>
 // subscribe() docs on the sessionAffinity assumption this relies on.
 export const streamLog = async (req: Request, res: Response) => {
   const { executionId } = req.params;
-  const emitter = configTransferService.subscribe(executionId);
+  const job = configTransferService.subscribe(executionId);
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -81,15 +82,41 @@ export const streamLog = async (req: Request, res: Response) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
-  if (!emitter) {
+  if (!job) {
     res.write('event: unavailable\ndata: {}\n\n');
     res.end();
     return;
   }
 
-  const onLine = (line: string) => {
-    res.write(`data: ${JSON.stringify(line)}\n\n`);
+  const { emitter } = job;
+
+  // Reconnect fast. The proxy chain in front of this endpoint caps a single
+  // response's lifetime (Pomerium's per-route timeout defaults to 30s and
+  // this route doesn't override it), so a long job WILL be cut off partway
+  // no matter what this handler does. That's survivable rather than fatal
+  // because of the id/Last-Event-ID resume below — the cut turns into a ~1s
+  // gap instead of losing the rest of the log.
+  res.write('retry: 1000\n\n');
+
+  const writeLine = (line: string, seq: number) => {
+    res.write(`id: ${seq}\ndata: ${JSON.stringify(line)}\n\n`);
   };
+
+  // Catch-up replay. Two cases both land here: a first connection (the POST
+  // that started the job has already emitted the opening stage banner before
+  // the browser's EventSource finished connecting) and a reconnect after the
+  // proxy cut the previous response. EventSource echoes the last id it saw
+  // back as Last-Event-ID, so we resend only what this client actually
+  // missed. Safe to do synchronously before subscribing: emits only ever
+  // originate from I/O callbacks, so nothing can slip in between.
+  const lastSeen = Number(req.headers['last-event-id'] ?? -1);
+  const resumeFrom = Number.isFinite(lastSeen) ? lastSeen : -1;
+  job.logLines.forEach((line, i) => {
+    const seq = job.dropped + i;
+    if (seq > resumeFrom) writeLine(line, seq);
+  });
+
+  const onLine = (line: string, seq: number) => writeLine(line, seq);
   const onDone = (exitCode: number | null) => {
     res.write(`event: done\ndata: ${JSON.stringify({ exitCode })}\n\n`);
     cleanup();
