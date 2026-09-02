@@ -462,6 +462,22 @@ export interface ConfigSyncAssetHistoryDetail extends ConfigSyncAssetHistoryEntr
   content: any;
 }
 
+export type ConfigSyncVersionStatus = 'stable' | 'not_stable' | 'not_verified';
+
+export interface ConfigSyncVersion {
+  id: string;
+  direction: string;
+  version: number;
+  description: string | null;
+  uploadedBy: string | null;
+  uploadedByUsername: string | null;
+  status: ConfigSyncVersionStatus;
+  verifiedBy: string | null;
+  verifiedByUsername: string | null;
+  verifiedAt: string | null;
+  createdAt: string;
+}
+
 export const configSyncAPI = {
   // Single combined flow — export then patch, one job/executionId. No
   // fromEnv/toEnv here at all — which environment this means is resolved
@@ -523,6 +539,20 @@ export const configSyncAPI = {
 
   restoreAssetVersion: async (historyId: string): Promise<{ asset: ConfigSyncAsset }> => {
     const response = await api.post(`/api/config-sync/assets/history/${historyId}/restore`);
+    return response.data;
+  },
+
+  // Versions for THIS deployment's one resolved direction — no direction
+  // param, same reasoning as export-and-patch not taking fromEnv/toEnv.
+  getVersions: async (): Promise<{ versions: ConfigSyncVersion[] }> => {
+    const response = await api.get('/api/config-sync/versions');
+    return response.data;
+  },
+
+  setVersionStatus: async (
+    version: number, status: ConfigSyncVersionStatus
+  ): Promise<{ version: ConfigSyncVersion }> => {
+    const response = await api.post(`/api/config-sync/versions/${version}/status`, { status });
     return response.data;
   },
 };

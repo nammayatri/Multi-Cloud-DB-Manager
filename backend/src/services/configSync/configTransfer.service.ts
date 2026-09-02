@@ -8,7 +8,7 @@ import { QueryResponse } from '../../types';
 import { resolveConfigSyncPaths, ensureEnvironmentsJsonInPlace } from '../../config/config-sync-loader';
 import DatabasePools from '../../config/database';
 import configSyncAssetsService from './configSyncAssets.service';
-import configSyncMetadataService from './configSyncMetadata.service';
+import configSyncVersionsService, { ConfigSyncVersion, VersionStatus } from './configSyncVersions.service';
 
 export const VALID_ENVS = ['prod', 'prod_international', 'master', 'env', 'local'] as const;
 export type ConfigSyncEnv = typeof VALID_ENVS[number];
@@ -121,8 +121,11 @@ async function releaseJobLock(client: PoolClient): Promise<void> {
 interface JobStep {
   kind: 'export' | 'patch';
   argv: string[];
-  /** Set only for a 'patch' step run with --s3, so we know to publish metadata after it succeeds. */
-  s3?: { bucket: string; direction: string; version: number; description: string };
+  /** Set only for a 'patch' step run with --s3, so we know to record the version after it succeeds. */
+  s3?: {
+    bucket: string; direction: string; version: number; description: string;
+    uploadedBy: string | undefined; uploadedByUsername: string | undefined;
+  };
 }
 
 class ConfigTransferService {
@@ -182,7 +185,8 @@ class ConfigTransferService {
    */
   public async startExportAndPatch(
     params: { schemas?: string[]; tables?: string[]; parallel?: number; s3?: boolean; versionDescription?: string },
-    userId?: string
+    userId?: string,
+    username?: string
   ): Promise<{ executionId: string }> {
     const pair = resolveDeploymentTransferPair();
     if (!pair) {
@@ -193,8 +197,35 @@ class ConfigTransferService {
     const exportStep = this.buildExportStep({ fromEnv, schemas: params.schemas, tables: params.tables, parallel: params.parallel });
     const patchStep = await this.buildPatchStep({
       fromEnv, toEnv, schemas: params.schemas, s3: params.s3, versionDescription: params.versionDescription,
+      uploadedBy: userId, uploadedByUsername: username,
     });
     return this.runSteps([exportStep, patchStep], userId);
+  }
+
+  /** Versions for THIS deployment's one resolved direction — never exposed
+   * to the client as a choice, same as the env pair itself. */
+  public async listVersions(): Promise<ConfigSyncVersion[]> {
+    const pair = resolveDeploymentTransferPair();
+    if (!pair) return [];
+    const [fromEnv, toEnv] = pair;
+    return configSyncVersionsService.listVersions(`${fromEnv}_to_${toEnv}`);
+  }
+
+  public async setVersionStatus(
+    version: number, status: VersionStatus, verifiedBy: string | undefined, verifiedByUsername: string | undefined
+  ): Promise<ConfigSyncVersion> {
+    const pair = resolveDeploymentTransferPair();
+    if (!pair) {
+      throw new Error('This deployment has no valid Export & Patch transfer configured (check CONFIG_SYNC_ALLOWED_ENVS).');
+    }
+    const [fromEnv, toEnv] = pair;
+    const bucket = process.env.CONFIG_SYNC_S3_BUCKET;
+    if (!bucket) {
+      throw new Error('CONFIG_SYNC_S3_BUCKET is not set.');
+    }
+    return configSyncVersionsService.setStatus({
+      bucket, direction: `${fromEnv}_to_${toEnv}`, version, status, verifiedBy, verifiedByUsername,
+    });
   }
 
   private buildExportStep(params: { fromEnv: string; schemas?: string[]; tables?: string[]; parallel?: number }): JobStep {
@@ -214,6 +245,7 @@ class ConfigTransferService {
   private async buildPatchStep(params: {
     fromEnv: string; toEnv: string; schemas?: string[];
     s3?: boolean; versionDescription?: string;
+    uploadedBy?: string; uploadedByUsername?: string;
   }): Promise<JobStep> {
     assertValidEnv(params.fromEnv);
     assertValidEnv(params.toEnv);
@@ -244,11 +276,15 @@ class ConfigTransferService {
       // Same versioned layout config_transfer.py's own DEFAULT_FETCH_VERSIONS
       // already reads from (e.g. master_to_local/v3) — computed here, BEFORE
       // spawning, since it determines the --s3-prefix the subprocess pushes to.
-      const version = await configSyncMetadataService.getNextVersion(bucket, direction);
+      // Source of truth is Postgres now (config_sync_versions), not S3 itself.
+      const version = await configSyncVersionsService.getNextVersion(direction);
       const prefix = `${direction}/v${version}`;
 
       argv.push('--s3', '--s3-bucket', bucket, '--s3-prefix', prefix);
-      s3Info = { bucket, direction, version, description };
+      s3Info = {
+        bucket, direction, version, description,
+        uploadedBy: params.uploadedBy, uploadedByUsername: params.uploadedByUsername,
+      };
     }
 
     return { kind: 'patch', argv, s3: s3Info };
@@ -337,19 +373,21 @@ class ConfigTransferService {
           if (step.kind === 'patch' && step.s3) {
             const s3Start = Date.now();
             emitStageStart('PUSH TO S3');
-            const { bucket, direction, version, description } = step.s3;
+            const { bucket, direction, version, description, uploadedBy, uploadedByUsername } = step.s3;
             try {
-              await configSyncMetadataService.publishVersion({ bucket, direction, version, description });
-              emitStageLine(`[metadata] Published v${version} to s3://${bucket}/${direction}/metadata.json`);
+              await configSyncVersionsService.recordUpload({
+                bucket, direction, version, description, uploadedBy, uploadedByUsername,
+              });
+              emitStageLine(`[metadata] Recorded v${version} (uploaded by ${uploadedByUsername || 'unknown'}) and synced to s3://${bucket}/${direction}/metadata.json`);
               emitStageEnd('PUSH TO S3', true, s3Start);
             } catch (err: any) {
-              logger.warn('Config Sync: failed to publish S3 metadata.json (zip push already succeeded)', {
+              logger.warn('Config Sync: failed to record version / sync S3 metadata.json (zip push already succeeded)', {
                 executionId, error: err?.message,
               });
-              // metadata.json publish is best-effort — the zip itself already
+              // Recording the version is best-effort — the zip itself already
               // pushed successfully in the PATCH stage above, so this stage is
-              // marked done (not failed) even though metadata.json didn't update.
-              emitStageLine(`[metadata] WARNING: failed to publish metadata.json: ${err?.message}`);
+              // marked done (not failed) even though the version record didn't update.
+              emitStageLine(`[metadata] WARNING: failed to record version: ${err?.message}`);
               emitStageEnd('PUSH TO S3', true, s3Start);
             }
           }

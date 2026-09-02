@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Box, Tab, Tabs } from '@mui/material';
 import SyncRunPanel from './SyncRunPanel';
 import AssetsEditorPanel from './AssetsEditorPanel';
+import VersionsPanel from './VersionsPanel';
 
 /**
  * Shell: two sub-tabs, same pattern as Config Replicate's Replicate/Groups/
@@ -18,11 +19,13 @@ const ConfigSyncPanel = () => {
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ minHeight: 36, mb: 1 }}>
         <Tab label="Sync" sx={{ minHeight: 36, py: 0 }} />
         <Tab label="Config Files" sx={{ minHeight: 36, py: 0 }} />
+        <Tab label="Versions" sx={{ minHeight: 36, py: 0 }} />
       </Tabs>
 
       <Box sx={{ flex: 1, overflowY: 'auto', pb: 4 }}>
         {tab === 0 && <SyncRunPanel />}
         {tab === 1 && <AssetsEditorPanel />}
+        {tab === 2 && <VersionsPanel />}
       </Box>
     </Box>
   );
