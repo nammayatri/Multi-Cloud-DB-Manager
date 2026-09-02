@@ -23,6 +23,7 @@ const LiteDiffControls = () => {
   const selectAllDdl = useLiteRunnerStore((s) => s.selectAllDdl);
   const deselectAll = useLiteRunnerStore((s) => s.deselectAll);
   const isRunning = useLiteRunnerStore((s) => s.isRunning);
+  const pgSchema = useLiteRunnerStore((s) => s.pgSchema);
 
   if (!diff || diff.totalFiles === 0) return null;
 
@@ -50,10 +51,16 @@ const LiteDiffControls = () => {
           <Button size="small" startIcon={<UnfoldLessIcon />} onClick={collapseAll} sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
             Collapse All
           </Button>
-          <Tooltip title="Selects every DDL statement in view — including the DDL inside a mixed file. Data changes stay unselected.">
+          <Tooltip
+            title={
+              pgSchema
+                ? `Selects DDL targeting ${pgSchema} — including the DDL inside a mixed file. Statements naming another schema are left out; unqualified ones are included, since they run under this schema's search_path.`
+                : 'Selects every DDL statement in view — including the DDL inside a mixed file. Data changes stay unselected.'
+            }
+          >
             <span>
               <Button size="small" variant="outlined" onClick={selectAllDdl} disabled={isRunning} sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
-                Select All DDL
+                {pgSchema ? `Select All DDL (${pgSchema})` : 'Select All DDL'}
               </Button>
             </span>
           </Tooltip>

@@ -8,8 +8,8 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import toast from 'react-hot-toast';
 import { useLiteRunnerStore, stmtKey } from '../../../store/liteRunnerStore';
 import { useSqlExecution } from '../../../hooks/useSqlExecution';
-import { detectDangerousQueries } from '../../../services/queryValidation.service';
 import { useAppStore } from '../../../store/appStore';
+import { isSuperRole } from '../../../constants/roles';
 
 const LiteRunBar = () => {
   const database = useLiteRunnerStore((s) => s.database);
@@ -58,11 +58,24 @@ const LiteRunBar = () => {
   // Reuses the DB Manager's detector so both prompt on exactly the same rule.
   // Files carrying at least one selected dangerous statement. Named in the
   // password dialog so the user can see exactly what they are authorising.
+  // Selected statements that name a schema other than the run target.
+  const selectedOtherSchemas = [...new Set(
+    diff.directories.flatMap(d =>
+      d.files.flatMap(f =>
+        f.statements
+          .filter((st, i) => selectedStatements.has(stmtKey(f.path, i)) && st.schema && st.schema !== pgSchema)
+          .map(st => st.schema as string)
+      )
+    )
+  )].sort();
+
   const dangerousFiles = selected.filter(f => f.dangerousCount > 0);
   const dangerousStatementCount = dangerousFiles.reduce((sum, f) => sum + f.dangerousCount, 0);
-  const requiresPassword = selected.some(
-    f => detectDangerousQueries(f.sql, user?.role)?.requiresPassword
-  );
+  // Driven by the backend's own `dangerous` flag rather than a client-side
+  // re-derivation, so it also covers the diff-aware rules the execute endpoint
+  // cannot see. Only MASTER/ADMIN are ever prompted — the backend refuses these
+  // statements outright for every other role, so a password would not help.
+  const requiresPassword = isSuperRole(user?.role) && dangerousStatementCount > 0;
 
   const finished = Object.values(runState).filter(s => s.status === 'success' || s.status === 'failed');
   const succeeded = finished.filter(s => s.status === 'success').length;
@@ -213,6 +226,13 @@ const LiteRunBar = () => {
               ? 'A failure will not stop the remaining files.'
               : 'The run stops at the first failing file.'}
           </Alert>
+          {selectedOtherSchemas.length > 0 && (
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              Some selected statements target <strong>{selectedOtherSchemas.join(', ')}</strong>,
+              not <strong>{pgSchema}</strong>. They will run against {database} with a{' '}
+              {pgSchema} search_path, so their own schema qualifier decides where they land.
+            </Alert>
+          )}
           {nonDdlStatements > 0 && (
             <Alert severity="error" sx={{ mt: 1 }}>
               {nonDdlStatements} of the selected statement(s) are <strong>not DDL</strong> — they
@@ -223,8 +243,9 @@ const LiteRunBar = () => {
             <>
               <Alert severity="error" sx={{ mt: 1 }}>
                 <Typography variant="body2" sx={{ fontWeight: 600, mb: dangerousFiles.length ? 1 : 0 }}>
-                  {dangerousStatementCount} destructive statement(s) in {dangerousFiles.length} file(s)
-                  {' '}— DROP, RENAME, column type change or TRUNCATE. Your password is required.
+                  {dangerousStatementCount} risky statement(s) in {dangerousFiles.length} file(s)
+                  {' '}— dropping, renaming or retyping existing objects, or building on tables this
+                  diff does not create. Your password is required.
                 </Typography>
                 <Box component="ul" sx={{ m: 0, pl: 2.5, maxHeight: 160, overflow: 'auto' }}>
                   {dangerousFiles.map(f => (

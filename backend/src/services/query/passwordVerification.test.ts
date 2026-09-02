@@ -34,10 +34,17 @@ describe('requiresPasswordVerification', () => {
     expect(needs(sql)).toBe(true);
   });
 
+  // Tightening a column locks the table exclusively and scans it to validate,
+  // and fails if any existing row is NULL. Its inverse, DROP NOT NULL, is
+  // instant and metadata-only.
+  it('requires a password for SET NOT NULL but not DROP NOT NULL', () => {
+    expect(needs('ALTER TABLE atlas_app.booking ALTER COLUMN c SET NOT NULL')).toBe(true);
+    expect(needs('ALTER TABLE atlas_app.booking ALTER COLUMN c SET DEFAULT 1')).toBe(false);
+  });
+
   it.each([
     'ALTER TABLE atlas_app.booking ADD COLUMN c text',
     'ALTER TABLE atlas_app.booking ADD CONSTRAINT pk PRIMARY KEY (id)',
-    'ALTER TABLE atlas_app.booking ALTER COLUMN c SET NOT NULL',
     'CREATE TABLE atlas_app.t (id text)',
     'CREATE INDEX idx ON atlas_app.booking (id)',
     'DROP INDEX atlas_app.idx',

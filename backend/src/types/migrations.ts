@@ -90,11 +90,22 @@ export interface LiteStatement {
   operation: string;
   objectName: string;
   /**
+   * Schema this statement targets, or null when it names none. Null is NOT a
+   * default substitution — an unqualified statement runs under the session's
+   * search_path, so only the caller knows which schema it lands in.
+   */
+  schema: string | null;
+  /**
    * True when the backend would demand password re-verification to run this
    * statement (DROP, TRUNCATE, ALTER DROP/RENAME/TYPE, GRANT/REVOKE, DELETE
    * without WHERE). Not all DDL is dangerous — an ADD COLUMN is not.
    */
   dangerous: boolean;
+  /**
+   * Why this statement is dangerous, when the reason is not obvious from the
+   * SQL alone (e.g. it depends on what the rest of the diff does).
+   */
+  dangerousReason?: string;
 }
 
 /**
@@ -111,6 +122,8 @@ export interface LiteDiffFile {
   ddlCount: number;
   nonDdlCount: number;
   dangerousCount: number;
+  /** Distinct schemas named by this file's statements, sorted. */
+  schemas: string[];
   kind: LiteFileKind;
   statements: LiteStatement[];
   sql: string;

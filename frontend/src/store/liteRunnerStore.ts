@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { LiteDiffResult, LiteDiffFile } from '../types/migrations';
+import type { LiteDiffResult, LiteDiffFile, LiteStatement } from '../types/migrations';
 import { migrationsAPI } from '../services/migrationsApi';
 import toast from 'react-hot-toast';
 
@@ -86,10 +86,28 @@ function allFiles(diff: LiteDiffResult | null): LiteDiffFile[] {
   return diff.directories.flatMap(d => d.files);
 }
 
-function ddlKeys(files: LiteDiffFile[]): string[] {
+/**
+ * A statement belongs to the selected schema when it names that schema, or
+ * names none at all — execution issues `SET search_path TO <pgSchema>`, so an
+ * unqualified statement lands in the selected schema anyway.
+ */
+export function matchesSchema(stmt: LiteStatement, pgSchema: string): boolean {
+  return stmt.schema === null || stmt.schema === pgSchema;
+}
+
+/**
+ * DDL statement keys for the selected schema. An empty `pgSchema` means the DB
+ * config has not loaded yet — fall back to every DDL statement rather than
+ * selecting almost nothing.
+ */
+function ddlKeys(files: LiteDiffFile[], pgSchema: string): string[] {
   return files.flatMap(f =>
     f.statements
-      .map((s, i) => (s.type === 'DDL' ? stmtKey(f.path, i) : null))
+      .map((s, i) =>
+        s.type === 'DDL' && (!pgSchema || matchesSchema(s, pgSchema))
+          ? stmtKey(f.path, i)
+          : null
+      )
       .filter((k): k is string => k !== null)
   );
 }
@@ -225,7 +243,7 @@ export const useLiteRunnerStore = create<LiteRunnerState>((set, get) => ({
       for (const file of inView) {
         file.statements.forEach((_s, i) => next.delete(stmtKey(file.path, i)));
       }
-      for (const key of ddlKeys(inView)) next.add(key);
+      for (const key of ddlKeys(inView, state.pgSchema)) next.add(key);
       return { selectedStatements: next };
     }),
 
@@ -264,7 +282,7 @@ export const useLiteRunnerStore = create<LiteRunnerState>((set, get) => ({
       // Pre-select the DDL: schema change is the common case for a migration
       // run, and anything touching data is opted into deliberately.
       const files = allFiles(diff);
-      const preselected = ddlKeys(files);
+      const preselected = ddlKeys(files, get().pgSchema);
       set({
         diff,
         selectedStatements: new Set(preselected),
@@ -273,8 +291,9 @@ export const useLiteRunnerStore = create<LiteRunnerState>((set, get) => ({
         expandedFiles: new Set<string>(),
         isFetching: false,
       });
+      const scope = get().pgSchema ? ` in ${get().pgSchema}` : '';
       toast.success(
-        `Found ${diff.totalFiles} file(s), ${diff.totalStatements} statement(s) — ${preselected.length} DDL selected`
+        `Found ${diff.totalFiles} file(s), ${diff.totalStatements} statement(s) — ${preselected.length} DDL selected${scope}`
       );
     } catch (err: any) {
       const msg = err.response?.data?.error || 'Failed to fetch diff';

@@ -304,6 +304,14 @@ export class QueryValidator {
         if (/\bALTER\s+(?:COLUMN\s+)?(?!COLUMN\b)\S+\s+(?:SET\s+DATA\s+)?TYPE\b/i.test(statement)) {
           dangerousOperations.push('ALTER COLUMN TYPE');
         }
+        // SET NOT NULL takes an ACCESS EXCLUSIVE lock and full-scans the table
+        // to validate, blocking all reads and writes for the duration, and
+        // fails outright if any existing row is NULL. (DROP NOT NULL is the
+        // opposite — instant and metadata-only — and only lands in the ALTER
+        // DROP bucket above because that check is a broad substring match.)
+        if (/\bSET\s+NOT\s+NULL\b/i.test(statement)) {
+          dangerousOperations.push('ALTER SET NOT NULL');
+        }
       }
 
       // GRANT / REVOKE require password (MASTER only via role middleware)

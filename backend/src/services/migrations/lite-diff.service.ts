@@ -3,7 +3,7 @@ import logger from '../../utils/logger';
 import { LiteDiffDirectory, LiteDiffFile, LiteDiffResult, LiteFileKind, LiteStatement } from '../../types/migrations';
 import { getConfig } from './migrations.service';
 import { getChangedFiles, getFileContent, getFileContentOrEmpty, getMergeBase, fetchRefs, pullLatest } from './git.service';
-import { splitStatements, addedStatements, classifyStatement } from './sql-parser.service';
+import { splitStatements, addedStatements, classifyStatement, extractSchema } from './sql-parser.service';
 import { parseCompareURL, assertRepoMatchesConfig } from './compare-url.service';
 import QueryValidator from '../query/QueryValidator';
 
@@ -23,6 +23,7 @@ function toLiteStatement(sql: string, defaultSchema: string): LiteStatement {
     type: parsed.type === 'DDL' || isUnclassifiedDdl(parsed) ? 'DDL' : 'NON_DDL',
     operation: parsed.operation,
     objectName: parsed.objectName,
+    schema: extractSchema(parsed.sql),
     // Same rule the execute endpoint enforces, so the UI cannot drift from it.
     dangerous: QueryValidator.requiresPasswordVerification(parsed.sql) !== null,
   };
@@ -55,6 +56,68 @@ function fileKind(ddlCount: number, nonDdlCount: number): LiteFileKind {
   if (nonDdlCount === 0) return 'DDL';
   if (ddlCount === 0) return 'NON_DDL';
   return 'MIXED';
+}
+
+const IDENT = String.raw`("[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)`;
+
+/**
+ * The table a CREATE TABLE / ALTER TABLE statement names, normalised to a
+ * lowercase `schema.table` (or bare `table` when unqualified) so the two can be
+ * matched against each other across the diff.
+ */
+export function tableRef(sql: string, verb: 'CREATE' | 'ALTER'): string | null {
+  const clean = sql.replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const prefix =
+    verb === 'CREATE'
+      ? String.raw`CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?`
+      : String.raw`ALTER\s+TABLE(?:\s+IF\s+EXISTS)?(?:\s+ONLY)?`;
+
+  const match = clean.match(new RegExp(String.raw`^\s*${prefix}\s+${IDENT}(?:\s*\.\s*${IDENT})?`, 'i'));
+  if (!match) return null;
+
+  const unq = (v: string) => v.replace(/^"|"$/g, '');
+  const parts = match[2] ? [unq(match[1]), unq(match[2])] : [unq(match[1])];
+  return parts.join('.').toLowerCase();
+}
+
+/**
+ * Adding a NOT NULL column to a table that already holds rows fails outright,
+ * so it is only safe when the table is created by this same diff (and is
+ * therefore empty). `QueryValidator` cannot make this call — it sees one
+ * statement with no knowledge of the range — so the runner adds it here.
+ *
+ * This only ever ADDS danger. Downgrading something QueryValidator flags would
+ * desync the UI from the gate the execute endpoint actually applies.
+ */
+/**
+ * Danger that only the whole diff can reveal, keyed off which tables this range
+ * creates. Returns the reason, or null when the statement is fine.
+ *
+ * Both rules turn on the same distinction: against a table the diff creates,
+ * the operation runs on an empty table and is instant; against a table that
+ * already exists in production, it is slow, locking, or outright fails.
+ */
+function diffAwareDangerReason(sql: string, createdTables: Set<string>): string | null {
+  if (addsNotNullColumn(sql)) {
+    const target = tableRef(sql, 'ALTER');
+    if (!target || !createdTables.has(target)) {
+      return 'Adds a NOT NULL column to a table this diff does not create — it fails outright if that table already holds rows.';
+    }
+  }
+
+  // Reuses the same extractor the protected-table index check relies on.
+  const indexTargets = QueryValidator.extractCreateIndexTables(sql);
+  if (indexTargets.length > 0 && indexTargets.some(t => !createdTables.has(t))) {
+    return 'Builds an index on a table this diff does not create — the build locks that existing table against writes until it completes.';
+  }
+
+  return null;
+}
+
+export function addsNotNullColumn(sql: string): boolean {
+  const clean = sql.replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  if (!/^\s*ALTER\s+TABLE\b/i.test(clean)) return false;
+  return /\bADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?[\s\S]*?\bNOT\s+NULL\b/i.test(clean);
 }
 
 /**
@@ -103,6 +166,12 @@ export async function getLiteDiff(compareUrl: string): Promise<LiteDiffResult> {
   const byDirectory = new Map<string, LiteDiffFile[]>();
   let totalStatements = 0;
 
+  // Pass 1 — classify every file, and record which tables this diff creates.
+  // The NOT NULL rule below needs the whole range before any file can be
+  // finalised, so classification and assembly are deliberately separated.
+  const parsedFiles: Array<{ filePath: string; classified: LiteStatement[] }> = [];
+  const createdTables = new Set<string>();
+
   for (const filePath of changedFiles) {
     const content = getFileContent(config.repoPath, head, filePath);
     const baseContent = getFileContentOrEmpty(config.repoPath, baseRef, filePath);
@@ -112,15 +181,36 @@ export async function getLiteDiff(compareUrl: string): Promise<LiteDiffResult> {
     // changes that canonicalize to something already present. Nothing to run.
     if (statements.length === 0) continue;
 
-    const directory = path.dirname(filePath);
-
     // The runner picks its own target database, so there is no pathMapping
     // schema to use here. Statement classification only needs a default schema
     // to qualify bare object names, which does not affect the DDL/non-DDL call.
     const classified = statements.map(s => toLiteStatement(s, 'public'));
+
+    for (const stmt of classified) {
+      const created = tableRef(stmt.sql, 'CREATE');
+      if (created) createdTables.add(created);
+    }
+
+    parsedFiles.push({ filePath, classified });
+  }
+
+  // Pass 2 — apply the diff-aware rule, then assemble.
+  for (const { filePath, classified } of parsedFiles) {
+    for (const stmt of classified) {
+      if (stmt.dangerous) continue;
+      const reason = diffAwareDangerReason(stmt.sql, createdTables);
+      if (!reason) continue;
+      stmt.dangerous = true;
+      stmt.dangerousReason = reason;
+    }
+
+    const directory = path.dirname(filePath);
     const ddlCount = classified.filter(s => s.type === 'DDL').length;
     const nonDdlCount = classified.length - ddlCount;
     const dangerousCount = classified.filter(s => s.dangerous).length;
+    const schemas = [...new Set(
+      classified.map(s => s.schema).filter((v): v is string => v !== null)
+    )].sort();
 
     const file: LiteDiffFile = {
       path: filePath,
@@ -130,6 +220,7 @@ export async function getLiteDiff(compareUrl: string): Promise<LiteDiffResult> {
       ddlCount,
       nonDdlCount,
       dangerousCount,
+      schemas,
       kind: fileKind(ddlCount, nonDdlCount),
       statements: classified,
       sql: classified.map(s => s.sql).join(';\n\n') + ';',

@@ -70,6 +70,7 @@ describe('lite runner dangerous tagging', () => {
     'ALTER TABLE atlas_app.booking DROP COLUMN c',
     'ALTER TABLE atlas_app.booking RENAME COLUMN a TO b',
     'ALTER TABLE atlas_app.booking ALTER COLUMN c TYPE text',
+    'ALTER TABLE atlas_app.booking ALTER COLUMN c SET NOT NULL',
     'DROP TABLE atlas_app.booking',
     'TRUNCATE atlas_app.booking',
   ])('flags %s as dangerous', (sql) => {
@@ -80,7 +81,6 @@ describe('lite runner dangerous tagging', () => {
   // demand a password and the distinction would be worthless.
   it.each([
     'ALTER TABLE atlas_app.booking ADD COLUMN c text',
-    'ALTER TABLE atlas_app.booking ALTER COLUMN c SET NOT NULL',
     'CREATE TABLE atlas_app.t (id text)',
     'CREATE INDEX idx ON atlas_app.booking (id)',
     "ALTER TYPE atlas_app.status ADD VALUE 'b'",

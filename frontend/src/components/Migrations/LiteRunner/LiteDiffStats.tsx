@@ -1,7 +1,7 @@
 import React from 'react';
 import { Paper, Stack, Typography, Box } from '@mui/material';
 import DescriptionIcon from '@mui/icons-material/Description';
-import { useLiteRunnerStore, stmtKey } from '../../../store/liteRunnerStore';
+import { useLiteRunnerStore, stmtKey, matchesSchema } from '../../../store/liteRunnerStore';
 
 const Stat = ({ value, label, color }: { value: number | string; label: string; color?: string }) => (
   <Stack direction="row" spacing={0.75} alignItems="baseline">
@@ -16,12 +16,21 @@ const LiteDiffStats = () => {
   const getVisibleFiles = useLiteRunnerStore((s) => s.getVisibleFiles);
   const directoryFilter = useLiteRunnerStore((s) => s.directoryFilter);
   const search = useLiteRunnerStore((s) => s.search);
+  const pgSchema = useLiteRunnerStore((s) => s.pgSchema);
 
   if (!diff || diff.totalFiles === 0) return null;
 
   const files = getVisibleFiles();
   const statements = files.reduce((sum, f) => sum + f.statementCount, 0);
   const ddl = files.reduce((sum, f) => sum + f.ddlCount, 0);
+  // DDL that can actually run against the selected target — the rest names
+  // another schema, so the gap between the two counts is worth showing.
+  const ddlHere = pgSchema
+    ? files.reduce(
+        (sum, f) => sum + f.statements.filter(st => st.type === 'DDL' && matchesSchema(st, pgSchema)).length,
+        0
+      )
+    : ddl;
   const selected = files.reduce(
     (sum, f) => sum + f.statements.filter((_s, i) => selectedStatements.has(stmtKey(f.path, i))).length,
     0
@@ -38,6 +47,9 @@ const LiteDiffStats = () => {
         </Stack>
         <Stat value={statements} label="statements" />
         <Stat value={ddl} label="DDL" color="#58a6ff" />
+        {pgSchema && ddlHere !== ddl && (
+          <Stat value={ddlHere} label={`in ${pgSchema}`} color="#58a6ff" />
+        )}
         <Stat value={statements - ddl} label="non-DDL" color="#d29922" />
         <Box sx={{ flex: 1 }} />
         <Stat value={selected} label="selected" color="#3fb950" />
