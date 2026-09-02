@@ -496,16 +496,21 @@ export const configSyncAPI = {
     return response.data;
   },
 
-  getStatus: async (executionId: string): Promise<{
+  // Also the live-log feed: pass the absolute line index already received as
+  // `logFrom` and the response carries only the lines added since. There is
+  // no separate streaming endpoint — SSE does not survive the deployment's
+  // proxy chain, so the log rides along with the status poll instead.
+  getStatus: async (executionId: string, logFrom = 0): Promise<{
     executionId: string;
     status: 'running' | 'completed' | 'failed' | 'cancelled';
     result?: { configSync?: ConfigSyncResult; [key: string]: any };
     error?: string;
     progress?: { currentStatement: number; totalStatements: number };
+    liveLog?: { lines: string[]; nextFrom: number } | null;
     startTime: number;
     endTime?: number;
   }> => {
-    const response = await api.get(`/api/config-sync/status/${executionId}`);
+    const response = await api.get(`/api/config-sync/status/${executionId}`, { params: { logFrom } });
     return response.data;
   },
 
@@ -513,9 +518,6 @@ export const configSyncAPI = {
     const response = await api.post(`/api/config-sync/cancel/${executionId}`);
     return response.data;
   },
-
-  // EventSource doesn't go through axios — caller opens `new EventSource(url, { withCredentials: true })`.
-  streamUrl: (executionId: string): string => `${API_BASE_URL}/api/config-sync/stream/${executionId}`,
 
   getAssets: async (): Promise<{ assets: ConfigSyncAsset[] }> => {
     const response = await api.get('/api/config-sync/assets');

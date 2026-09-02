@@ -1,6 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { EventEmitter } from 'events';
 import { PoolClient } from 'pg';
 import logger from '../../utils/logger';
 import { ExecutionManager } from '../query/ExecutionManager';
@@ -83,21 +82,17 @@ export interface ConfigSyncResult {
 
 export interface JobHandle {
   proc: ChildProcess | null;
-  emitter: EventEmitter;
   /**
-   * Every line emitted so far. Kept on the handle (not just in runSteps'
-   * local closure) so a stream client that connects late — or reconnects
-   * mid-job — can be replayed the lines it missed. Without this, a client
-   * only ever sees lines emitted strictly after its connection went live,
-   * which in practice means it misses the opening stage banner every time,
-   * and loses everything sent during any reconnect gap.
+   * Every line produced so far. Kept on the handle (not just in runSteps'
+   * local closure) so the status poll can serve the live tail out of it
+   * while the job is still running — see getLogTail().
    */
   logLines: string[];
   /**
    * How many lines have been trimmed off the front of logLines by the
-   * 5000-line cap. Needed so SSE event ids stay absolute and monotonic
-   * across trimming — a client's Last-Event-ID has to keep meaning the
-   * same thing even after the buffer has rolled.
+   * 5000-line cap. Keeps the poll's `from` index absolute and monotonic
+   * across trimming, so a caller's cursor keeps meaning the same thing
+   * even after the buffer has rolled.
    */
   dropped: number;
 }
@@ -152,17 +147,27 @@ class ConfigTransferService {
   }
 
   /**
-   * Live stdout/stderr subscription for a job still running on THIS pod.
-   * Relies on the backend Service's sessionAffinity: ClientIP (k8s/backend.yaml)
-   * to guarantee a reconnecting client keeps hitting the pod that spawned the
-   * process — there is no cross-pod fan-out here by design.
+   * Incremental live log for a job still running on THIS pod, served off the
+   * back of the ordinary 1s status poll rather than a streaming connection.
    *
-   * Returns the whole handle rather than just the emitter so the caller can
-   * replay already-buffered lines before subscribing to new ones (see
-   * JobHandle.logLines).
+   * SSE was tried first and does not survive this deployment's proxy chain
+   * (browser -> GCLB -> Pomerium -> pod): the response opens 200 and then
+   * sits at zero bytes delivered, even with the whole buffer written
+   * synchronously at connect time. Plain request/response JSON is the one
+   * shape known to pass through that chain intact, so the live log rides
+   * along with the status the frontend is already asking for every second.
+   *
+   * `from` is an absolute line index (see JobHandle.dropped), so it stays
+   * correct even after the 5000-line buffer has rolled.
    */
-  public subscribe(executionId: string): JobHandle | null {
-    return activeJobs.get(executionId) ?? null;
+  public getLogTail(executionId: string, from: number): { lines: string[]; nextFrom: number } | null {
+    const job = activeJobs.get(executionId);
+    if (!job) return null;
+    const startIdx = Math.max(0, from - job.dropped);
+    return {
+      lines: job.logLines.slice(startIdx),
+      nextFrom: job.dropped + job.logLines.length,
+    };
   }
 
   /**
@@ -326,16 +331,13 @@ class ConfigTransferService {
     // (the background IIFE's own finally only covers what happens after it
     // actually starts running).
     let executionId: string;
-    let emitter: EventEmitter;
     const logLines: string[] = [];
     try {
       ensureEnvironmentsJsonInPlace();
       await configSyncAssetsService.writeToDisk();
 
       executionId = uuidv4();
-      emitter = new EventEmitter();
-      emitter.setMaxListeners(20);
-      activeJobs.set(executionId, { proc: null, emitter, logLines, dropped: 0 });
+      activeJobs.set(executionId, { proc: null, logLines, dropped: 0 });
 
       await this.executionManager.initializeExecution(executionId, userId);
       await this.executionManager.updateProgress(executionId, 0, steps.length);
@@ -349,19 +351,15 @@ class ConfigTransferService {
     const auditWarnings: string[] = [];
 
     // The single append path for every log line — stage banners and raw
-    // subprocess output alike — so the buffer, the trim bookkeeping and the
-    // live emit can never drift apart. The sequence number emitted alongside
-    // each line is what becomes its SSE event id, letting a reconnecting
-    // client resume from exactly where it dropped off.
+    // subprocess output alike — so the buffer and the trim bookkeeping can
+    // never drift apart. Readers pick lines up from here via getLogTail().
     const appendLine = (line: string) => {
-      const handle = activeJobs.get(executionId);
       logLines.push(line);
       if (logLines.length > 5000) {
         logLines.shift();
+        const handle = activeJobs.get(executionId);
         if (handle) handle.dropped += 1;
       }
-      const seq = (handle?.dropped ?? 0) + logLines.length - 1;
-      handle?.emitter.emit('line', line, seq);
     };
 
     const STAGE_TITLES: Record<string, string> = { export: 'EXPORT', patch: 'PATCH' };
@@ -432,8 +430,8 @@ class ConfigTransferService {
         await this.executionManager.completeExecution(executionId, response, success);
         this.executionManager.completeActiveExecution(executionId);
 
-        const job = activeJobs.get(executionId);
-        job?.emitter.emit('done', exitCode);
+        // Poll-side readers fall back to the completed result's full log once
+        // this handle is gone, so there's nothing to notify — just drop it.
         activeJobs.delete(executionId);
         logger.info('Config Sync job finished', { executionId, kind, exitCode, cancelled });
       } finally {

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  startExportAndPatch, getStatus, cancel, streamLog,
+  startExportAndPatch, getStatus, cancel,
   getAssets, updateAsset,
   getAssetHistory, getAssetHistoryEntry, restoreAssetVersion,
   getVersions, setVersionStatus,
@@ -24,9 +24,11 @@ const requireConfigSync = requireRoles(Role.MASTER, Role.ADMIN);
 // from CONFIG_SYNC_ALLOWED_ENVS, never exposed to the client.
 router.post('/export-and-patch', requireConfigSync, validate(configSyncExportAndPatchSchema), startExportAndPatch);
 
+// Status doubles as the live-log feed (?logFrom=N returns only new lines) —
+// there is no separate streaming endpoint, deliberately. See
+// configTransfer.service.ts's getLogTail().
 router.get('/status/:executionId', requireConfigSync, getStatus);
 router.post('/cancel/:executionId', requireConfigSync, cancel);
-router.get('/stream/:executionId', requireConfigSync, streamLog);
 
 router.get('/assets', requireConfigSync, getAssets);
 router.put('/assets/:name', requireConfigSync, validate(configSyncAssetUpdateSchema), updateAsset);
