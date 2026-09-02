@@ -15,6 +15,7 @@ import redisClient from './config/redis';
 import historyService from './services/history.service';
 import queryRequestsService from './services/queryRequests.service';
 import configReplicateGroupsService from './services/configReplicate/groups.service';
+import configSyncAssetsService from './services/configSync/configSyncAssets.service';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
@@ -32,6 +33,7 @@ import { getConfig as getMigrationsConfig } from './services/migrations/migratio
 import repoState from './services/migrations/repo-state.service';
 import shudhiRoutes from './routes/shudhi.routes';
 import configReplicateRoutes from './routes/configReplicate.routes';
+import configSyncRoutes from './routes/configSync.routes';
 import systemConfigsRoutes from './routes/systemConfigs.routes';
 import RedisManagerPools from './config/redis-pools';
 import ClickHouseClientManager from './config/clickhouse';
@@ -45,7 +47,17 @@ app.set('trust proxy', 1);
 // Gzip-compress all responses. JSON payloads (configuration, query results,
 // Shudhi key listings) are highly repetitive and shrink ~80-90%, so this is
 // applied before the routes. The threshold skips tiny responses.
-app.use(compression({ threshold: 1024 }));
+//
+// SSE (config-sync/stream) is excluded: compression buffers writes waiting
+// to fill a chunk, which defeats a stream meant to deliver each line as it
+// happens — the whole point of that endpoint.
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.path.includes('/config-sync/stream/')) return false;
+    return compression.filter(req, res);
+  },
+}));
 
 // Middleware
 // Use Helmet but disable CSP in production (Pomerium handles authentication redirects)
@@ -148,6 +160,8 @@ app.use('/api/shudhi', shudhiRoutes);
 console.log('[STARTUP] ✓ /api/shudhi routes mounted');
 app.use('/api/config-replicate', configReplicateRoutes);
 console.log('[STARTUP] ✓ /api/config-replicate routes mounted');
+app.use('/api/config-sync', configSyncRoutes);
+console.log('[STARTUP] ✓ /api/config-sync routes mounted');
 app.use('/api/system-configs', systemConfigsRoutes);
 console.log('[STARTUP] ✓ /api/system-configs routes mounted');
 
@@ -261,8 +275,20 @@ const startServer = async () => {
         console.log('[STARTUP] Initializing config replicate schema...');
         await configReplicateGroupsService.initializeSchema();
         console.log('[STARTUP] Config replicate schema initialized');
+        console.log('[STARTUP] Initializing config sync assets schema...');
+        await configSyncAssetsService.initializeSchema();
+        console.log('[STARTUP] Config sync assets schema initialized');
     } else {
       console.log('[STARTUP] Schema initialization skipped (RUN_MIGRATIONS not set)');
+    }
+
+    // Write config.json/patches.json out to the vendored file paths so the
+    // config_transfer.py subprocess has the DB-owned content in place before
+    // the first export/patch run — no-op if the assets table doesn't exist yet.
+    try {
+      await configSyncAssetsService.writeToDisk();
+    } catch (err: any) {
+      console.warn('[STARTUP] Config Sync: failed to write assets to disk at startup:', err.message);
     }
 
     // Kick off the NammaYatri repo clone in the background — non-blocking.
