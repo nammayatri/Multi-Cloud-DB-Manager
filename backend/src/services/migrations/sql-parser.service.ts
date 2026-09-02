@@ -20,7 +20,7 @@ export function splitStatements(sql: string): string[] {
  * Extract schema and name from a potentially quoted identifier like "schema"."table" or schema.table.
  * Returns [schema, name]. If no schema prefix, uses defaultSchema.
  */
-function parseSchemaQualifiedName(raw: string, defaultSchema: string): [string, string] {
+export function parseSchemaQualifiedName(raw: string, defaultSchema: string): [string, string] {
   // Remove surrounding whitespace
   raw = raw.trim();
 
@@ -247,4 +247,51 @@ export function canonicalizeStatement(sql: string): string {
 export function addedStatements(toStatements: string[], baseContent: string): string[] {
   const baseSet = new Set(splitStatements(baseContent).map(canonicalizeStatement));
   return toStatements.filter(s => !baseSet.has(canonicalizeStatement(s)));
+}
+
+/**
+ * Strip everything that can contain a dot but is not an identifier: line and
+ * block comments, single-quoted literals, and dollar-quoted bodies. Without
+ * this, `SET note = 'v1.2.3'` or a function body mentioning `other.tbl` would
+ * be mistaken for the statement's target.
+ */
+function stripNonIdentifierText(sql: string): string {
+  return sql
+    .replace(/--[^\n]*/g, ' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    // Dollar quoting must go before single quotes: a $$ body may contain them.
+    .replace(/\$([A-Za-z_][A-Za-z0-9_]*)?\$[\s\S]*?\$\1?\$/g, ' ')
+    .replace(/'(?:[^']|'')*'/g, " '' ");
+}
+
+/**
+ * The schema a statement targets, or null when it names no schema.
+ *
+ * `classifyStatement` already resolves this for the shapes it models, but it
+ * reports the literal 'manual_check'/'skipped' for the rest — DROP TABLE,
+ * ALTER ... RENAME, CREATE FUNCTION/VIEW and friends — which is precisely where
+ * the lite runner rescues real DDL. It also substitutes its defaultSchema for
+ * unqualified names, so an unqualified statement becomes indistinguishable from
+ * an explicitly-qualified one. This resolves the schema independently of both
+ * problems, and returns null (rather than a default) so the caller can decide
+ * what an unqualified statement means.
+ *
+ * Heuristic: the FIRST schema-qualified identifier in the statement. That is
+ * the target for every shape that matters — `ALTER TABLE s.t ...`,
+ * `INSERT INTO s.t SELECT ... FROM other.x`, and `CREATE INDEX i ON s.t (...)`
+ * (the index name carries no qualifier, so the ON table wins).
+ */
+export function extractSchema(sql: string): string | null {
+  const clean = stripNonIdentifierText(sql);
+
+  // Anchored on a boundary and an identifier start character so numeric
+  // literals (0.5), type modifiers (numeric(10, 2)) and casts (c::text) cannot
+  // match. The `\.\s*` requires a real qualifier, not a lone identifier.
+  const match = clean.match(
+    /(?:^|[\s(,;=])("[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*("[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)/
+  );
+  if (!match) return null;
+
+  const [schema] = parseSchemaQualifiedName(`${match[1]}.${match[2]}`, '');
+  return schema || null;
 }

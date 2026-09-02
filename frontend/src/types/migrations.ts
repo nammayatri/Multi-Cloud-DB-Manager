@@ -58,8 +58,15 @@ export interface LiteStatement {
   type: LiteStatementType;
   operation: string;
   objectName: string;
+  /** Schema this statement targets, or null when unqualified (runs under search_path). */
+  schema: string | null;
   /** Requires password re-verification to run (DROP, ALTER DROP/RENAME/TYPE, ...). */
   dangerous: boolean;
+  /**
+   * Why this statement is dangerous, when the reason is not obvious from the
+   * SQL alone (e.g. it depends on what the rest of the diff does).
+   */
+  dangerousReason?: string;
 }
 
 export type LiteFileKind = 'DDL' | 'NON_DDL' | 'MIXED';
@@ -72,6 +79,8 @@ export interface LiteDiffFile {
   ddlCount: number;
   nonDdlCount: number;
   dangerousCount: number;
+  /** Distinct schemas named by this file's statements, sorted. */
+  schemas: string[];
   kind: LiteFileKind;
   statements: LiteStatement[];
   sql: string;

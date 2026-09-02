@@ -14,6 +14,7 @@ import type { LiteDiffFile, LiteFileKind } from '../../../types/migrations';
 const DDL_COLOR = '#58a6ff';
 const NON_DDL_COLOR = '#d29922';
 const DANGER_COLOR = '#f85149';
+const OTHER_SCHEMA_COLOR = '#a371f7';
 const ADDED_BG = 'rgba(46, 160, 67, 0.13)';
 const GUTTER = 52;
 
@@ -54,6 +55,24 @@ const DangerChip = ({ count }: { count: number }) => {
     </Tooltip>
   );
 };
+
+/**
+ * Shown only when a statement (or file) names a schema other than the selected
+ * target — running it would apply changes somewhere the toolbar does not point.
+ */
+const OtherSchemaChip = ({ label, title }: { label: string; title: string }) => (
+  <Tooltip title={title}>
+    <Chip
+      size="small"
+      variant="outlined"
+      label={label}
+      sx={{
+        height: 18, fontSize: 10, fontWeight: 700,
+        color: OTHER_SCHEMA_COLOR, borderColor: OTHER_SCHEMA_COLOR,
+      }}
+    />
+  </Tooltip>
+);
 
 const StatusChip = ({ state }: { state?: FileRunState }) => {
   if (!state || state.status === 'idle') return null;
@@ -115,16 +134,23 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
   const toggleFileExpanded = useLiteRunnerStore((s) => s.toggleFileExpanded);
   const runState = useLiteRunnerStore((s) => s.runState);
   const isRunning = useLiteRunnerStore((s) => s.isRunning);
+  const pgSchema = useLiteRunnerStore((s) => s.pgSchema);
 
   const expanded = expandedFiles.has(file.path);
+  // Schemas this file touches that are not the selected target.
+  const otherSchemas = pgSchema ? file.schemas.filter(sc => sc !== pgSchema) : [];
   const selectedCount = file.statements.filter((_s, i) => selectedStatements.has(stmtKey(file.path, i))).length;
 
-  // Per-statement checkboxes appear when the choice actually matters: a mixed
-  // file (DDL alongside data changes), or any file holding a dangerous
-  // statement — dropping or renaming an object deserves an explicit, individual
-  // opt-in rather than being swept along by a file-level tick. A uniform, safe
-  // file needs only its top-level checkbox.
-  const perStatementSelection = file.kind === 'MIXED' || file.dangerousCount > 0;
+  // Per-statement checkboxes appear when the choice actually matters:
+  //  - a mixed file (DDL alongside data changes);
+  //  - any file holding a dangerous statement, which deserves an explicit
+  //    individual opt-in rather than being swept along by a file-level tick;
+  //  - a file spanning schemas beyond the selected one, where "Select All DDL"
+  //    picks only part of the file. Without this the row would sit
+  //    indeterminate with no way to see or change which half is selected, and
+  //    its file-level tick would silently pull in the other schema's SQL.
+  const perStatementSelection =
+    file.kind === 'MIXED' || file.dangerousCount > 0 || otherSchemas.length > 0;
 
   let lineCursor = 1;
 
@@ -174,6 +200,12 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
         </Typography>
 
         <StatusChip state={runState[file.path]} />
+        {otherSchemas.length > 0 && (
+          <OtherSchemaChip
+            label={otherSchemas.length === 1 ? otherSchemas[0] : `${otherSchemas.length} schemas`}
+            title={`Targets ${otherSchemas.join(', ')} — not the selected schema (${pgSchema})`}
+          />
+        )}
         <DangerChip count={file.dangerousCount} />
         <KindChip kind={file.kind} />
         <Typography variant="caption" sx={{ color: '#3fb950', fontWeight: 700, whiteSpace: 'nowrap' }}>
@@ -226,8 +258,19 @@ const FileCard = ({ file }: { file: LiteDiffFile }) => {
                     <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
                       {stmt.operation}
                     </Typography>
+                    {stmt.schema && pgSchema && stmt.schema !== pgSchema && (
+                      <OtherSchemaChip
+                        label={stmt.schema}
+                        title={`Targets ${stmt.schema}, not the selected schema (${pgSchema})`}
+                      />
+                    )}
                     {stmt.dangerous && (
-                      <Tooltip title="Rewrites or removes an existing object — password required">
+                      <Tooltip
+                        title={
+                          stmt.dangerousReason ||
+                          'Rewrites or removes an existing object — password required'
+                        }
+                      >
                         <Chip
                           size="small"
                           icon={<WarningAmberIcon sx={{ fontSize: 12, color: `${DANGER_COLOR} !important` }} />}

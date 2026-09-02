@@ -19,6 +19,7 @@ export interface ValidationWarning {
  *   - ALTER … containing DROP (e.g. ALTER TABLE … DROP COLUMN)
  *   - ALTER … RENAME … (column, constraint, or table)
  *   - ALTER … column TYPE change (breaks readers of the old type)
+ *   - ALTER … SET NOT NULL (ACCESS EXCLUSIVE lock + full validation scan)
  *   - GRANT … / REVOKE …
  * If the lists drift, the backend rejects with "Password verification required"
  * and DatabaseSelector re-opens this dialog as a safety net — but keeping them
@@ -90,7 +91,10 @@ export const detectDangerousQueries = (
       // "ALTER TYPE <enum> ADD VALUE", which is additive.
       const isAlterColumnType =
         /\bALTER\s+(?:COLUMN\s+)?(?!COLUMN\b)\S+\s+(?:SET\s+DATA\s+)?TYPE\b/i.test(upperStatement);
-      const needsPassword = isAlterDrop || isAlterRename || isAlterColumnType;
+      // Locks the table exclusively and scans it to validate; fails if any row
+      // is NULL. DROP NOT NULL is the harmless inverse.
+      const isSetNotNull = /\bSET\s+NOT\s+NULL\b/i.test(upperStatement);
+      const needsPassword = isAlterDrop || isAlterRename || isAlterColumnType || isSetNotNull;
 
       if (needsPassword || !upperStatement.match(/\s+ADD\s+(COLUMN|CONSTRAINT|INDEX)/i)) {
         dangerousStatements.push(statement);
