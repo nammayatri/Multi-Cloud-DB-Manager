@@ -12,9 +12,31 @@ export const startExportAndPatch = async (req: Request, res: Response, next: Nex
     const { schemas, tables, parallel, s3, versionDescription } = req.body;
     const result = await configTransferService.startExportAndPatch(
       { schemas, tables, parallel, s3, versionDescription },
-      user.id
+      user.id,
+      user.username
     );
     res.status(202).json({ ...result, status: 'running' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getVersions = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const versions = await configTransferService.listVersions();
+    res.json({ versions });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const setVersionStatus = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = req.user as Express.User;
+    const version = Number(req.params.version);
+    const { status } = req.body;
+    const updated = await configTransferService.setVersionStatus(version, status, user.id, user.username);
+    res.json({ version: updated });
   } catch (error) {
     next(error);
   }
@@ -56,6 +78,13 @@ export const streamLog = async (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  // Correct Content-Type/Cache-Control alone doesn't stop an nginx-based
+  // ingress/reverse-proxy from buffering this response — it needs to be told
+  // explicitly. Without this, every deployment behind such a proxy shows
+  // nothing until the job finishes and the connection closes, then the whole
+  // buffered stream flushes at once — looks identical to "not live" even
+  // though the backend is writing each line immediately.
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
   if (!emitter) {

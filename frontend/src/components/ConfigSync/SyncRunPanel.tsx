@@ -24,6 +24,19 @@ type JobStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 const AUDIT_TAGS = ['[URL]', '[ENCRYPT]', '[K8S]', '[IP]'] as const;
 
+// Matches exactly what configTransfer.service.ts's emitStageStart() titles
+// its 3 stages — 'EXPORT'/'PATCH' (from STAGE_TITLES there) and the
+// hardcoded 'PUSH TO S3' string for the metadata/S3 stage. Fixed order so
+// the stage row always shows all 3 columns, even before later ones start.
+const STAGE_TITLES = ['EXPORT', 'PATCH', 'PUSH TO S3'] as const;
+
+const STAGE_STATUS_COLOR: Record<'running' | 'done' | 'failed' | 'pending', string> = {
+  running: 'info.main',
+  done: 'success.main',
+  failed: 'error.main',
+  pending: 'grey.700',
+};
+
 // Pure "====...====" divider lines from the python script's own output
 // formatting — not a real warning, just visual separation in a terminal.
 // Drops out entirely rather than being counted/shown as an "Other" item.
@@ -69,6 +82,50 @@ function groupAuditWarnings(rawLines: string[]): Record<string, AuditGroup> {
 function extractResultLine(log: string[], prefix: string): string | null {
   const line = [...log].reverse().find(l => l.includes(prefix));
   return line ? line.trim() : null;
+}
+
+// Jenkins-style stage breakdown — parsed straight out of the same log
+// stream, live-updating included, rather than needing any backend change.
+// The backend (configTransfer.service.ts's emitStageStart/emitStageEnd)
+// already wraps EVERY line in one of these banners:
+//   ▶ STAGE: EXPORT          (start)
+//   ✔ STAGE: EXPORT — done (12.3s)   (end, success)
+//   ✘ STAGE: PATCH — failed (4.1s)   (end, failure)
+// so the whole log always divides cleanly into stage blocks — nothing here
+// falls outside a stage.
+interface StageBlock {
+  title: string;
+  status: 'running' | 'done' | 'failed';
+  durationSec: number | null;
+  lines: string[];
+}
+
+const STAGE_START_RE = /^▶ STAGE: (.+)$/;
+const STAGE_END_RE = /^(✔|✘) STAGE: (.+) — (done|failed) \(([\d.]+)s\)$/;
+const DIVIDER_RE = /^━+$/;
+
+function parseStages(log: string[]): StageBlock[] {
+  const stages: StageBlock[] = [];
+  let current: StageBlock | null = null;
+
+  for (const raw of log) {
+    const line = raw.trim();
+    const startMatch = line.match(STAGE_START_RE);
+    if (startMatch) {
+      current = { title: startMatch[1], status: 'running', durationSec: null, lines: [] };
+      stages.push(current);
+      continue;
+    }
+    const endMatch = line.match(STAGE_END_RE);
+    if (endMatch && current) {
+      current.status = endMatch[3] as 'done' | 'failed';
+      current.durationSec = parseFloat(endMatch[4]);
+      continue;
+    }
+    if (line === '' || DIVIDER_RE.test(line)) continue;
+    if (current) current.lines.push(raw);
+  }
+  return stages;
 }
 
 const SyncRunPanel = () => {
@@ -202,6 +259,18 @@ const SyncRunPanel = () => {
   // the final result once it arrives (result.log is a superset once complete).
   const displayLog = status === 'running' ? liveLog : (result?.log ?? liveLog);
 
+  // Jenkins-style stage row — re-parsed on every render straight from
+  // displayLog, so it updates live exactly as often as the log itself does.
+  // 'auto' follows whichever stage is currently running; an explicit click
+  // locks onto that stage until the user clicks another one.
+  const [stageSelect, setStageSelect] = useState<string | 'auto'>('auto');
+  const stages = parseStages(displayLog);
+  const runningStage = stages.find(s => s.status === 'running');
+  const effectiveStageTitle = stageSelect !== 'auto'
+    ? stageSelect
+    : (runningStage?.title ?? stages[stages.length - 1]?.title);
+  const selectedStage = stages.find(s => s.title === effectiveStageTitle) ?? null;
+
   return (
     <Stack spacing={2}>
       {/* Export + Patch — single combined flow. Nothing about From/To env,
@@ -332,12 +401,65 @@ const SyncRunPanel = () => {
             </Box>
           )}
 
-          {/* Log — streamed live while running, full log once completed */}
-          {displayLog.length > 0 && (
-            <Box>
-              <Divider sx={{ mb: 1 }} />
+          {/* Jenkins-style stage row — EXPORT / PATCH / PUSH TO S3, parsed
+              live from the same log stream. Click a stage to lock the log
+              view onto it; 'auto' (the default) follows whichever stage is
+              currently running. */}
+          <Box>
+            <Divider sx={{ mb: 1 }} />
+            <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
+              Stages
+            </Typography>
+            <Stack
+              direction="row"
+              spacing={0}
+              sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}
+            >
+              {STAGE_TITLES.map((title, i) => {
+                const stage = stages.find(s => s.title === title);
+                const stageStatus = stage?.status ?? 'pending';
+                const isSelected = effectiveStageTitle === title;
+                return (
+                  <Box
+                    key={title}
+                    onClick={() => stage && setStageSelect(title)}
+                    sx={{
+                      flex: 1,
+                      minWidth: 0,
+                      cursor: stage ? 'pointer' : 'default',
+                      p: 1.25,
+                      borderRight: i < STAGE_TITLES.length - 1 ? 1 : 0,
+                      borderColor: 'divider',
+                      bgcolor: isSelected ? 'action.selected' : 'transparent',
+                      borderBottom: 3,
+                      borderBottomColor: STAGE_STATUS_COLOR[stageStatus],
+                      opacity: stageStatus === 'pending' ? 0.5 : 1,
+                      transition: 'opacity 0.2s ease',
+                    }}
+                  >
+                    <Typography variant="body2" fontWeight={600} noWrap>{title}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {stageStatus === 'running'
+                        ? 'running…'
+                        : stageStatus === 'pending'
+                          ? 'pending'
+                          : stage?.durationSec != null ? `${stage.durationSec}s` : ''}
+                    </Typography>
+                  </Box>
+                );
+              })}
+            </Stack>
+          </Box>
+
+          {/* Log for whichever stage is selected above — live while that
+              stage is running, frozen once it finishes. */}
+          {selectedStage && (
+            <Box mt={2}>
               <Typography variant="caption" color="text.secondary">
-                {isRunning ? 'Console (live)' : 'Log (last 200 lines)'}
+                {selectedStage.title}
+                {selectedStage.status === 'running' && ' — live'}
+                {selectedStage.status === 'done' && ` — done (${selectedStage.durationSec}s)`}
+                {selectedStage.status === 'failed' && ` — failed (${selectedStage.durationSec}s)`}
               </Typography>
               <Box
                 component="pre"
@@ -356,7 +478,9 @@ const SyncRunPanel = () => {
                   m: 0,
                 }}
               >
-                {displayLog.slice(-200).join('\n')}
+                {selectedStage.lines.length > 0
+                  ? selectedStage.lines.slice(-200).join('\n')
+                  : (selectedStage.status === 'running' ? '(waiting for output…)' : '(no output)')}
               </Box>
             </Box>
           )}
