@@ -5,6 +5,7 @@ import {
   ColumnClass,
   ColumnInfo,
   ConfigGroup,
+  FkLink,
   ForeignKeyInfo,
   GroupTableConfig,
   RowDiff,
@@ -20,6 +21,7 @@ import {
 } from './classify';
 import * as introspection from './introspection.service';
 import { pairByKey, pairByMutualBestMatch, Row } from './matching';
+import { effectiveLinks, parentKeyOf } from './ordering';
 import { idMapKey, pendingRef, projectRow } from './projection';
 import { quoteIdent } from './sqlBuilder';
 import { canonical, displayValue, makeDiffId, rowHash, valuesEqual } from './values';
@@ -42,6 +44,8 @@ export interface TableContext {
   primaryKeyColumn: string | null;
   originalBaseByDiffId: Map<string, Row>;
   editableColumns: Set<string>;
+  links: FkLink[];
+  referencedKeys: string[][];
 }
 
 export interface AnalyzeOutput {
@@ -98,7 +102,10 @@ const analyzeTable = async (
   baseValues: string[],
   newValues: string[],
   forUpdate: boolean,
-  idMap: Map<string, unknown>
+  idMap: Map<string, unknown>,
+  keys: UniqueKeyInfo[],
+  links: FkLink[],
+  referencedKeys: string[][]
 ): Promise<{ analysis: TableAnalysis; context: TableContext | null; fingerprint: string }> => {
   const { schema, table } = config;
   const dimensionColumns = config.dimensionColumns;
@@ -124,7 +131,6 @@ const analyzeTable = async (
     return { analysis, context: null, fingerprint: '' };
   }
 
-  const keys = await introspection.getUniqueKeys(client, schema, table);
   const fingerprint = `${qualified(config)}=${introspection.schemaFingerprint(columns, keys)}`;
 
   const columnNames = new Set(columns.map(c => c.columnName));
@@ -209,12 +215,15 @@ const analyzeTable = async (
   analysis.targetRowCount = targetRows.length;
   analysis.matchMethod = matchMethod;
   analysis.matchKeyColumns = matchKeyColumns;
-  analysis.editableColumns = editableColumns(classes, config.fkRemap);
+  analysis.editableColumns = editableColumns(
+    classes,
+    new Set(links.flatMap(link => link.columns))
+  );
 
   const originalOf = new Map<Row, Row>();
   const danglingOf = new Map<Row, string[]>();
   const projectedBaseRows = baseRows.map(row => {
-    const projected = projectRow(row, config.fkRemap, idMap, udtMap);
+    const projected = projectRow(row, links, idMap, udtMap);
     originalOf.set(projected.row, row);
     if (projected.dangling.length > 0) danglingOf.set(projected.row, projected.dangling);
     return projected.row;
@@ -256,16 +265,57 @@ const analyzeTable = async (
     primaryKeyColumn: primary && primary.columns.length === 1 ? primary.columns[0] : null,
     originalBaseByDiffId: new Map(),
     editableColumns: new Set(analysis.editableColumns),
+    links,
+    referencedKeys,
   };
 
-  const pkColumn = context.primaryKeyColumn;
   const tableKey = qualified(config);
 
-  const rememberParent = (baseRow: Row, newParentValue: unknown) => {
-    if (!pkColumn) return;
+  const rememberParent = (
+    baseRow: Row,
+    newValueOf: (column: string, keyColumns: string[], oldValues: unknown[]) => unknown
+  ) => {
+    if (referencedKeys.length === 0) return;
     const original = originalOf.get(baseRow) || baseRow;
-    idMap.set(idMapKey(tableKey, original[pkColumn], udtMap[pkColumn]), newParentValue);
+
+    for (const keyColumns of referencedKeys) {
+      if (keyColumns.some(c => !(c in udtMap))) continue;
+
+      const oldValues = keyColumns.map(c => original[c]);
+      if (oldValues.some(v => v === null || v === undefined)) continue;
+
+      idMap.set(
+        idMapKey(tableKey, keyColumns, oldValues, keyColumns.map(c => udtMap[c])),
+        keyColumns.map(c => newValueOf(c, keyColumns, oldValues))
+      );
+    }
   };
+
+  // A row that already exists under the new dimension hands children its target
+  // id. A row still to be inserted has no id yet, so each column of the key is
+  // resolved by how the insert will fill it: a regenerated uuid becomes a
+  // sentinel the apply resolves once minted, the dimension becomes the new
+  // dimension value, and anything else is copied verbatim and already known.
+  const existingParentValue = (target: Row) => (column: string) => target[column];
+
+  const insertedParentValue =
+    (base: Row) =>
+    (column: string, keyColumns: string[], oldValues: unknown[]): unknown => {
+      if (classes[column] === 'GENERATED' && (udtMap[column] || '').toLowerCase() === 'uuid') {
+        return pendingRef(
+          tableKey,
+          column,
+          keyColumns,
+          oldValues,
+          keyColumns.map(c => udtMap[c])
+        );
+      }
+
+      const dimensionIndex = dimensionColumns.indexOf(column);
+      if (dimensionIndex >= 0) return newValues[dimensionIndex];
+
+      return base[column];
+    };
 
   const pushDiff = (diff: RowDiff) => {
     const existing = analysis.diffs.find(d => d.diffId === diff.diffId);
@@ -290,7 +340,7 @@ const analyzeTable = async (
 
     if (changed.length === 0) {
       analysis.counts.noChange++;
-      rememberParent(base, pkColumn ? target[pkColumn] : undefined);
+      rememberParent(base, existingParentValue(target));
       pushDiff({
         diffId,
         operation: 'NO_CHANGE',
@@ -306,7 +356,7 @@ const analyzeTable = async (
     }
 
     analysis.counts.update++;
-    rememberParent(base, pkColumn ? target[pkColumn] : undefined);
+    rememberParent(base, existingParentValue(target));
     context.pairedByDiffId.set(diffId, { base, target });
     context.originalBaseByDiffId.set(diffId, originalOf.get(base) || base);
     context.changedColumnsByDiffId.set(diffId, changed);
@@ -338,10 +388,7 @@ const analyzeTable = async (
     context.baseRowsByDiffId.set(diffId, base);
     context.originalBaseByDiffId.set(diffId, originalOf.get(base) || base);
 
-    const original = originalOf.get(base) || base;
-    if (pkColumn) {
-      rememberParent(base, pendingRef(tableKey, original[pkColumn], udtMap[pkColumn]));
-    }
+    rememberParent(base, insertedParentValue(base));
 
     const dangling = danglingOf.get(base);
     pushDiff({
@@ -388,6 +435,104 @@ const previewRow = (row: Row, columns: ColumnInfo[]): Record<string, unknown> =>
   return preview;
 };
 
+interface ResolvedLinks {
+  linksByTable: Map<string, FkLink[]>;
+  referencedKeysByTable: Map<string, string[][]>;
+  linkWarnings: Map<string, string[]>;
+}
+
+/**
+ * Fills in a link's parent columns (empty means the parent's primary key, which
+ * is how groups saved before links existed are read back) and collects, per
+ * parent table, every key some child points at — the keys its rows must be
+ * registered under so children can find their new parent.
+ */
+const resolveLinks = (
+  tables: GroupTableConfig[],
+  keysByTable: Map<string, UniqueKeyInfo[]>
+): ResolvedLinks => {
+  const linksByTable = new Map<string, FkLink[]>();
+  const referencedKeysByTable = new Map<string, string[][]>();
+  const linkWarnings = new Map<string, string[]>();
+  const present = new Set(tables.map(qualified));
+
+  const warn = (tableKey: string, message: string) => {
+    const bucket = linkWarnings.get(tableKey);
+    if (bucket) bucket.push(message);
+    else linkWarnings.set(tableKey, [message]);
+  };
+
+  for (const table of tables) {
+    const tableKey = qualified(table);
+    const resolved: FkLink[] = [];
+
+    for (const link of effectiveLinks(table)) {
+      const parentKey = parentKeyOf(link);
+
+      if (parentKey === tableKey || !present.has(parentKey)) {
+        warn(
+          tableKey,
+          `${link.columns.join(', ')} references ${parentKey}, which is not a table in this group — ` +
+            'the reference is left as it is.'
+        );
+        continue;
+      }
+
+      const parentKeys = keysByTable.get(parentKey) || [];
+      let parentColumns = link.parentColumns;
+
+      if (parentColumns.length === 0) {
+        const primary = parentKeys.find(k => k.isPrimary);
+        if (!primary) {
+          warn(
+            tableKey,
+            `${link.columns.join(', ')} references ${parentKey}, which has no primary key. ` +
+              'Name the parent columns on the link explicitly.'
+          );
+          continue;
+        }
+        parentColumns = primary.columns;
+      }
+
+      if (parentColumns.length !== link.columns.length) {
+        warn(
+          tableKey,
+          `${link.columns.join(', ')} references ${parentKey} on ` +
+            `${parentColumns.join(', ')} — the two sides must name the same number of columns.`
+        );
+        continue;
+      }
+
+      const unique = parentKeys.some(
+        k =>
+          k.columns.length === parentColumns.length &&
+          k.columns.every(c => parentColumns.includes(c))
+      );
+      if (!unique) {
+        warn(
+          tableKey,
+          `${parentKey}(${parentColumns.join(', ')}) is not a unique key, so ` +
+            `${link.columns.join(', ')} cannot be rewritten to a single new parent.`
+        );
+        continue;
+      }
+
+      resolved.push({ ...link, parentColumns });
+
+      const existing = referencedKeysByTable.get(parentKey) || [];
+      const fingerprint = parentColumns.join('\u0000');
+      if (!existing.some(k => k.join('\u0000') === fingerprint)) {
+        existing.push(parentColumns);
+      }
+      referencedKeysByTable.set(parentKey, existing);
+    }
+
+    linksByTable.set(tableKey, resolved);
+  }
+
+  return { linksByTable, referencedKeysByTable, linkWarnings };
+};
+
 export const runAnalysis = async (
   client: PoolClient,
   group: ConfigGroup,
@@ -404,17 +549,32 @@ export const runAnalysis = async (
 
   const idMap = new Map<string, unknown>();
 
+  const keysByTable = new Map<string, UniqueKeyInfo[]>();
   for (const table of tables) {
+    keysByTable.set(
+      qualified(table),
+      await introspection.getUniqueKeys(client, table.schema, table.table)
+    );
+  }
+
+  const { linksByTable, referencedKeysByTable, linkWarnings } = resolveLinks(tables, keysByTable);
+
+  for (const table of tables) {
+    const tableKey = qualified(table);
     const { analysis, context, fingerprint } = await analyzeTable(
       client,
       table,
       baseValues,
       newValues,
       !!options.forUpdate,
-      idMap
+      idMap,
+      keysByTable.get(tableKey) || [],
+      linksByTable.get(tableKey) || [],
+      referencedKeysByTable.get(tableKey) || []
     );
+    analysis.warnings.push(...(linkWarnings.get(tableKey) || []));
     analyses.push(analysis);
-    if (context) contexts.set(qualified(table), context);
+    if (context) contexts.set(tableKey, context);
     if (fingerprint) fingerprints.push(fingerprint);
   }
 

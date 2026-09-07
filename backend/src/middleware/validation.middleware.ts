@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { z, ZodSchema } from 'zod';
 import { AppError } from './error.middleware';
+import { topologicalOrder } from '../services/configReplicate/ordering';
 
 /**
  * Validate request body against Zod schema
@@ -187,13 +188,30 @@ export const configReplicateGroupSchema = z.object({
         matchKeyColumns: z.array(identifier('match column')).default([]),
         columnConfig: z.record(columnClassEnum).default({}),
         // { "<column>": "<schema>.<table>" } — the parent whose regenerated id
-        // this column must be rewritten to.
+        // this column must be rewritten to. Superseded by fkLinks, and still
+        // accepted so a group saved by an older build round-trips.
         fkRemap: z.record(z.string().trim().min(1).max(401)).default({}),
+        // The same relationship of any arity. Empty parentColumns means the
+        // parent's primary key.
+        fkLinks: z
+          .array(
+            z.object({
+              columns: z.array(identifier('link column')).min(1).max(8),
+              parentSchema: identifier('parent schema'),
+              parentTable: identifier('parent table'),
+              parentColumns: z.array(identifier('parent column')).max(8).default([]),
+              source: z.enum(['DB_FK', 'MANUAL']).default('MANUAL'),
+            })
+          )
+          .max(50)
+          .default([]),
       })
     )
     .min(1, 'A group needs at least one table')
     .max(50),
 }).superRefine((group, ctx) => {
+  const present = new Set(group.tables.map(t => `${t.schema}.${t.table}`));
+
   group.tables.forEach((table, index) => {
     if (table.dimensionColumns.length !== group.dimensionColumns.length) {
       ctx.addIssue({
@@ -204,13 +222,70 @@ export const configReplicateGroupSchema = z.object({
           'dimension column(s), in the same order as the group',
       });
     }
+
+    const child = `${table.schema}.${table.table}`;
+
+    table.fkLinks.forEach((link, linkIndex) => {
+      const parent = `${link.parentSchema}.${link.parentTable}`;
+      const at = ['tables', index, 'fkLinks', linkIndex] as (string | number)[];
+
+      if (parent === child) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: at,
+          message: `${child} cannot link to itself`,
+        });
+        return;
+      }
+
+      if (!present.has(parent)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: at,
+          message:
+            `${child}.${link.columns.join(', ')} links to ${parent}, which is not in this group. ` +
+            'Add that table or remove the link.',
+        });
+        return;
+      }
+
+      if (link.parentColumns.length > 0 && link.parentColumns.length !== link.columns.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: at,
+          message:
+            `${child}.${link.columns.join(', ')} links to ${parent}.` +
+            `${link.parentColumns.join(', ')} — both sides must name the same number of columns.`,
+        });
+      }
+    });
   });
+
+  const { cycles } = topologicalOrder(group.tables as any);
+  if (cycles.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['tables'],
+      message:
+        `These tables reference each other in a cycle, so no apply order can put every ` +
+        `parent before its children: ${cycles[0].join(' → ')}.`,
+    });
+  }
 });
 
 export const configReplicateIntrospectTablesSchema = z.object({
   database: z.string().min(1),
   cloud: z.string().min(1),
   dimensionColumns: z.array(identifier('dimension column')).max(20).optional(),
+});
+
+export const configReplicateIntrospectForeignKeysSchema = z.object({
+  database: z.string().min(1),
+  cloud: z.string().min(1),
+  tables: z
+    .array(z.object({ schema: identifier('schema name'), table: identifier('table name') }))
+    .min(1)
+    .max(50),
 });
 
 export const configReplicateIntrospectTableSchema = z.object({
