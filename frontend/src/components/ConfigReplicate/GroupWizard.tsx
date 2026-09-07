@@ -239,6 +239,7 @@ const GroupWizard = ({
 
       setMetaByTable(Object.fromEntries(entries));
       setForeignKeys(detected);
+      alignDimensionColumns(Object.fromEntries(entries));
       prefillLinks(detected);
       setActiveTableKey(tableKeyOf(tables[0]));
     } catch {
@@ -246,6 +247,31 @@ const GroupWizard = ({
     } finally {
       setLoadingMeta(false);
     }
+  };
+
+  // A table added before a dimension was appended to the group still names only
+  // the dimensions it was saved with, and the missing slots cannot be typed into
+  // an array that short. Widen every table to the group's arity, filling a new
+  // slot with the group's own spelling when the table carries that column.
+  const alignDimensionColumns = (meta: Record<string, TableMeta>) => {
+    setTables(prev =>
+      prev.map(table => {
+        if (table.dimensionColumns.length === cleanDimensions.length) return table;
+
+        const columns = new Set(
+          (meta[tableKeyOf(table)]?.columns || []).map(c => c.columnName)
+        );
+
+        return {
+          ...table,
+          dimensionColumns: cleanDimensions.map((dimension, i) => {
+            const existing = table.dimensionColumns[i];
+            if (existing) return existing;
+            return columns.has(dimension) ? dimension : '';
+          }),
+        };
+      })
+    );
   };
 
   // Only a table with nothing configured is filled in — an existing group's
@@ -311,6 +337,21 @@ const GroupWizard = ({
   };
 
   const handleSave = async () => {
+    const incomplete = tables.filter(
+      t =>
+        t.dimensionColumns.length !== cleanDimensions.length ||
+        t.dimensionColumns.some(d => !d.trim())
+    );
+    if (incomplete.length > 0) {
+      toast.error(
+        `Name every dimension column on ${incomplete.map(tableKeyOf).join(', ')}, ` +
+          'or remove the table from the group.'
+      );
+      setStep(2);
+      setActiveTableKey(tableKeyOf(incomplete[0]));
+      return;
+    }
+
     const { cycles: saveCycles } = topologicalOrder(tables);
     if (saveCycles.length > 0) {
       toast.error(`These tables reference each other in a cycle: ${saveCycles[0].join(' → ')}`);
@@ -636,8 +677,10 @@ const GroupWizard = ({
                               value={activeTable.dimensionColumns[index] ?? ''}
                               onChange={e =>
                                 updateTable(activeTableKey, {
-                                  dimensionColumns: activeTable.dimensionColumns.map((d, i) =>
-                                    i === index ? e.target.value : d
+                                  dimensionColumns: cleanDimensions.map((_, i) =>
+                                    i === index
+                                      ? e.target.value
+                                      : activeTable.dimensionColumns[i] ?? ''
                                   ),
                                 })
                               }

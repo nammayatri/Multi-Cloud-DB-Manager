@@ -20,6 +20,7 @@ import {
   buildInsert,
   buildUpdate,
 } from './sqlBuilder';
+import { mintsGeneratedValue } from './classify';
 import { displayValue } from './values';
 import { isPendingRef, pendingRef, resolvePending } from './projection';
 
@@ -186,12 +187,7 @@ const mintGeneratedValues = (
       const values: Record<string, unknown> = {};
       for (const column of context.columns) {
         if (context.classes[column.columnName] !== 'GENERATED') continue;
-        // Minted here even when the column has a gen_random_uuid() default: the
-        // id has to be known before the INSERT runs so children in the group can
-        // point at it, and letting the database generate it would also diverge
-        // across clouds. Non-uuid generated columns (serial, identity) keep
-        // their database default -- nothing references them.
-        if (column.udtName.toLowerCase() !== 'uuid') continue;
+        if (!mintsGeneratedValue(column, context.primaryKeyColumn)) continue;
         values[column.columnName] = crypto.randomUUID();
       }
       generated.set(selection.diffId, values);
