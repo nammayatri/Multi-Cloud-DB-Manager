@@ -13,6 +13,34 @@ const TIMESTAMP_COLUMN_NAMES = new Set([
 
 export const UPDATE_STAMP_COLUMNS = new Set(['updated_at', 'updated_on', 'modified_at']);
 
+// A single-column primary key of one of these types is regenerated rather than
+// copied. Copying it could only ever collide with the very row it came from,
+// since base and target rows live in the same table.
+const GENERATED_KEY_UDTS = new Set(['uuid', 'varchar', 'bpchar', 'text']);
+
+/**
+ * Whether the apply must mint a value for a GENERATED column, or can leave the
+ * database default to fill it in. A uuid is always minted so children in the
+ * group can point at it before the INSERT runs, and so the value does not
+ * diverge across clouds. A text primary key with no default has nothing to fall
+ * back on, so it is minted too; serial and identity columns keep their default.
+ */
+export const mintsGeneratedValue = (
+  column: ColumnInfo,
+  primaryKeyColumn: string | null
+): boolean => {
+  if (column.isIdentity || column.isGenerated) return false;
+
+  const udt = column.udtName.toLowerCase();
+  if (udt === 'uuid') return true;
+
+  return (
+    GENERATED_KEY_UDTS.has(udt) &&
+    column.columnName === primaryKeyColumn &&
+    !column.columnDefault
+  );
+};
+
 export const classifyColumn = (
   column: ColumnInfo,
   dimensionColumns: string[],
@@ -44,7 +72,7 @@ export const classifyColumn = (
     primaryKey &&
     primaryKey.columns.length === 1 &&
     primaryKey.columns[0] === column.columnName &&
-    column.udtName.toLowerCase() === 'uuid'
+    GENERATED_KEY_UDTS.has(column.udtName.toLowerCase())
   ) {
     return 'GENERATED';
   }

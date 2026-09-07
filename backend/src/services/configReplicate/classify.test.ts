@@ -5,6 +5,7 @@ import {
   comparableColumns,
   copiedColumns,
   editableColumns,
+  mintsGeneratedValue,
   suggestMatchKey,
 } from './classify';
 
@@ -292,5 +293,90 @@ describe('editableColumns', () => {
     for (const locked of ['city_id', 'id', 'created_at', 'config_key', 'junk']) {
       expect(offered).not.toContain(locked);
     }
+  });
+});
+
+describe('a text primary key', () => {
+  const key = (columns: string[]): UniqueKeyInfo[] => [
+    { name: 'pkey', columns, isPrimary: true },
+  ];
+
+  it('is regenerated, not copied, whatever its type', () => {
+    for (const udtName of ['uuid', 'varchar', 'bpchar', 'text']) {
+      const classes = classifyColumns(
+        [column({ columnName: 'id', udtName }), column({ columnName: 'city_id' })],
+        ['city_id'],
+        [],
+        {},
+        key(['id'])
+      );
+      expect(classes.id).toBe('GENERATED');
+    }
+  });
+
+  it('stays copied when the primary key spans several columns', () => {
+    const classes = classifyColumns(
+      [column({ columnName: 'id', udtName: 'varchar' }), column({ columnName: 'city_id' })],
+      ['city_id'],
+      [],
+      {},
+      key(['id', 'city_id'])
+    );
+    expect(classes.id).toBe('COPIED');
+  });
+
+  it('stays a match key when it is the one pinned', () => {
+    const classes = classifyColumns(
+      [column({ columnName: 'service_name', udtName: 'varchar' })],
+      ['city_id'],
+      ['service_name'],
+      {},
+      key(['service_name'])
+    );
+    expect(classes.service_name).toBe('MATCH_KEY');
+  });
+});
+
+describe('mintsGeneratedValue', () => {
+  it('mints every uuid, default or not', () => {
+    expect(mintsGeneratedValue(column({ columnName: 'id', udtName: 'uuid' }), 'id')).toBe(true);
+    expect(
+      mintsGeneratedValue(
+        column({ columnName: 'id', udtName: 'uuid', columnDefault: 'gen_random_uuid()' }),
+        'id'
+      )
+    ).toBe(true);
+  });
+
+  it('mints a text primary key that has no default to fall back on', () => {
+    expect(mintsGeneratedValue(column({ columnName: 'id', udtName: 'varchar' }), 'id')).toBe(true);
+    expect(mintsGeneratedValue(column({ columnName: 'id', udtName: 'bpchar' }), 'id')).toBe(true);
+  });
+
+  it('leaves a text column to its default, and to the database when it is not the key', () => {
+    expect(
+      mintsGeneratedValue(
+        column({ columnName: 'id', udtName: 'varchar', columnDefault: "'x'::text" }),
+        'id'
+      )
+    ).toBe(false);
+    expect(mintsGeneratedValue(column({ columnName: 'note', udtName: 'varchar' }), 'id')).toBe(
+      false
+    );
+  });
+
+  it('never mints for serial or identity columns', () => {
+    expect(
+      mintsGeneratedValue(
+        column({ columnName: 'id', udtName: 'int4', isIdentity: true, columnDefault: null }),
+        'id'
+      )
+    ).toBe(false);
+    expect(
+      mintsGeneratedValue(
+        column({ columnName: 'id', udtName: 'int4', columnDefault: "nextval('s'::regclass)" }),
+        'id'
+      )
+    ).toBe(false);
   });
 });
