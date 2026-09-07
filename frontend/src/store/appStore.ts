@@ -45,8 +45,8 @@ const savePersistedStringSetting = (key: string, value: string) => {
 
 interface AppState {
   // Manager mode
-  managerMode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate';
-  setManagerMode: (mode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate') => void;
+  managerMode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate' | 'configsync';
+  setManagerMode: (mode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate' | 'configsync') => void;
 
   // Which face of the Migrations tab is showing. Lives here (not in a panel)
   // because both panels' toolbars render the switch for it.

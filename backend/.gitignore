@@ -33,3 +33,19 @@ Thumbs.db
 # Testing
 coverage/
 .nyc_output/
+
+# Config Sync — vendored script's runtime secrets/output (see config-sync/README).
+# patches.json is gitignored in the source nammayatri repo too (dev/config-sync/.gitignore) —
+# it carries real per-merchant credentials (e.g. signing_private_key), same treatment as
+# environments.json. It's now DB-Manager-owned data (seeded into Postgres on first deploy,
+# see configSyncAssets.service.ts), so it never needs to touch git at all going forward.
+config-sync/assets/environments.json
+!config-sync/assets/environments.json.example
+config-sync/assets/patches.json
+# config.json is also purely runtime-generated now (written by writeToDisk()
+# from Postgres) — the real seed copy lives at config-sync/seed/config.json
+# instead, which IS tracked.
+config-sync/assets/config.json
+config-sync/assets/data/
+config-sync/bin/passetto-server-aarch64
+config-sync/passetto-server.log

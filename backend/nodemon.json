@@ -1,0 +1,3 @@
+{
+  "ignore": ["vendor/**", "config/*.json", "*.log"]
+}
