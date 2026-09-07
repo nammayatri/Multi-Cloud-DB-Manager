@@ -1,7 +1,12 @@
 import { Pool } from 'pg';
 import DatabasePools from '../../config/database';
 import logger from '../../utils/logger';
-import { ConfigGroup, ConfigGroupSummary, GroupTableConfig } from '../../types/configReplicate';
+import {
+  ConfigGroup,
+  ConfigGroupSummary,
+  FkLink,
+  GroupTableConfig,
+} from '../../types/configReplicate';
 
 const CREATE_TABLES = `
   CREATE TABLE IF NOT EXISTS dual_db_manager.config_replicate_groups (
@@ -28,6 +33,7 @@ const CREATE_TABLES = `
     match_key_columns TEXT[] NOT NULL DEFAULT '{}',
     column_config JSONB NOT NULL DEFAULT '{}'::jsonb,
     fk_remap JSONB NOT NULL DEFAULT '{}'::jsonb,
+    fk_links JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     CONSTRAINT config_replicate_group_tables_strategy_check CHECK (
       match_strategy IN ('AUTO', 'UNIQUE_KEY', 'SIMILARITY')
@@ -79,6 +85,11 @@ const CREATE_TABLES = `
   );
 `;
 
+const ADD_COLUMNS = `
+  ALTER TABLE dual_db_manager.config_replicate_group_tables
+    ADD COLUMN IF NOT EXISTS fk_links JSONB NOT NULL DEFAULT '[]'::jsonb;
+`;
+
 const CREATE_INDEXES = `
   CREATE UNIQUE INDEX IF NOT EXISTS idx_config_replicate_groups_name
     ON dual_db_manager.config_replicate_groups(lower(btrim(name)));
@@ -94,6 +105,27 @@ const CREATE_INDEXES = `
     ON dual_db_manager.config_replicate_run_items(run_id, position);
 `;
 
+// A group saved before links existed carries only fk_remap. Its entries become
+// single-column links whose parent columns stay empty, which analyze reads as
+// "the parent's primary key" -- exactly what fk_remap meant.
+const linksFromRemap = (remap: Record<string, string>): FkLink[] =>
+  Object.entries(remap || {}).map(([column, parent]) => {
+    const separator = parent.indexOf('.');
+    return {
+      columns: [column],
+      parentSchema: separator > 0 ? parent.slice(0, separator) : 'public',
+      parentTable: separator > 0 ? parent.slice(separator + 1) : parent,
+      parentColumns: [],
+      source: 'MANUAL' as const,
+    };
+  });
+
+const linksOf = (links: FkLink[] | undefined, remap: Record<string, string>): FkLink[] =>
+  links && links.length > 0 ? links : linksFromRemap(remap);
+
+const linksFrom = (row: any): FkLink[] =>
+  linksOf(Array.isArray(row.fk_links) ? row.fk_links : [], row.fk_remap || {});
+
 const mapTable = (row: any): GroupTableConfig => ({
   id: row.id,
   schema: row.schema_name,
@@ -104,7 +136,19 @@ const mapTable = (row: any): GroupTableConfig => ({
   matchKeyColumns: row.match_key_columns || [],
   columnConfig: row.column_config || {},
   fkRemap: row.fk_remap || {},
+  fkLinks: linksFrom(row),
 });
+
+// Mirrored back so a rollback to the previous build still sees the links it can
+// express. A composite link has no fk_remap representation and is dropped there.
+const remapFrom = (links: FkLink[]): Record<string, string> => {
+  const remap: Record<string, string> = {};
+  for (const link of links) {
+    if (link.columns.length !== 1) continue;
+    remap[link.columns[0]] = `${link.parentSchema}.${link.parentTable}`;
+  }
+  return remap;
+};
 
 export class ConfigReplicateGroupsService {
   private get pool(): Pool {
@@ -114,6 +158,7 @@ export class ConfigReplicateGroupsService {
   public async initializeSchema(): Promise<void> {
     try {
       await this.pool.query(CREATE_TABLES);
+      await this.pool.query(ADD_COLUMNS);
       await this.pool.query(CREATE_INDEXES);
       logger.info('Config replicate schema initialized');
     } catch (error: any) {
@@ -187,11 +232,15 @@ export class ConfigReplicateGroupsService {
     );
 
     for (const [index, table] of tables.entries()) {
+      // A body that carries only the old fkRemap still round-trips: its entries
+      // become the links, and both columns are written from them.
+      const links = linksOf(table.fkLinks, table.fkRemap || {});
+
       await client.query(
         `INSERT INTO dual_db_manager.config_replicate_group_tables (
            group_id, schema_name, table_name, dimension_columns, position,
-           match_strategy, match_key_columns, column_config, fk_remap
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+           match_strategy, match_key_columns, column_config, fk_remap, fk_links
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           groupId,
           table.schema,
@@ -201,7 +250,8 @@ export class ConfigReplicateGroupsService {
           table.matchStrategy,
           table.matchKeyColumns || [],
           JSON.stringify(table.columnConfig || {}),
-          JSON.stringify(table.fkRemap || {}),
+          JSON.stringify(remapFrom(links)),
+          JSON.stringify(links),
         ]
       );
     }

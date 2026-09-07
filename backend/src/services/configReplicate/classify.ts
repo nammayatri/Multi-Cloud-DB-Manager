@@ -81,8 +81,8 @@ export const copiedColumns = (classes: Record<string, ColumnClass>): string[] =>
 
 export const editableColumns = (
   classes: Record<string, ColumnClass>,
-  fkRemap: Record<string, string> = {}
-): string[] => copiedColumns(classes).filter(c => !(c in fkRemap));
+  linkedColumns: Set<string> = new Set()
+): string[] => copiedColumns(classes).filter(c => !linkedColumns.has(c));
 
 export const suggestMatchKey = (
   keys: UniqueKeyInfo[],

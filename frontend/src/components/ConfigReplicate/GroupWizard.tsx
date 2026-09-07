@@ -35,10 +35,14 @@ import { useConfigReplicateStore } from '../../store/configReplicateStore';
 import {
   ColumnClass,
   ConfigGroup,
+  FkLink,
+  ForeignKeyInfo,
   GroupTableConfig,
   TableMeta,
   tableKeyOf,
 } from '../../types/configReplicate';
+import TableLinksEditor from './TableLinksEditor';
+import { orderViolations, parentKeyOf, sortTables, topologicalOrder } from './ordering';
 
 const COLUMN_CLASSES: ColumnClass[] = [
   'COPIED',
@@ -100,6 +104,7 @@ const GroupWizard = ({
   const [tables, setTables] = useState<GroupTableConfig[]>([]);
 
   const [metaByTable, setMetaByTable] = useState<Record<string, TableMeta>>({});
+  const [foreignKeys, setForeignKeys] = useState<ForeignKeyInfo[]>([]);
   const [loadingMeta, setLoadingMeta] = useState(false);
   const [activeTableKey, setActiveTableKey] = useState<string>('');
   const [saving, setSaving] = useState(false);
@@ -118,6 +123,7 @@ const GroupWizard = ({
     setTables(group?.tables ? group.tables.map(t => ({ ...t })) : []);
     setCandidates([]);
     setMetaByTable({});
+    setForeignKeys([]);
     setActiveTableKey('');
   }, [open, group, initialDatabase, initialCloud, databases, cloudsFor]);
 
@@ -165,7 +171,19 @@ const GroupWizard = ({
     const key = tableKeyOf(candidate);
     setTables(prev => {
       const existing = prev.findIndex(t => tableKeyOf(t) === key);
-      if (existing >= 0) return prev.filter((_, i) => i !== existing);
+
+      // Dropping a table would leave every link pointing at it stranded, so
+      // those go with it.
+      if (existing >= 0) {
+        return prev
+          .filter((_, i) => i !== existing)
+          .map(t => ({
+            ...t,
+            fkLinks: (t.fkLinks || []).filter(link => parentKeyOf(link) !== key),
+          }))
+          .map((t, i) => ({ ...t, position: i }));
+      }
+
       return [
         ...prev,
         {
@@ -173,10 +191,11 @@ const GroupWizard = ({
           table: candidate.table,
           dimensionColumns: [...candidate.dimensionColumns],
           position: prev.length,
-          matchStrategy: 'AUTO',
+          matchStrategy: 'AUTO' as const,
           matchKeyColumns: [],
           columnConfig: {},
           fkRemap: {},
+          fkLinks: [],
         },
       ];
     });
@@ -196,25 +215,71 @@ const GroupWizard = ({
     if (tables.length === 0) return;
     setLoadingMeta(true);
     try {
-      const entries = await Promise.all(
-        tables.map(async table => {
-          const meta = await configReplicateAPI.getTableMeta({
+      const [entries, detected] = await Promise.all([
+        Promise.all(
+          tables.map(async table => {
+            const meta = await configReplicateAPI.getTableMeta({
+              database,
+              cloud,
+              schema: table.schema,
+              table: table.table,
+              dimensionColumns: table.dimensionColumns,
+            });
+            return [tableKeyOf(table), meta] as const;
+          })
+        ),
+        configReplicateAPI
+          .getForeignKeys({
             database,
             cloud,
-            schema: table.schema,
-            table: table.table,
-            dimensionColumns: table.dimensionColumns,
-          });
-          return [tableKeyOf(table), meta] as const;
-        })
-      );
+            tables: tables.map(t => ({ schema: t.schema, table: t.table })),
+          })
+          .catch(() => [] as ForeignKeyInfo[]),
+      ]);
+
       setMetaByTable(Object.fromEntries(entries));
+      setForeignKeys(detected);
+      prefillLinks(detected);
       setActiveTableKey(tableKeyOf(tables[0]));
     } catch {
       toast.error('Failed to introspect one or more tables');
     } finally {
       setLoadingMeta(false);
     }
+  };
+
+  // Only a table with nothing configured is filled in — an existing group's
+  // links are the user's, and are never rewritten behind their back.
+  const prefillLinks = (detected: ForeignKeyInfo[]) => {
+    setTables(prev => {
+      const next = prev.map(table => {
+        if ((table.fkLinks || []).length > 0) return table;
+
+        const mine = detected.filter(
+          fk => `${fk.childSchema}.${fk.childTable}` === tableKeyOf(table)
+        );
+        if (mine.length === 0) return table;
+
+        return {
+          ...table,
+          fkLinks: mine.map(fk => ({
+            columns: fk.childColumns,
+            parentSchema: fk.parentSchema,
+            parentTable: fk.parentTable,
+            parentColumns: fk.parentColumns,
+            source: 'DB_FK' as const,
+          })),
+        };
+      });
+
+      return sortTables(next);
+    });
+  };
+
+  const setLinks = (key: string, links: FkLink[]) => {
+    setTables(prev =>
+      sortTables(prev.map(t => (tableKeyOf(t) === key ? { ...t, fkLinks: links } : t)))
+    );
   };
 
   const updateTable = (key: string, patch: Partial<GroupTableConfig>) => {
@@ -246,6 +311,12 @@ const GroupWizard = ({
   };
 
   const handleSave = async () => {
+    const { cycles: saveCycles } = topologicalOrder(tables);
+    if (saveCycles.length > 0) {
+      toast.error(`These tables reference each other in a cycle: ${saveCycles[0].join(' → ')}`);
+      return;
+    }
+
     setSaving(true);
     const saved = await saveGroup(
       {
@@ -262,6 +333,15 @@ const GroupWizard = ({
 
   const activeTable = tables.find(t => tableKeyOf(t) === activeTableKey);
   const activeMeta = metaByTable[activeTableKey];
+
+  const violations = useMemo(() => orderViolations(tables), [tables]);
+  const cycles = useMemo(() => topologicalOrder(tables).cycles, [tables]);
+
+  const detectedFor = (key: string) =>
+    foreignKeys.filter(fk => `${fk.childSchema}.${fk.childTable}` === key);
+
+  const linkForColumn = (table: GroupTableConfig, column: string) =>
+    (table.fkLinks || []).find(link => link.columns.includes(column));
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth>
@@ -447,9 +527,31 @@ const GroupWizard = ({
                   <Typography variant="caption" color="text.secondary">
                     In this group, in apply order ({tables.length})
                   </Typography>
-                  <Alert severity="info" sx={{ my: 1, fontSize: '0.72rem', py: 0 }}>
-                    Order parents before children. Inserts run top-down, deletes bottom-up.
-                  </Alert>
+                  {cycles.length > 0 ? (
+                    <Alert severity="error" sx={{ my: 1, fontSize: '0.72rem', py: 0 }}>
+                      These tables reference each other in a cycle, so no order can put every
+                      parent first: {cycles[0].join(' → ')}. Remove one of the links.
+                    </Alert>
+                  ) : violations.length > 0 ? (
+                    <Alert
+                      severity="warning"
+                      sx={{ my: 1, fontSize: '0.72rem', py: 0 }}
+                      action={
+                        <Button size="small" onClick={() => setTables(prev => sortTables(prev))}>
+                          Fix order
+                        </Button>
+                      }
+                    >
+                      {violations
+                        .map(v => `${v.child} sits above its parent ${v.parent}`)
+                        .join('; ')}
+                    </Alert>
+                  ) : (
+                    <Alert severity="info" sx={{ my: 1, fontSize: '0.72rem', py: 0 }}>
+                      Parents first — set from the links you configure. Inserts run top-down,
+                      deletes bottom-up.
+                    </Alert>
+                  )}
                   {tables.map((table, index) => (
                     <Box key={tableKeyOf(table)} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                       <Typography variant="caption" sx={{ width: 20 }}>
@@ -577,6 +679,17 @@ const GroupWizard = ({
 
                       <Divider />
 
+                      <TableLinksEditor
+                        table={activeTable}
+                        tables={tables}
+                        meta={activeMeta}
+                        metaByTable={metaByTable}
+                        detected={detectedFor(activeTableKey)}
+                        onChange={links => setLinks(activeTableKey, links)}
+                      />
+
+                      <Divider />
+
                       <Typography variant="caption" color="text.secondary">
                         Column handling — the detected values are shown; change any that are wrong.
                       </Typography>
@@ -586,7 +699,13 @@ const GroupWizard = ({
                           activeTable.columnConfig[column.columnName] ||
                           activeMeta.suggestedClassification[column.columnName] ||
                           'COPIED';
-                        const remapTarget = activeTable.fkRemap[column.columnName] || '';
+
+                        const link = linkForColumn(activeTable, column.columnName);
+                        const composite = !!link && link.columns.length > 1;
+                        const remapTarget = link && !composite ? parentKeyOf(link) : '';
+                        const isDatabaseKey = detectedFor(activeTableKey).some(fk =>
+                          fk.childColumns.includes(column.columnName)
+                        );
 
                         return (
                           <Stack
@@ -595,12 +714,18 @@ const GroupWizard = ({
                             spacing={1}
                             alignItems="center"
                           >
-                            <Tooltip title={`${column.dataType}${column.isNullable ? ' (nullable)' : ''}`}>
+                            <Tooltip
+                              title={
+                                `${column.dataType}${column.isNullable ? ' (nullable)' : ''}` +
+                                (isDatabaseKey ? ' — a foreign key in the database' : '')
+                              }
+                            >
                               <Typography
                                 variant="body2"
                                 sx={{ fontFamily: 'monospace', fontSize: '0.72rem', width: 180 }}
                                 noWrap
                               >
+                                {isDatabaseKey ? '⇢ ' : ''}
                                 {column.columnName}
                               </Typography>
                             </Tooltip>
@@ -626,34 +751,64 @@ const GroupWizard = ({
                               </Select>
                             </FormControl>
 
-                            <FormControl size="small" sx={{ width: 220 }}>
-                              <Select
-                                displayEmpty
-                                value={remapTarget}
-                                onChange={e => {
-                                  const next = { ...activeTable.fkRemap };
-                                  if (e.target.value) next[column.columnName] = e.target.value as string;
-                                  else delete next[column.columnName];
-                                  updateTable(activeTableKey, { fkRemap: next });
-                                }}
-                                sx={{ fontSize: '0.72rem' }}
-                              >
-                                <MenuItem value="" sx={{ fontSize: '0.72rem' }}>
-                                  Not a reference
-                                </MenuItem>
-                                {tables
-                                  .filter(t => tableKeyOf(t) !== activeTableKey)
-                                  .map(t => (
-                                    <MenuItem
-                                      key={tableKeyOf(t)}
-                                      value={tableKeyOf(t)}
-                                      sx={{ fontSize: '0.72rem' }}
-                                    >
-                                      references {tableKeyOf(t)}
-                                    </MenuItem>
-                                  ))}
-                              </Select>
-                            </FormControl>
+                            <Tooltip
+                              title={
+                                composite
+                                  ? 'Part of a multi-column link — edit it above'
+                                  : 'The table whose regenerated id this column follows'
+                              }
+                            >
+                              <FormControl size="small" sx={{ width: 220 }} disabled={composite}>
+                                <Select
+                                  displayEmpty
+                                  value={composite ? '' : remapTarget}
+                                  renderValue={value =>
+                                    composite
+                                      ? `in link ${link!.columns.join(', ')}`
+                                      : value
+                                        ? `references ${value}`
+                                        : 'Not a reference'
+                                  }
+                                  onChange={e => {
+                                    const parent = e.target.value as string;
+                                    const others = (activeTable.fkLinks || []).filter(
+                                      l => !l.columns.includes(column.columnName)
+                                    );
+                                    setLinks(
+                                      activeTableKey,
+                                      parent
+                                        ? [
+                                            ...others,
+                                            {
+                                              columns: [column.columnName],
+                                              parentSchema: parent.slice(0, parent.indexOf('.')),
+                                              parentTable: parent.slice(parent.indexOf('.') + 1),
+                                              parentColumns: [],
+                                              source: 'MANUAL' as const,
+                                            },
+                                          ]
+                                        : others
+                                    );
+                                  }}
+                                  sx={{ fontSize: '0.72rem' }}
+                                >
+                                  <MenuItem value="" sx={{ fontSize: '0.72rem' }}>
+                                    Not a reference
+                                  </MenuItem>
+                                  {tables
+                                    .filter(t => tableKeyOf(t) !== activeTableKey)
+                                    .map(t => (
+                                      <MenuItem
+                                        key={tableKeyOf(t)}
+                                        value={tableKeyOf(t)}
+                                        sx={{ fontSize: '0.72rem' }}
+                                      >
+                                        references {tableKeyOf(t)}
+                                      </MenuItem>
+                                    ))}
+                                </Select>
+                              </FormControl>
+                            </Tooltip>
 
                             <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }} noWrap>
                               {CLASS_HELP[current]}

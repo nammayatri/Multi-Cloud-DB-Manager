@@ -1,17 +1,30 @@
+import { FkLink } from '../../types/configReplicate';
 import { canonical } from './values';
 
 export type Row = Record<string, unknown>;
 
 const PENDING_PREFIX = 'configReplicate:pendingParent:';
 
-export const pendingRef = (parentTableKey: string, oldValue: unknown, udt?: string): string =>
-  `${PENDING_PREFIX}${parentTableKey}:${canonical(oldValue, udt)}`;
+export const idMapKey = (
+  parentTableKey: string,
+  parentColumns: string[],
+  values: unknown[],
+  udts: Array<string | undefined> = []
+): string =>
+  `${parentTableKey}(${parentColumns.join(',')})=` +
+  values.map((value, i) => canonical(value, udts[i])).join('\u0000');
+
+export const pendingRef = (
+  parentTableKey: string,
+  parentColumn: string,
+  keyColumns: string[],
+  values: unknown[],
+  udts: Array<string | undefined> = []
+): string =>
+  `${PENDING_PREFIX}${idMapKey(parentTableKey, keyColumns, values, udts)}#${parentColumn}`;
 
 export const isPendingRef = (value: unknown): value is string =>
   typeof value === 'string' && value.startsWith(PENDING_PREFIX);
-
-export const idMapKey = (parentTableKey: string, oldValue: unknown, udt?: string): string =>
-  `${parentTableKey}:${canonical(oldValue, udt)}`;
 
 export interface ProjectedRow {
   row: Row;
@@ -26,26 +39,38 @@ export interface ProjectedRow {
  */
 export const projectRow = (
   row: Row,
-  fkRemap: Record<string, string>,
+  links: FkLink[],
   idMap: Map<string, unknown>,
   udtMap: Record<string, string>
 ): ProjectedRow => {
-  const entries = Object.entries(fkRemap || {});
-  if (entries.length === 0) return { row, dangling: [] };
+  if (!links || links.length === 0) return { row, dangling: [] };
 
   const projected: Row = { ...row };
   const dangling: string[] = [];
 
-  for (const [column, parentTableKey] of entries) {
-    const original = row[column];
-    if (original === null || original === undefined) continue;
+  for (const link of links) {
+    const originals = link.columns.map(column => row[column]);
+    if (originals.some(value => value === null || value === undefined)) continue;
 
-    const mapped = idMap.get(idMapKey(parentTableKey, original, udtMap[column]));
+    const parentTableKey = `${link.parentSchema}.${link.parentTable}`;
+    const mapped = idMap.get(
+      idMapKey(
+        parentTableKey,
+        link.parentColumns,
+        originals,
+        link.columns.map(column => udtMap[column])
+      )
+    );
+
     if (mapped === undefined) {
-      dangling.push(column);
+      dangling.push(...link.columns);
       continue;
     }
-    projected[column] = mapped;
+
+    const values = mapped as unknown[];
+    link.columns.forEach((column, i) => {
+      projected[column] = values[i];
+    });
   }
 
   return { row: projected, dangling };

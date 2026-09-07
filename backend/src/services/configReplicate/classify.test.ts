@@ -283,8 +283,8 @@ describe('editableColumns', () => {
     expect(editableColumns(classes).sort()).toEqual(['parent_id', 'value']);
   });
 
-  it('withholds a foreign key the run rewrites', () => {
-    expect(editableColumns(classes, { parent_id: 'app.parent' })).toEqual(['value']);
+  it('withholds a linked column the run rewrites', () => {
+    expect(editableColumns(classes, new Set(['parent_id']))).toEqual(['value']);
   });
 
   it('never offers a dimension, generated id, timestamp or match key', () => {

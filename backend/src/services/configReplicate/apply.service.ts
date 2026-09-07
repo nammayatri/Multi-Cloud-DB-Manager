@@ -132,7 +132,7 @@ const verifyColumnChoices = (
       if (!context.editableColumns.has(column)) {
         throw new Error(
           `${where}.${column} cannot be edited: it is a dimension, generated id, ` +
-            'timestamp, match key, or a foreign key this run rewrites.'
+            'timestamp, match key, or part of a link this run rewrites.'
         );
       }
     }
@@ -178,8 +178,6 @@ const mintGeneratedValues = (
   const minted = new Map<string, unknown>();
 
   for (const [tableKey, context] of analysis.contexts) {
-    const pkColumn = context.primaryKeyColumn;
-
     for (const selection of selectedByTable.get(tableKey) || []) {
       if (selection.operation !== 'INSERT') continue;
       const baseRow = context.baseRowsByDiffId.get(selection.diffId);
@@ -198,12 +196,27 @@ const mintGeneratedValues = (
       }
       generated.set(selection.diffId, values);
 
-      if (pkColumn && values[pkColumn] !== undefined) {
-        const original = context.originalBaseByDiffId.get(selection.diffId) || baseRow;
-        minted.set(
-          pendingRef(tableKey, original[pkColumn], context.udtMap[pkColumn]),
-          values[pkColumn]
-        );
+      const original = context.originalBaseByDiffId.get(selection.diffId) || baseRow;
+
+      // The same sentinels analyze handed the children, one per column of every
+      // key a child points at, now resolve to the ids this insert will carry.
+      for (const keyColumns of context.referencedKeys) {
+        const oldValues = keyColumns.map(c => original[c]);
+        if (oldValues.some(v => v === null || v === undefined)) continue;
+
+        for (const column of keyColumns) {
+          if (values[column] === undefined) continue;
+          minted.set(
+            pendingRef(
+              tableKey,
+              column,
+              keyColumns,
+              oldValues,
+              keyColumns.map(c => context.udtMap[c])
+            ),
+            values[column]
+          );
+        }
       }
     }
   }
@@ -217,10 +230,12 @@ const resolveRemapped = (
   minted: Map<string, unknown>
 ): Record<string, unknown> => {
   const values: Record<string, unknown> = {};
-  for (const column of Object.keys(context.config.fkRemap || {})) {
-    const value = row[column];
-    if (!isPendingRef(value)) continue;
-    values[column] = resolvePending(value, minted);
+  for (const link of context.links) {
+    for (const column of link.columns) {
+      const value = row[column];
+      if (!isPendingRef(value)) continue;
+      values[column] = resolvePending(value, minted);
+    }
   }
   return values;
 };
