@@ -352,12 +352,6 @@ const GroupWizard = ({
       return;
     }
 
-    const { cycles: saveCycles } = topologicalOrder(tables);
-    if (saveCycles.length > 0) {
-      toast.error(`These tables reference each other in a cycle: ${saveCycles[0].join(' → ')}`);
-      return;
-    }
-
     setSaving(true);
     const saved = await saveGroup(
       {
@@ -383,6 +377,11 @@ const GroupWizard = ({
 
   const linkForColumn = (table: GroupTableConfig, column: string) =>
     (table.fkLinks || []).find(link => link.columns.includes(column));
+
+  const matchCandidates = (table: GroupTableConfig, meta: TableMeta) =>
+    meta.columns
+      .map(c => c.columnName)
+      .filter(name => !table.dimensionColumns.includes(name));
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth>
@@ -569,9 +568,11 @@ const GroupWizard = ({
                     In this group, in apply order ({tables.length})
                   </Typography>
                   {cycles.length > 0 ? (
-                    <Alert severity="error" sx={{ my: 1, fontSize: '0.72rem', py: 0 }}>
-                      These tables reference each other in a cycle, so no order can put every
-                      parent first: {cycles[0].join(' → ')}. Remove one of the links.
+                    <Alert severity="warning" sx={{ my: 1, fontSize: '0.72rem', py: 0 }}>
+                      {cycles[0].join(' → ')} reference each other in a cycle, so no order puts
+                      every parent first. That is allowed — the ids are minted before any
+                      statement runs, and the apply defers constraints for the whole
+                      transaction.
                     </Alert>
                   ) : violations.length > 0 ? (
                     <Alert
@@ -708,7 +709,66 @@ const GroupWizard = ({
                         </Select>
                       </FormControl>
 
-                      {activeMeta.suggestedMatchKey ? (
+                      {activeTable.matchStrategy !== 'SIMILARITY' && (
+                        <FormControl size="small" fullWidth>
+                          <InputLabel shrink>Match columns</InputLabel>
+                          <Select
+                            multiple
+                            displayEmpty
+                            notched
+                            label="Match columns"
+                            value={activeTable.matchKeyColumns}
+                            onChange={e => {
+                              const picked = e.target.value as string[];
+                              updateTable(activeTableKey, {
+                                matchKeyColumns: matchCandidates(activeTable, activeMeta).filter(
+                                  name => picked.includes(name)
+                                ),
+                              });
+                            }}
+                            renderValue={selected =>
+                              (selected as string[]).length === 0 ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  None — the detected unique key is used
+                                </Typography>
+                              ) : (
+                                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                                  {(selected as string[]).map(column => (
+                                    <Chip
+                                      key={column}
+                                      label={column}
+                                      size="small"
+                                      sx={{ fontFamily: 'monospace', fontSize: '0.68rem' }}
+                                    />
+                                  ))}
+                                </Stack>
+                              )
+                            }
+                          >
+                            {matchCandidates(activeTable, activeMeta).map(column => (
+                              <MenuItem key={column} value={column} sx={{ py: 0 }}>
+                                <Checkbox
+                                  size="small"
+                                  checked={activeTable.matchKeyColumns.includes(column)}
+                                />
+                                <Typography
+                                  variant="body2"
+                                  sx={{ fontFamily: 'monospace', fontSize: '0.72rem' }}
+                                >
+                                  {column}
+                                </Typography>
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      )}
+
+                      {activeTable.matchKeyColumns.length > 0 ? (
+                        <Alert severity="info" sx={{ fontSize: '0.75rem', py: 0 }}>
+                          Rows will match on{' '}
+                          <strong>{activeTable.matchKeyColumns.join(', ')}</strong>
+                        </Alert>
+                      ) : activeMeta.suggestedMatchKey ? (
                         <Alert severity="success" sx={{ fontSize: '0.75rem', py: 0 }}>
                           Detected key <strong>{activeMeta.suggestedMatchKey.name}</strong> — rows
                           will match on {activeMeta.suggestedMatchKey.columns.join(', ') || '(none)'}

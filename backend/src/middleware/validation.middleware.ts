@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { z, ZodSchema } from 'zod';
 import { AppError } from './error.middleware';
-import { topologicalOrder } from '../services/configReplicate/ordering';
 
 /**
  * Validate request body against Zod schema
@@ -260,17 +259,6 @@ export const configReplicateGroupSchema = z.object({
       }
     });
   });
-
-  const { cycles } = topologicalOrder(group.tables as any);
-  if (cycles.length > 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['tables'],
-      message:
-        `These tables reference each other in a cycle, so no apply order can put every ` +
-        `parent before its children: ${cycles[0].join(' → ')}.`,
-    });
-  }
 });
 
 export const configReplicateIntrospectTablesSchema = z.object({

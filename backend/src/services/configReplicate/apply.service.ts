@@ -294,13 +294,8 @@ const buildPlan = (
 
       const remapped = resolveRemapped(context, baseRow, minted);
       const overrides = selection.overrides || {};
-      const built = buildInsert(
-        ctx,
-        baseRow,
-        generated.get(selection.diffId) || {},
-        remapped,
-        overrides
-      );
+      const mintedValues = generated.get(selection.diffId) || {};
+      const built = buildInsert(ctx, baseRow, mintedValues, remapped, overrides);
       const overriddenColumns = Object.keys(overrides);
       inserts.push({
         schema: context.config.schema,
@@ -310,7 +305,12 @@ const buildPlan = (
         sql: built.sql,
         params: built.params,
         rowDiff: {
-          inserted: previewOf(context, { ...baseRow, ...remapped, ...overrides }),
+          inserted: previewOf(context, {
+            ...baseRow,
+            ...mintedValues,
+            ...remapped,
+            ...overrides,
+          }),
           ...(overriddenColumns.length ? { overriddenColumns } : {}),
         },
         rowsAffected: null,
