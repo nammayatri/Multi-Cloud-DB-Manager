@@ -17,11 +17,12 @@ import {
   comparableColumns,
   copiedColumns,
   editableColumns,
+  mintsGeneratedValue,
   suggestMatchKey,
 } from './classify';
 import * as introspection from './introspection.service';
 import { pairByKey, pairByMutualBestMatch, Row } from './matching';
-import { effectiveLinks, parentKeyOf } from './ordering';
+import { effectiveLinks, parentKeyOf, topologicalOrder } from './ordering';
 import { idMapKey, pendingRef, projectRow } from './projection';
 import { quoteIdent } from './sqlBuilder';
 import { canonical, displayValue, makeDiffId, rowHash, valuesEqual } from './values';
@@ -96,39 +97,80 @@ const fetchRows = async (
   return result.rows as Row[];
 };
 
-const analyzeTable = async (
+export interface TableSnapshot {
+  config: GroupTableConfig;
+  fingerprint: string;
+  error?: string;
+  columns: ColumnInfo[];
+  keys: UniqueKeyInfo[];
+  classes: Record<string, ColumnClass>;
+  udtMap: Record<string, string>;
+  compareColumns: string[];
+  changeColumns: string[];
+  identityColumns: string[];
+  primaryKeyColumn: string | null;
+  matchMethod: 'UNIQUE_KEY' | 'SIMILARITY';
+  matchKeyColumns: string[];
+  baseRows: Row[];
+  targetRows: Row[];
+}
+
+const unreadable = (
+  config: GroupTableConfig,
+  fingerprint: string,
+  error: string
+): TableSnapshot => ({
+  config,
+  fingerprint,
+  error,
+  columns: [],
+  keys: [],
+  classes: {},
+  udtMap: {},
+  compareColumns: [],
+  changeColumns: [],
+  identityColumns: [],
+  primaryKeyColumn: null,
+  matchMethod: 'SIMILARITY',
+  matchKeyColumns: [],
+  baseRows: [],
+  targetRows: [],
+});
+
+export const blankAnalysis = (config: GroupTableConfig): TableAnalysis => ({
+  schema: config.schema,
+  table: config.table,
+  position: config.position,
+  matchMethod: null,
+  matchKeyColumns: [],
+  dimensionColumns: config.dimensionColumns,
+  editableColumns: [],
+  baseRowCount: 0,
+  targetRowCount: 0,
+  counts: { insert: 0, update: 0, delete: 0, noChange: 0 },
+  diffs: [],
+  warnings: [],
+});
+
+/**
+ * Everything that reads the database, run once per table. What it returns is fed
+ * to diffTable, which is pure and can therefore be replayed until the id map
+ * settles -- which is what tables referencing each other in a cycle need.
+ */
+const loadTable = async (
   client: PoolClient,
   config: GroupTableConfig,
   baseValues: string[],
   newValues: string[],
   forUpdate: boolean,
-  idMap: Map<string, unknown>,
-  keys: UniqueKeyInfo[],
-  links: FkLink[],
-  referencedKeys: string[][]
-): Promise<{ analysis: TableAnalysis; context: TableContext | null; fingerprint: string }> => {
+  keys: UniqueKeyInfo[]
+): Promise<TableSnapshot> => {
   const { schema, table } = config;
   const dimensionColumns = config.dimensionColumns;
 
-  const analysis: TableAnalysis = {
-    schema,
-    table,
-    position: config.position,
-    matchMethod: null,
-    matchKeyColumns: [],
-    dimensionColumns: config.dimensionColumns,
-    editableColumns: [],
-    baseRowCount: 0,
-    targetRowCount: 0,
-    counts: { insert: 0, update: 0, delete: 0, noChange: 0 },
-    diffs: [],
-    warnings: [],
-  };
-
   const columns = await introspection.getColumns(client, schema, table);
   if (columns.length === 0) {
-    analysis.error = `Table ${qualified(config)} does not exist or is not readable`;
-    return { analysis, context: null, fingerprint: '' };
+    return unreadable(config, '', `Table ${qualified(config)} does not exist or is not readable`);
   }
 
   const fingerprint = `${qualified(config)}=${introspection.schemaFingerprint(columns, keys)}`;
@@ -136,9 +178,11 @@ const analyzeTable = async (
   const columnNames = new Set(columns.map(c => c.columnName));
   const missingDimensions = dimensionColumns.filter(c => !columnNames.has(c));
   if (missingDimensions.length > 0) {
-    analysis.error =
-      `Dimension column(s) not found on ${qualified(config)}: ${missingDimensions.join(', ')}`;
-    return { analysis, context: null, fingerprint };
+    return unreadable(
+      config,
+      fingerprint,
+      `Dimension column(s) not found on ${qualified(config)}: ${missingDimensions.join(', ')}`
+    );
   }
 
   let matchKeyColumns: string[] = [];
@@ -148,8 +192,11 @@ const analyzeTable = async (
     if (config.matchKeyColumns.length > 0) {
       const unknown = config.matchKeyColumns.filter(c => !columnNames.has(c));
       if (unknown.length > 0) {
-        analysis.error = `Configured match columns not found on ${qualified(config)}: ${unknown.join(', ')}`;
-        return { analysis, context: null, fingerprint };
+        return unreadable(
+          config,
+          fingerprint,
+          `Configured match columns not found on ${qualified(config)}: ${unknown.join(', ')}`
+        );
       }
       matchKeyColumns = config.matchKeyColumns;
       matchMethod = 'UNIQUE_KEY';
@@ -159,11 +206,13 @@ const analyzeTable = async (
         matchKeyColumns = suggestion.matchColumns;
         matchMethod = 'UNIQUE_KEY';
       } else if (config.matchStrategy === 'UNIQUE_KEY') {
-        analysis.error =
+        return unreadable(
+          config,
+          fingerprint,
           `No unique key containing any of ${dimensionColumns.join(', ')} exists on ` +
-          `${qualified(config)}. ` +
-          'Pin match columns explicitly or switch this table to similarity matching.';
-        return { analysis, context: null, fingerprint };
+            `${qualified(config)}. ` +
+            'Pin match columns explicitly or switch this table to similarity matching.'
+        );
       }
     }
   }
@@ -173,8 +222,6 @@ const analyzeTable = async (
   for (const column of columns) udtMap[column.columnName] = column.udtName;
 
   const compareColumns = comparableColumns(classes);
-  const changeColumns = copiedColumns(classes);
-
   const primary = keys.find(k => k.isPrimary);
   const orderColumns = primary ? primary.columns : [];
 
@@ -195,22 +242,84 @@ const analyzeTable = async (
     targetRows = await fetchRows(client, schema, table, dimensionColumns, newValues, orderColumns);
   } catch (error: any) {
     if (error?.code === '22P02') {
-      analysis.error =
+      return unreadable(
+        config,
+        fingerprint,
         `Dimension value is not valid for ${qualified(config)} ` +
-        `(${dimensionColumns.join(', ')}) ` +
-        `(${error.message})`;
-      return { analysis, context: null, fingerprint };
+          `(${dimensionColumns.join(', ')}) ` +
+          `(${error.message})`
+      );
     }
     throw error;
   }
 
   if (baseRows.length > MAX_ROWS_PER_TABLE || targetRows.length > MAX_ROWS_PER_TABLE) {
-    analysis.error =
+    return unreadable(
+      config,
+      fingerprint,
       `${qualified(config)} has more than ${MAX_ROWS_PER_TABLE} rows for this dimension value. ` +
-      'Narrow the group or raise the limit deliberately.';
-    return { analysis, context: null, fingerprint };
+        'Narrow the group or raise the limit deliberately.'
+    );
   }
 
+  return {
+    config,
+    fingerprint,
+    columns,
+    keys,
+    classes,
+    udtMap,
+    compareColumns,
+    changeColumns: copiedColumns(classes),
+    identityColumns: identityColumnsFor(keys, matchKeyColumns, dimensionColumns, compareColumns),
+    primaryKeyColumn: primary && primary.columns.length === 1 ? primary.columns[0] : null,
+    matchMethod,
+    matchKeyColumns,
+    baseRows,
+    targetRows,
+  };
+};
+
+/**
+ * Pure. Projects this table's base rows against idMapIn, pairs them against the
+ * target, and registers the table's own rows into idMapOut. The two maps are
+ * kept apart so a settling round never observes its own writes.
+ *
+ * Diffs are the expensive half -- pushDiff scans what it has already collected --
+ * so they are built only on the final round, once the map has stopped moving.
+ */
+export const diffTable = (
+  snapshot: TableSnapshot,
+  links: FkLink[],
+  referencedKeys: string[][],
+  idMapIn: Map<string, unknown>,
+  idMapOut: Map<string, unknown>,
+  newValues: string[],
+  emitDiffs: boolean
+): { analysis: TableAnalysis; context: TableContext | null } => {
+  const {
+    config,
+    columns,
+    keys,
+    classes,
+    udtMap,
+    compareColumns,
+    changeColumns,
+    identityColumns,
+    primaryKeyColumn,
+    matchMethod,
+    matchKeyColumns,
+    baseRows,
+    targetRows,
+  } = snapshot;
+
+  const { schema, table } = config;
+  const dimensionColumns = config.dimensionColumns;
+  const tableKey = qualified(config);
+
+  const columnByName = new Map(columns.map(column => [column.columnName, column]));
+
+  const analysis = blankAnalysis(config);
   analysis.baseRowCount = baseRows.length;
   analysis.targetRowCount = targetRows.length;
   analysis.matchMethod = matchMethod;
@@ -223,7 +332,7 @@ const analyzeTable = async (
   const originalOf = new Map<Row, Row>();
   const danglingOf = new Map<Row, string[]>();
   const projectedBaseRows = baseRows.map(row => {
-    const projected = projectRow(row, links, idMap, udtMap);
+    const projected = projectRow(row, links, idMapIn, udtMap);
     originalOf.set(projected.row, row);
     if (projected.dangling.length > 0) danglingOf.set(projected.row, projected.dangling);
     return projected.row;
@@ -237,18 +346,16 @@ const analyzeTable = async (
         : pairByMutualBestMatch(projectedBaseRows, targetRows, compareColumns, udtMap);
   } catch (error: any) {
     analysis.error = error.message;
-    return { analysis, context: null, fingerprint };
+    return { analysis, context: null };
   }
 
-  if (matchMethod === 'SIMILARITY') {
+  if (emitDiffs && matchMethod === 'SIMILARITY') {
     analysis.warnings.push(
       keys.length === 0
         ? 'No unique key on this table — rows were matched by column similarity.'
         : 'No unique key contains the dimension column — rows were matched by column similarity.'
     );
   }
-
-  const identityColumns = identityColumnsFor(keys, matchKeyColumns, dimensionColumns, compareColumns);
 
   const context: TableContext = {
     config,
@@ -262,14 +369,12 @@ const analyzeTable = async (
     targetRowsByDiffId: new Map(),
     pairedByDiffId: new Map(),
     changedColumnsByDiffId: new Map(),
-    primaryKeyColumn: primary && primary.columns.length === 1 ? primary.columns[0] : null,
+    primaryKeyColumn,
     originalBaseByDiffId: new Map(),
     editableColumns: new Set(analysis.editableColumns),
     links,
     referencedKeys,
   };
-
-  const tableKey = qualified(config);
 
   const rememberParent = (
     baseRow: Row,
@@ -284,7 +389,7 @@ const analyzeTable = async (
       const oldValues = keyColumns.map(c => original[c]);
       if (oldValues.some(v => v === null || v === undefined)) continue;
 
-      idMap.set(
+      idMapOut.set(
         idMapKey(tableKey, keyColumns, oldValues, keyColumns.map(c => udtMap[c])),
         keyColumns.map(c => newValueOf(c, keyColumns, oldValues))
       );
@@ -301,7 +406,10 @@ const analyzeTable = async (
   const insertedParentValue =
     (base: Row) =>
     (column: string, keyColumns: string[], oldValues: unknown[]): unknown => {
-      if (classes[column] === 'GENERATED' && (udtMap[column] || '').toLowerCase() === 'uuid') {
+      // Must agree exactly with what apply mints (apply.service.ts), or a child
+      // is handed an id the parent never takes.
+      const info = columnByName.get(column);
+      if (info && classes[column] === 'GENERATED' && mintsGeneratedValue(info, primaryKeyColumn)) {
         return pendingRef(
           tableKey,
           column,
@@ -327,6 +435,9 @@ const analyzeTable = async (
   };
 
   for (const { base, target } of pairing.pairs) {
+    rememberParent(base, existingParentValue(target));
+    if (!emitDiffs) continue;
+
     const changed = changeColumns.filter(c => !valuesEqual(base[c], target[c], udtMap[c]));
     const diffId = makeDiffId(
       schema,
@@ -340,7 +451,6 @@ const analyzeTable = async (
 
     if (changed.length === 0) {
       analysis.counts.noChange++;
-      rememberParent(base, existingParentValue(target));
       pushDiff({
         diffId,
         operation: 'NO_CHANGE',
@@ -356,7 +466,6 @@ const analyzeTable = async (
     }
 
     analysis.counts.update++;
-    rememberParent(base, existingParentValue(target));
     context.pairedByDiffId.set(diffId, { base, target });
     context.originalBaseByDiffId.set(diffId, originalOf.get(base) || base);
     context.changedColumnsByDiffId.set(diffId, changed);
@@ -383,12 +492,13 @@ const analyzeTable = async (
   }
 
   for (const base of pairing.unpairedBase) {
+    rememberParent(base, insertedParentValue(base));
+    if (!emitDiffs) continue;
+
     const diffId = makeDiffId(schema, table, 'INSERT', 'base', identityColumns, base, udtMap);
     analysis.counts.insert++;
     context.baseRowsByDiffId.set(diffId, base);
     context.originalBaseByDiffId.set(diffId, originalOf.get(base) || base);
-
-    rememberParent(base, insertedParentValue(base));
 
     const dangling = danglingOf.get(base);
     pushDiff({
@@ -406,25 +516,27 @@ const analyzeTable = async (
     });
   }
 
-  for (const target of pairing.unpairedTarget) {
-    const diffId = makeDiffId(schema, table, 'DELETE', 'target', identityColumns, target, udtMap);
-    analysis.counts.delete++;
-    context.targetRowsByDiffId.set(diffId, target);
-    pushDiff({
-      diffId,
-      operation: 'DELETE',
-      schema,
-      table,
-      ambiguous: pairing.ambiguousTarget.has(target),
-      ambiguityReason: pairing.ambiguityReasons.get(target),
-      multiplicity: 1,
-      sourceHash: null,
-      targetHash: rowHash(target, compareColumns, udtMap),
-      rowPreview: previewRow(target, columns),
-    });
+  if (emitDiffs) {
+    for (const target of pairing.unpairedTarget) {
+      const diffId = makeDiffId(schema, table, 'DELETE', 'target', identityColumns, target, udtMap);
+      analysis.counts.delete++;
+      context.targetRowsByDiffId.set(diffId, target);
+      pushDiff({
+        diffId,
+        operation: 'DELETE',
+        schema,
+        table,
+        ambiguous: pairing.ambiguousTarget.has(target),
+        ambiguityReason: pairing.ambiguityReasons.get(target),
+        multiplicity: 1,
+        sourceHash: null,
+        targetHash: rowHash(target, compareColumns, udtMap),
+        rowPreview: previewRow(target, columns),
+      });
+    }
   }
 
-  return { analysis, context, fingerprint };
+  return { analysis, context: emitDiffs ? context : null };
 };
 
 const previewRow = (row: Row, columns: ColumnInfo[]): Record<string, unknown> => {
@@ -533,6 +645,59 @@ const resolveLinks = (
   return { linksByTable, referencedKeysByTable, linkWarnings };
 };
 
+const MAX_ANALYSIS_ROUNDS = 5;
+
+const idMapFingerprint = (idMap: Map<string, unknown>): string =>
+  [...idMap.entries()]
+    .map(([key, value]) => `${key}=${(value as unknown[]).map(v => canonical(v)).join(',')}`)
+    .sort()
+    .join('|');
+
+/**
+ * Builds the id map for a group whose links contain a cycle, by replaying the
+ * pure half of the analysis until the map stops changing. The first round
+ * resolves nothing -- it projects against an empty map -- but registers every
+ * table; the second round therefore sees both ends of the cycle. Bounded, since
+ * an unstable pairing could otherwise oscillate.
+ */
+export const settleIdMap = (
+  tables: GroupTableConfig[],
+  snapshots: Map<string, TableSnapshot>,
+  linksByTable: Map<string, FkLink[]>,
+  referencedKeysByTable: Map<string, string[][]>,
+  newValues: string[]
+): Map<string, unknown> => {
+  let idMap = new Map<string, unknown>();
+  let previous = '';
+
+  for (let round = 0; round < MAX_ANALYSIS_ROUNDS; round++) {
+    const next = new Map<string, unknown>();
+
+    for (const table of tables) {
+      const tableKey = qualified(table);
+      const snapshot = snapshots.get(tableKey);
+      if (!snapshot || snapshot.error) continue;
+
+      diffTable(
+        snapshot,
+        linksByTable.get(tableKey) || [],
+        referencedKeysByTable.get(tableKey) || [],
+        idMap,
+        next,
+        newValues,
+        false
+      );
+    }
+
+    const fingerprint = idMapFingerprint(next);
+    idMap = next;
+    if (fingerprint === previous) break;
+    previous = fingerprint;
+  }
+
+  return idMap;
+};
+
 export const runAnalysis = async (
   client: PoolClient,
   group: ConfigGroup,
@@ -547,8 +712,6 @@ export const runAnalysis = async (
   const contexts = new Map<string, TableContext>();
   const fingerprints: string[] = [];
 
-  const idMap = new Map<string, unknown>();
-
   const keysByTable = new Map<string, UniqueKeyInfo[]>();
   for (const table of tables) {
     keysByTable.set(
@@ -559,23 +722,72 @@ export const runAnalysis = async (
 
   const { linksByTable, referencedKeysByTable, linkWarnings } = resolveLinks(tables, keysByTable);
 
+  const snapshots = new Map<string, TableSnapshot>();
   for (const table of tables) {
     const tableKey = qualified(table);
-    const { analysis, context, fingerprint } = await analyzeTable(
-      client,
-      table,
-      baseValues,
-      newValues,
-      !!options.forUpdate,
-      idMap,
-      keysByTable.get(tableKey) || [],
+    snapshots.set(
+      tableKey,
+      await loadTable(
+        client,
+        table,
+        baseValues,
+        newValues,
+        !!options.forUpdate,
+        keysByTable.get(tableKey) || []
+      )
+    );
+  }
+
+  const cycleWarnings: string[] = [];
+  const { cycles } = topologicalOrder(tables);
+
+  // Without a cycle, position order already puts every parent before its child,
+  // so the single pass below fills the map as it goes -- exactly as before.
+  // With one, no order can, so the map is settled up front by replaying the
+  // pure half until it stops changing.
+  let idMap = new Map<string, unknown>();
+
+  if (cycles.length > 0) {
+    cycleWarnings.push(
+      `${cycles[0].join(' → ')} reference each other in a cycle. Their ids are minted ` +
+        'before any statement runs and constraints are deferred for the whole apply, ' +
+        'so the references still resolve.'
+    );
+    idMap = settleIdMap(
+      tables,
+      snapshots,
+      linksByTable,
+      referencedKeysByTable,
+      newValues
+    );
+  }
+
+  for (const table of tables) {
+    const tableKey = qualified(table);
+    const snapshot = snapshots.get(tableKey) as TableSnapshot;
+
+    if (snapshot.fingerprint) fingerprints.push(snapshot.fingerprint);
+
+    if (snapshot.error) {
+      const analysis = blankAnalysis(table);
+      analysis.error = snapshot.error;
+      analysis.warnings.push(...(linkWarnings.get(tableKey) || []));
+      analyses.push(analysis);
+      continue;
+    }
+
+    const { analysis, context } = diffTable(
+      snapshot,
       linksByTable.get(tableKey) || [],
-      referencedKeysByTable.get(tableKey) || []
+      referencedKeysByTable.get(tableKey) || [],
+      idMap,
+      idMap,
+      newValues,
+      true
     );
     analysis.warnings.push(...(linkWarnings.get(tableKey) || []));
     analyses.push(analysis);
     if (context) contexts.set(tableKey, context);
-    if (fingerprint) fingerprints.push(fingerprint);
   }
 
   const foreignKeys = await introspection.getForeignKeys(client, tables.map(qualified));
@@ -591,7 +803,7 @@ export const runAnalysis = async (
   );
 
   const totalDiffs = totals.insert + totals.update + totals.delete;
-  const warnings: string[] = [];
+  const warnings: string[] = [...cycleWarnings];
 
   if (totalDiffs > MAX_DIFFS_TOTAL) {
     throw new Error(
