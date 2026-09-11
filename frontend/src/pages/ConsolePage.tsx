@@ -80,8 +80,14 @@ const BATCH_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER];
 // CACHE_CLEARER gets the tab for read commands + SCAN delete.
 const REDIS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
 
-// DB Manager / Migrations — schema work, fits RELEASE_MANAGER.
-const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
+// Migrations — schema work, fits RELEASE_MANAGER.
+const MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
+
+// DB Manager — the Migrations tier plus REQUESTOR, which gets the tab purely as
+// a composing surface: it can browse the schema and write SQL, but Execute is
+// replaced by "Request approval" (see DatabaseSelector) because its role
+// permits no statement at all.
+const DB_ROLES: Role[] = [...MIGRATIONS_ROLES, Role.REQUESTOR];
 
 // Shudhi (In-Memory Cache Management) — same as Redis: all standard roles.
 const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
@@ -94,14 +100,15 @@ const SYSTEM_CONFIGS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.R
 
 // Query Requests — every role with Postgres access: the lower tiers raise
 // requests, the higher tiers approve them, and most roles do both depending on
-// the query. CKH_MANAGER has no Postgres access, so it has nothing to do here.
-const REQUEST_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
+// the query. REQUESTOR only ever raises. CKH_MANAGER has no Postgres access,
+// so it has nothing to do here.
+const REQUEST_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER, Role.REQUESTOR];
 
 const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode; visibleTo: Role[] }> = [
-  { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
+  { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_ROLES },
   { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} />, visibleTo: REDIS_ROLES },
   { mode: 'batch', label: 'Batch Query', icon: <TableRowsIcon sx={{ fontSize: 18 }} />, visibleTo: BATCH_ROLES },
-  { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
+  { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: MIGRATIONS_ROLES },
   { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN, Role.CKH_MANAGER] },
   { mode: 'shudhi', label: 'Shudhi', icon: <CachedIcon sx={{ fontSize: 18 }} />, visibleTo: SHUDHI_ROLES },
   { mode: 'systemConfigs', label: 'System Configs', icon: <SettingsSuggestIcon sx={{ fontSize: 18 }} />, visibleTo: SYSTEM_CONFIGS_ROLES },
