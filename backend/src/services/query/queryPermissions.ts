@@ -91,6 +91,20 @@ export const checkRolePermission = (
     };
   }
 
+  // REQUESTOR runs nothing directly — not even SELECT. Denying every statement
+  // here is what routes it into the approval flow: the console turns this
+  // verdict plus canRequestApproval into the "request approval" dialog, and the
+  // query then executes under the approver's role. This also means canApprove
+  // (which is this same check, run against the approver) is false for every
+  // request, so a REQUESTOR can never approve — its own or anyone else's.
+  if (role === Role.REQUESTOR) {
+    return {
+      allowed: false,
+      message:
+        'REQUESTOR role cannot execute queries directly — submit this query for approval instead.',
+    };
+  }
+
   // RELEASE_MANAGER: SELECT/EXPLAIN, ALTER TABLE ADD COLUMN/CONSTRAINT,
   // CREATE INDEX CONCURRENTLY, transaction control. Per-statement enforcement.
   if (role === Role.RELEASE_MANAGER) {
@@ -222,12 +236,16 @@ export const canRunDirectly = (
  * MASTER/ADMIN are excluded because they can run anything already, and
  * CKH_MANAGER because it has no Postgres access at all — there is nothing for
  * an approver to grant it. Unknown roles are excluded by fail-closed default.
+ *
+ * REQUESTOR is the opposite extreme from MASTER/ADMIN: it can run nothing, so
+ * every query it writes lands here.
  */
 const REQUESTER_ROLES: string[] = [
   Role.USER,
   Role.READER,
   Role.RELEASE_MANAGER,
   Role.CACHE_CLEARER,
+  Role.REQUESTOR,
 ];
 
 export const canRequestApproval = (role?: string | null): boolean =>

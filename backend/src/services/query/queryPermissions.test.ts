@@ -84,6 +84,41 @@ describe('checkRolePermission', () => {
     });
   });
 
+  describe('REQUESTOR', () => {
+    // The whole role: it can compose anything and run nothing. If SELECT ever
+    // starts passing here, REQUESTOR has silently become a READER — and, since
+    // approval reuses this same check, it would also gain the power to approve
+    // other people's SELECTs.
+    it('denies even a plain SELECT', () => {
+      expect(checkRolePermission(Role.REQUESTOR, 'SELECT 1').allowed).toBe(false);
+    });
+
+    it('denies every other statement class', () => {
+      for (const query of [
+        'INSERT INTO rides (id) VALUES (1)',
+        'UPDATE rides SET fare = 1',
+        'DELETE FROM rides',
+        'CREATE TABLE t (id int)',
+        'ALTER TABLE rides ADD COLUMN note text',
+        'EXPLAIN SELECT 1',
+      ]) {
+        expect(checkRolePermission(Role.REQUESTOR, query).allowed).toBe(false);
+      }
+    });
+
+    it('cannot run anything directly either', () => {
+      expect(canRunDirectly(Role.REQUESTOR, 'SELECT 1').allowed).toBe(false);
+    });
+
+    it('is not widened by continueOnError on a multi-statement query', () => {
+      // RELEASE_MANAGER gets a pass here (the executor re-checks per statement);
+      // REQUESTOR must not reach that branch.
+      expect(
+        checkRolePermission(Role.REQUESTOR, 'SELECT 1; SELECT 2', { continueOnError: true }).allowed
+      ).toBe(false);
+    });
+  });
+
   describe('fail-closed', () => {
     it('denies unknown roles', () => {
       expect(checkRolePermission('SOMETHING_NEW', 'SELECT 1').allowed).toBe(false);
@@ -126,6 +161,11 @@ describe('canRequestApproval', () => {
     expect(canRequestApproval(Role.READER)).toBe(true);
     expect(canRequestApproval(Role.RELEASE_MANAGER)).toBe(true);
     expect(canRequestApproval(Role.CACHE_CLEARER)).toBe(true);
+  });
+
+  it('covers REQUESTOR, whose every query is a request', () => {
+    // Without this, createRequest 403s a REQUESTOR and the role has no purpose.
+    expect(canRequestApproval(Role.REQUESTOR)).toBe(true);
   });
 
   it('excludes roles that can already run everything, or nothing', () => {
