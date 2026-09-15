@@ -13,6 +13,11 @@ export const Role = {
   // invalidation — Redis SCAN delete and Shudhi in-memory refresh. It stays
   // read-only for Postgres and for direct Redis write commands (including DEL).
   CACHE_CLEARER: 'CACHE_CLEARER',
+  // REQUESTOR: no execution rights of its own, anywhere — not Postgres (not
+  // even SELECT), not Redis, not Shudhi, not ClickHouse. It composes queries
+  // and submits them for approval; whoever approves runs them under their own
+  // role. Only two tabs: DB Manager (to compose) and Requests (to track).
+  REQUESTOR: 'REQUESTOR',
 } as const;
 
 export type Role = typeof Role[keyof typeof Role];
@@ -25,6 +30,7 @@ export const ALL_ROLES: Role[] = [
   Role.CKH_MANAGER,
   Role.RELEASE_MANAGER,
   Role.CACHE_CLEARER,
+  Role.REQUESTOR,
 ];
 
 /**
@@ -56,3 +62,7 @@ export const CACHE_CLEAR_ROLES: Role[] = [
 
 export const canClearCache = (role?: string | null): boolean =>
   !!role && (CACHE_CLEAR_ROLES as string[]).includes(role);
+
+/** REQUESTOR can run nothing directly — every query it writes is a request. */
+export const isRequestOnlyRole = (role?: string | null): boolean =>
+  role === Role.REQUESTOR;
