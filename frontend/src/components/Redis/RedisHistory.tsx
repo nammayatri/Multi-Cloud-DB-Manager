@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Box,
   Paper,
@@ -40,7 +40,12 @@ interface RedisHistoryEntry {
   name?: string;
 }
 
-const RedisHistory = () => {
+interface RedisHistoryProps {
+  /** Whether the page showing this panel is open; reopening it refetches. */
+  active?: boolean;
+}
+
+const RedisHistory = ({ active }: RedisHistoryProps = {}) => {
   const user = useAppStore(s => s.user);
   const [history, setHistory] = useState<RedisHistoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -66,6 +71,14 @@ const RedisHistory = () => {
   useEffect(() => {
     loadHistory();
   }, [currentPage]);
+
+  // Reopening the History page refetches; the first activation is covered above.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) loadHistory();
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   const handleCopy = async (entry: RedisHistoryEntry, e: React.MouseEvent) => {
     e.stopPropagation();

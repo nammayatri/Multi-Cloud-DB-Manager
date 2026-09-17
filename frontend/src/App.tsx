@@ -2,11 +2,18 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, createTheme, CssBaseline, CircularProgress, Box } from '@mui/material';
 import { Toaster } from 'react-hot-toast';
+import { useAppStore } from './store/appStore';
 
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const ConsolePage = lazy(() => import('./pages/ConsolePage'));
-const UsersPage = lazy(() => import('./pages/UsersPage'));
 const MigrationsPage = lazy(() => import('./pages/MigrationsPage'));
+
+// User management now lives in the console (Admin → Users); keep old links
+// working. ConsolePage snaps roles without access to their first allowed page.
+const UsersRedirect = () => {
+  useAppStore.getState().setManagerMode('users');
+  return <Navigate to="/" replace />;
+};
 
 // Create dark theme
 const darkTheme = createTheme({
@@ -55,7 +62,7 @@ function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/" element={<ConsolePage />} />
-            <Route path="/users" element={<UsersPage />} />
+            <Route path="/users" element={<UsersRedirect />} />
             <Route path="/migrations" element={<MigrationsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
