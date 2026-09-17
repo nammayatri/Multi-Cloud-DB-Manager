@@ -5,6 +5,20 @@ import type { editor } from 'monaco-editor';
 /** Migrations tab faces: the analyze-and-check verifier, or the compare-URL runner. */
 export type MigrationView = 'verifier' | 'lite';
 
+/** Every console page. Grouped into header sections in components/Navigation/consoleSections. */
+export type ManagerMode =
+  | 'db'
+  | 'redis'
+  | 'batch'
+  | 'migrations'
+  | 'clickhouse'
+  | 'shudhi'
+  | 'systemConfigs'
+  | 'requests'
+  | 'configreplicate'
+  | 'users'
+  | 'history';
+
 // Load persisted settings from localStorage
 const loadPersistedSetting = (key: string, defaultValue: boolean): boolean => {
   try {
@@ -45,8 +59,8 @@ const savePersistedStringSetting = (key: string, value: string) => {
 
 interface AppState {
   // Manager mode
-  managerMode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate';
-  setManagerMode: (mode: 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate') => void;
+  managerMode: ManagerMode;
+  setManagerMode: (mode: ManagerMode) => void;
 
   // Which face of the Migrations tab is showing. Lives here (not in a panel)
   // because both panels' toolbars render the switch for it.
@@ -92,17 +106,13 @@ interface AppState {
   setQueryHistory: (history: QueryExecution[]) => void;
   addToHistory: (execution: QueryExecution) => void;
 
-  // UI state
-  showHistory: boolean;
-  setShowHistory: (show: boolean) => void;
-
   // Ref slot for execute shortcut bridge
   executeRef: { current: (() => void) | null };
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Manager mode
-  managerMode: (sessionStorage.getItem('managerMode') as 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate') || 'db',
+  managerMode: (sessionStorage.getItem('managerMode') as ManagerMode) || 'db',
   setManagerMode: (mode) => {
     sessionStorage.setItem('managerMode', mode);
     set({ managerMode: mode });
@@ -176,10 +186,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       queryHistory: [execution, ...state.queryHistory],
     })),
-
-  // UI
-  showHistory: false,
-  setShowHistory: (show) => set({ showHistory: show }),
 
   // Ref slot
   executeRef: { current: null },
