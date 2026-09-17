@@ -25,11 +25,11 @@ describe('consoleSections', () => {
   it.each<[Role, Record<string, string[]>]>([
     [Role.MASTER, {
       database: ['db', 'batch', 'migrations'], cache: ['redis', 'shudhi'], clickhouse: ['clickhouse'],
-      configs: ['systemConfigs', 'configreplicate'], requests: ['requests'], admin: ['history'],
+      configs: ['systemConfigs', 'configreplicate', 'configsync'], requests: ['requests'], admin: ['history'],
     }],
     [Role.ADMIN, {
       database: ['db', 'batch', 'migrations'], cache: ['redis', 'shudhi'], clickhouse: ['clickhouse'],
-      configs: ['systemConfigs', 'configreplicate'], requests: ['requests'], admin: ['users', 'history'],
+      configs: ['systemConfigs', 'configreplicate', 'configsync'], requests: ['requests'], admin: ['users', 'history'],
     }],
     [Role.USER, {
       database: ['db', 'batch', 'migrations'], cache: ['redis', 'shudhi'],

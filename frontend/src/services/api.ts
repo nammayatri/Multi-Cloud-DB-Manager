@@ -6,7 +6,7 @@ import type { Role } from '../constants/roles';
 // @ts-ignore - runtime config loaded from /config.js
 const backendUrl = window.__APP_CONFIG__?.BACKEND_URL;
 // Use configured URL if valid, otherwise fallback to localhost
-const API_BASE_URL = (backendUrl && backendUrl !== 'BACKEND_URL_PLACEHOLDER' && backendUrl !== '')
+export const API_BASE_URL = (backendUrl && backendUrl !== 'BACKEND_URL_PLACEHOLDER' && backendUrl !== '')
   ? backendUrl
   : (import.meta.env.VITE_API_URL || 'http://localhost:3000');
 
@@ -425,6 +425,136 @@ export const csvBatchAPI = {
 
   cancel: async (executionId: string): Promise<{ success: boolean; message: string }> => {
     const response = await api.post(`/api/query/csv-batch/cancel/${executionId}`);
+    return response.data;
+  },
+};
+
+// Config Sync API — wraps nammayatri's config_transfer.py export/patch commands.
+// No env type here — which environment a run means is resolved entirely
+// server-side, never a client concern.
+export interface ConfigSyncResult {
+  kind: 'export' | 'patch' | 'export+patch';
+  argv: string[];
+  log: string[];
+  auditWarnings: string[];
+  exitCode: number | null;
+}
+
+export interface ConfigSyncAsset {
+  name: 'config.json' | 'patches.json';
+  content: any;
+  updatedBy: string | null;
+  updatedByUsername: string | null;
+  updatedAt: string;
+}
+
+// Listing entry — no content (config.json alone can be 40KB+); fetch a full
+// version on demand via getAssetHistoryEntry when the user wants to view/diff it.
+export interface ConfigSyncAssetHistoryEntry {
+  id: string;
+  name: ConfigSyncAsset['name'];
+  updatedBy: string | null;
+  updatedByUsername: string | null;
+  updatedAt: string;
+}
+
+export interface ConfigSyncAssetHistoryDetail extends ConfigSyncAssetHistoryEntry {
+  content: any;
+}
+
+export type ConfigSyncVersionStatus = 'stable' | 'not_stable' | 'not_verified';
+
+export interface ConfigSyncVersion {
+  id: string;
+  direction: string;
+  version: number;
+  description: string | null;
+  uploadedBy: string | null;
+  uploadedByUsername: string | null;
+  status: ConfigSyncVersionStatus;
+  verifiedBy: string | null;
+  verifiedByUsername: string | null;
+  verifiedAt: string | null;
+  createdAt: string;
+}
+
+export const configSyncAPI = {
+  // Single combined flow — export then patch, one job/executionId. No
+  // fromEnv/toEnv here at all — which environment this means is resolved
+  // entirely server-side, never a client concern.
+  startExportAndPatch: async (request: {
+    schemas?: string[];
+    tables?: string[];
+    parallel?: number;
+    // Always true — no bucket to choose either, it's always the one real
+    // config-sync bucket. Server computes the <direction>/v<n> path itself.
+    s3?: boolean;
+    // Shown to whoever picks a version in the test dashboard.
+    versionDescription?: string;
+  }): Promise<{ executionId: string; status: string }> => {
+    const response = await api.post('/api/config-sync/export-and-patch', request);
+    return response.data;
+  },
+
+  // Also the live-log feed: pass the absolute line index already received as
+  // `logFrom` and the response carries only the lines added since. There is
+  // no separate streaming endpoint — SSE does not survive the deployment's
+  // proxy chain, so the log rides along with the status poll instead.
+  getStatus: async (executionId: string, logFrom = 0): Promise<{
+    executionId: string;
+    status: 'running' | 'completed' | 'failed' | 'cancelled';
+    result?: { configSync?: ConfigSyncResult; [key: string]: any };
+    error?: string;
+    progress?: { currentStatement: number; totalStatements: number };
+    liveLog?: { lines: string[]; nextFrom: number } | null;
+    startTime: number;
+    endTime?: number;
+  }> => {
+    const response = await api.get(`/api/config-sync/status/${executionId}`, { params: { logFrom } });
+    return response.data;
+  },
+
+  cancel: async (executionId: string): Promise<{ success: boolean; message: string }> => {
+    const response = await api.post(`/api/config-sync/cancel/${executionId}`);
+    return response.data;
+  },
+
+  getAssets: async (): Promise<{ assets: ConfigSyncAsset[] }> => {
+    const response = await api.get('/api/config-sync/assets');
+    return response.data;
+  },
+
+  updateAsset: async (name: ConfigSyncAsset['name'], content: any): Promise<{ asset: ConfigSyncAsset }> => {
+    const response = await api.put(`/api/config-sync/assets/${encodeURIComponent(name)}`, { content });
+    return response.data;
+  },
+
+  getAssetHistory: async (name: ConfigSyncAsset['name']): Promise<{ history: ConfigSyncAssetHistoryEntry[] }> => {
+    const response = await api.get(`/api/config-sync/assets/${encodeURIComponent(name)}/history`);
+    return response.data;
+  },
+
+  getAssetHistoryEntry: async (historyId: string): Promise<{ entry: ConfigSyncAssetHistoryDetail }> => {
+    const response = await api.get(`/api/config-sync/assets/history/${historyId}`);
+    return response.data;
+  },
+
+  restoreAssetVersion: async (historyId: string): Promise<{ asset: ConfigSyncAsset }> => {
+    const response = await api.post(`/api/config-sync/assets/history/${historyId}/restore`);
+    return response.data;
+  },
+
+  // Versions for THIS deployment's one resolved direction — no direction
+  // param, same reasoning as export-and-patch not taking fromEnv/toEnv.
+  getVersions: async (): Promise<{ versions: ConfigSyncVersion[] }> => {
+    const response = await api.get('/api/config-sync/versions');
+    return response.data;
+  },
+
+  setVersionStatus: async (
+    version: number, status: ConfigSyncVersionStatus
+  ): Promise<{ version: ConfigSyncVersion }> => {
+    const response = await api.post(`/api/config-sync/versions/${version}/status`, { status });
     return response.data;
   },
 };

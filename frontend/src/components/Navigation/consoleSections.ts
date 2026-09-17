@@ -39,6 +39,10 @@ export const SYSTEM_CONFIGS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER,
 // routes enforce server-side.
 export const CONFIG_REPLICATE_ROLES: Role[] = [Role.MASTER, Role.ADMIN];
 
+// Config Sync exports/patches real environment config (incl. prod) via a
+// vendored script — MASTER/ADMIN tier only, same gate the routes enforce.
+export const CONFIG_SYNC_ROLES: Role[] = [Role.MASTER, Role.ADMIN];
+
 // Query Requests — every role with Postgres access: the lower tiers raise
 // requests, the higher tiers approve them, and most roles do both depending on
 // the query. REQUESTOR only ever raises. CKH_MANAGER has no Postgres access,
@@ -68,6 +72,7 @@ export const TAB_CONFIG: ConsoleTab[] = [
   { mode: 'clickhouse', label: 'Clickhouse Manager', visibleTo: CLICKHOUSE_ROLES },
   { mode: 'systemConfigs', label: 'System Configs', visibleTo: SYSTEM_CONFIGS_ROLES },
   { mode: 'configreplicate', label: 'Config Replicate', visibleTo: CONFIG_REPLICATE_ROLES },
+  { mode: 'configsync', label: 'Config Sync', visibleTo: CONFIG_SYNC_ROLES },
   { mode: 'requests', label: 'Requests', visibleTo: REQUEST_ROLES },
   { mode: 'users', label: 'Users', visibleTo: USERS_ROLES },
   { mode: 'history', label: 'History', visibleTo: HISTORY_ROLES },
@@ -86,7 +91,7 @@ export const SECTIONS: ConsoleSection[] = [
   { id: 'database', label: 'Database', modes: ['db', 'batch', 'migrations'] },
   { id: 'cache', label: 'Cache', modes: ['redis', 'shudhi'] },
   { id: 'clickhouse', label: 'Clickhouse', modes: ['clickhouse'] },
-  { id: 'configs', label: 'Configs', modes: ['systemConfigs', 'configreplicate'] },
+  { id: 'configs', label: 'Configs', modes: ['systemConfigs', 'configreplicate', 'configsync'] },
   { id: 'requests', label: 'Requests', modes: ['requests'] },
   { id: 'admin', label: 'Admin', modes: ['users', 'history'] },
 ];

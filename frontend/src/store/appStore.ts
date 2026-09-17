@@ -16,6 +16,7 @@ export type ManagerMode =
   | 'systemConfigs'
   | 'requests'
   | 'configreplicate'
+  | 'configsync'
   | 'users'
   | 'history';
 
