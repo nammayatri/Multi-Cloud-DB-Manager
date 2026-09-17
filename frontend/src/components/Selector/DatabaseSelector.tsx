@@ -25,6 +25,7 @@ import {
 import FingerprintIcon from '@mui/icons-material/Fingerprint';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
+import SendIcon from '@mui/icons-material/Send';
 import InfoIcon from '@mui/icons-material/Info';
 import { useAppStore } from '../../store/appStore';
 import { queryAPI, schemaAPI, toastNonApiError } from '../../services/api';
@@ -37,7 +38,7 @@ import { detectDangerousQueries } from '../../services/queryValidation.service';
 import type { ValidationWarning } from '../../services/queryValidation.service';
 import { buildDbMap, buildModesForDb } from './databaseTopology';
 import type { DbMap, DbCloudEntry } from './databaseTopology';
-import { SUPER_ROLES } from '../../constants/roles';
+import { SUPER_ROLES, isRequestOnlyRole } from '../../constants/roles';
 
 interface DatabaseSelectorProps {
   onExecute: (result: QueryResponse) => void;
@@ -493,6 +494,23 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
       return;
     }
 
+    // REQUESTOR can't run anything, so skip straight to the request composer.
+    // Going through /execute would work — the backend returns ROLE_NOT_PERMITTED
+    // and we'd open the same dialog — but only after a guaranteed-doomed
+    // round-trip and, for a write, a password prompt for an execution that
+    // will never happen.
+    if (isRequestOnlyRole(user?.role)) {
+      setApprovalRequest({
+        query: queryToExecute,
+        deniedReason: '',
+        database: selectedDatabase,
+        mode: selectedMode,
+        pgSchema: selectedPgSchema,
+        continueOnError,
+      });
+      return;
+    }
+
     // Check for dangerous queries (pass user role for role-aware warnings)
     const warning = detectDangerousQueries(queryToExecute, user?.role);
     if (warning) {
@@ -714,14 +732,15 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
             ) : (
               <Button
                 variant="contained"
-                color="success"
+                color={isRequestOnlyRole(user?.role) ? 'primary' : 'success'}
                 size="large"
-                startIcon={<PlayArrowIcon />}
+                startIcon={isRequestOnlyRole(user?.role) ? <SendIcon /> : <PlayArrowIcon />}
                 onClick={handleExecute}
                 disabled={!currentQuery.trim()}
                 sx={{ minWidth: 150 }}
               >
-                Execute
+                {/* REQUESTOR never executes — the button says what it does. */}
+                {isRequestOnlyRole(user?.role) ? 'Request Approval' : 'Execute'}
               </Button>
             ))}
           </Stack>

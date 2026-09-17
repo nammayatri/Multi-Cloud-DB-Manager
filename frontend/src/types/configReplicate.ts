@@ -29,6 +29,24 @@ export interface UniqueKeyInfo {
   isPrimary: boolean;
 }
 
+export interface ForeignKeyInfo {
+  name: string;
+  childSchema: string;
+  childTable: string;
+  childColumns: string[];
+  parentSchema: string;
+  parentTable: string;
+  parentColumns: string[];
+}
+
+export interface FkLink {
+  columns: string[];
+  parentSchema: string;
+  parentTable: string;
+  parentColumns: string[];
+  source: 'DB_FK' | 'MANUAL';
+}
+
 export interface GroupTableConfig {
   id?: string;
   schema: string;
@@ -39,6 +57,7 @@ export interface GroupTableConfig {
   matchKeyColumns: string[];
   columnConfig: Record<string, ColumnClass>;
   fkRemap: Record<string, string>;
+  fkLinks: FkLink[];
 }
 
 export interface ConfigGroup {

@@ -3,46 +3,31 @@ import { useNavigate } from 'react-router-dom';
 import {
   Box,
   AppBar,
-  Toolbar,
   Typography,
   IconButton,
   Avatar,
   Menu,
   MenuItem,
-  Grid,
-  Drawer,
   Button,
   Stack,
+  Tooltip,
 } from '@mui/material';
-import HistoryIcon from '@mui/icons-material/History';
 import LogoutIcon from '@mui/icons-material/Logout';
-import PeopleIcon from '@mui/icons-material/People';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import StorageIcon from '@mui/icons-material/Storage';
-import MemoryIcon from '@mui/icons-material/Memory';
-import TableRowsIcon from '@mui/icons-material/TableRows';
-import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
-import HubIcon from '@mui/icons-material/Hub';
-import CachedIcon from '@mui/icons-material/Cached';
-import RuleIcon from '@mui/icons-material/Rule';
-import DifferenceIcon from '@mui/icons-material/Difference';
-import CloudSyncIcon from '@mui/icons-material/CloudSync';
-import SettingsSuggestIcon from '@mui/icons-material/SettingsSuggest';
 import { authAPI, schemaAPI, queryRequestsAPI, toastNonApiError } from '../services/api';
-import { Role } from '../constants/roles';
-import { useAppStore } from '../store/appStore';
+import { useAppStore, type ManagerMode } from '../store/appStore';
 import toast from 'react-hot-toast';
 import SQLEditor from '../components/Editor/SQLEditor';
 import DatabaseSelector from '../components/Selector/DatabaseSelector';
 import ResultsPanel from '../components/Results/ResultsPanel';
-import QueryHistory from '../components/History/QueryHistory';
 import RedisCommandForm from '../components/Redis/RedisCommandForm';
 import RedisResultsPanel from '../components/Redis/RedisResultsPanel';
-import RedisHistory from '../components/Redis/RedisHistory';
 import MigrationToolbar from '../components/Migrations/MigrationToolbar';
 import MigrationSummaryBar from '../components/Migrations/MigrationSummaryBar';
 import MigrationResultsView from '../components/Migrations/MigrationResultsView';
 import MigrationActionBar from '../components/Migrations/MigrationActionBar';
+import ConsoleNav from '../components/Navigation/ConsoleNav';
+import { canSeeMode, tabsForRole } from '../components/Navigation/consoleSections';
 import { useMigrationsStore } from '../store/migrationsStore';
 import type { QueryResponse, RedisCommandResponse } from '../types';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -59,6 +44,8 @@ const ConfigSyncPanel = lazy(() => import('../components/ConfigSync/ConfigSyncPa
 const SystemConfigsPanel = lazy(() => import('../components/SystemConfigs/SystemConfigsPanel'));
 const QueryRequestsPanel = lazy(() => import('../components/QueryRequests/QueryRequestsPanel'));
 const LiteRunnerPanel = lazy(() => import('../components/Migrations/LiteRunner/LiteRunnerPanel'));
+const UsersPanel = lazy(() => import('../components/Users/UsersPanel'));
+const HistoryPage = lazy(() => import('../components/History/HistoryPage'));
 
 // Fallback shown while a lazy panel chunk loads on first tab open.
 const panelLoader = (
@@ -67,163 +54,6 @@ const panelLoader = (
   </Box>
 );
 
-
-type ManagerMode = 'db' | 'redis' | 'batch' | 'migrations' | 'clickhouse' | 'shudhi' | 'systemConfigs' | 'requests' | 'configreplicate' | 'configsync';
-
-// Batch Query (CSV) — destructive arbitrary parametrized SQL that only writers
-// may run. Mirrors the backend gate (`requireBatchWriter` = MASTER/ADMIN/USER):
-// read-only roles (READER, CACHE_CLEARER) are excluded so they aren't shown a
-// tab the endpoint would 403. RELEASE_MANAGER is withheld too (schema-change
-// scope, not data manipulation).
-const BATCH_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER];
-
-// Redis Manager — RELEASE_MANAGER joins the standard tier (USER-equivalent
-// read + write + SCAN preview/delete; RAW stays MASTER-only at the route gate).
-// CACHE_CLEARER gets the tab for read commands + SCAN delete.
-const REDIS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
-
-// DB Manager / Migrations — schema work, fits RELEASE_MANAGER.
-const DB_AND_MIGRATIONS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
-
-// Shudhi (In-Memory Cache Management) — same as Redis: all standard roles.
-const SHUDHI_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
-
-// System Configs (feature-flag rows like lean_flow) — reads open to the
-// standard Postgres-access tier; the backend gates the actual save to
-// MASTER/ADMIN only (see systemConfigs.routes.ts), the panel just hides the
-// Save button for everyone else.
-const SYSTEM_CONFIGS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER];
-
-// Query Requests — every role with Postgres access: the lower tiers raise
-// requests, the higher tiers approve them, and most roles do both depending on
-// the query. CKH_MANAGER has no Postgres access, so it has nothing to do here.
-const REQUEST_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER];
-
-const TAB_CONFIG: Array<{ mode: ManagerMode; label: string; icon: React.ReactNode; visibleTo: Role[] }> = [
-  { mode: 'db', label: 'DB Manager', icon: <StorageIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
-  { mode: 'redis', label: 'Redis Manager', icon: <MemoryIcon sx={{ fontSize: 18 }} />, visibleTo: REDIS_ROLES },
-  { mode: 'batch', label: 'Batch Query', icon: <TableRowsIcon sx={{ fontSize: 18 }} />, visibleTo: BATCH_ROLES },
-  { mode: 'migrations', label: 'Migrations', icon: <CompareArrowsIcon sx={{ fontSize: 18 }} />, visibleTo: DB_AND_MIGRATIONS_ROLES },
-  { mode: 'clickhouse', label: 'Clickhouse Manager', icon: <HubIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN, Role.CKH_MANAGER] },
-  { mode: 'shudhi', label: 'Shudhi', icon: <CachedIcon sx={{ fontSize: 18 }} />, visibleTo: SHUDHI_ROLES },
-  { mode: 'systemConfigs', label: 'System Configs', icon: <SettingsSuggestIcon sx={{ fontSize: 18 }} />, visibleTo: SYSTEM_CONFIGS_ROLES },
-  { mode: 'requests', label: 'Requests', icon: <RuleIcon sx={{ fontSize: 18 }} />, visibleTo: REQUEST_ROLES },
-  // Config Replicate ends in an unrestricted multi-table write across a whole
-  // group of config tables, so it stays at the MASTER/ADMIN tier — same gate the
-  // routes enforce server-side.
-  { mode: 'configreplicate', label: 'Config Replicate', icon: <DifferenceIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN] },
-  { mode: 'configsync', label: 'Config Sync', icon: <CloudSyncIcon sx={{ fontSize: 18 }} />, visibleTo: [Role.MASTER, Role.ADMIN] },
-];
-
-// Only these two views render a history side-panel (QueryHistory / RedisHistory).
-// The panels live inside their tab's view, which stays mounted but hidden when
-// another tab is active — so toggling History anywhere else silently mounted
-// them behind an invisible pane and fired their fetches with nothing to show.
-const HISTORY_MODES: ManagerMode[] = ['db', 'redis'];
-
-const tabsForRole = (role: Role | undefined) =>
-  role ? TAB_CONFIG.filter((t) => t.visibleTo.includes(role)) : [];
-
-const PillToggle = ({ managerMode, setManagerMode, userRole, pendingApprovals }: { managerMode: ManagerMode; setManagerMode: (m: ManagerMode) => void; userRole: Role; pendingApprovals: number }) => {
-  const tabRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const [indicator, setIndicator] = useState({ left: 3, width: 0 });
-  const visibleTabs = tabsForRole(userRole);
-
-  useEffect(() => {
-    const el = tabRefs.current[managerMode];
-    if (el) {
-      const parent = el.parentElement;
-      if (parent) {
-        const parentRect = parent.getBoundingClientRect();
-        const tabRect = el.getBoundingClientRect();
-        setIndicator({
-          left: tabRect.left - parentRect.left,
-          width: tabRect.width,
-        });
-      }
-    }
-    // pendingApprovals changes the Requests tab's width (badge appears/grows),
-    // which shifts every tab after it — recompute so the pill stays aligned.
-  }, [managerMode, pendingApprovals]);
-
-  return (
-    <Box
-      sx={{
-        display: 'flex',
-        bgcolor: 'rgba(255,255,255,0.08)',
-        borderRadius: '20px',
-        p: '3px',
-        position: 'relative',
-      }}
-    >
-      {/* Sliding indicator — auto-sized to active tab */}
-      <Box
-        sx={{
-          position: 'absolute',
-          top: 3,
-          left: indicator.left,
-          width: indicator.width,
-          height: 'calc(100% - 6px)',
-          borderRadius: '17px',
-          bgcolor: 'primary.main',
-          opacity: 0.25,
-          border: '1px solid',
-          borderColor: 'primary.main',
-          transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1), width 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-        }}
-      />
-      {visibleTabs.map((tab) => (
-        <Box
-          key={tab.mode}
-          ref={(el: HTMLDivElement | null) => { tabRefs.current[tab.mode] = el; }}
-          onClick={() => setManagerMode(tab.mode)}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.5,
-            px: 1.5,
-            py: 0.75,
-            borderRadius: '17px',
-            cursor: 'pointer',
-            position: 'relative',
-            zIndex: 1,
-            color: managerMode === tab.mode ? '#fff' : 'rgba(255,255,255,0.5)',
-            transition: 'color 0.25s ease',
-            fontSize: '0.8rem',
-            fontWeight: 500,
-            userSelect: 'none',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {tab.icon}
-          {tab.label}
-          {tab.mode === 'requests' && pendingApprovals > 0 && (
-            <Box
-              sx={{
-                ml: 0.25,
-                minWidth: 18,
-                height: 18,
-                px: 0.5,
-                borderRadius: '9px',
-                bgcolor: 'error.main',
-                color: '#fff',
-                fontSize: '0.65rem',
-                fontWeight: 700,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              {pendingApprovals > 99 ? '99+' : pendingApprovals}
-            </Box>
-          )}
-        </Box>
-      ))}
-    </Box>
-  );
-};
-
-// Track last sync time so we don't re-fetch on every page reload
 const SYNC_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 let lastSyncTime = 0;
 
@@ -380,8 +210,6 @@ const ConsolePage = () => {
   const navigate = useNavigate();
   const user = useAppStore(s => s.user);
   const setUser = useAppStore(s => s.setUser);
-  const showHistory = useAppStore(s => s.showHistory);
-  const setShowHistory = useAppStore(s => s.setShowHistory);
   const setCurrentQuery = useAppStore(s => s.setCurrentQuery);
   const managerMode = useAppStore(s => s.managerMode);
   const setManagerMode = useAppStore(s => s.setManagerMode);
@@ -535,94 +363,68 @@ const ConsolePage = () => {
   // fetches in DatabaseSelector, git ref loads in MigrationsContent) for users
   // that have no business there. Allowed but inactive panels stay mounted so
   // the existing opacity-driven tab transitions preserve their internal state.
-  const canSee = (mode: ManagerMode) =>
-    TAB_CONFIG.find((t) => t.mode === mode)?.visibleTo.includes(user.role) ?? false;
+  const canSee = (mode: ManagerMode) => canSeeMode(user.role, mode);
+
+  const headerActions = (
+    <>
+      <Tooltip title="Reload database configuration">
+        {/* span keeps the tooltip working while the button is disabled */}
+        <span>
+          <IconButton
+            aria-label="Reload database configuration"
+            onClick={handleRefreshConfig}
+            disabled={refreshingConfig}
+            sx={{ width: 32, height: 32, color: 'rgba(255,255,255,0.7)', '&:hover': { color: '#fff' } }}
+          >
+            {refreshingConfig ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon fontSize="small" />}
+          </IconButton>
+        </span>
+      </Tooltip>
+
+      <IconButton
+        aria-label="Account"
+        onClick={(e) => setAnchorEl(e.currentTarget)}
+        sx={{ p: 0 }}
+      >
+        <Avatar
+          alt={user.name}
+          src={user.picture}
+          sx={{ width: 32, height: 32 }}
+        />
+      </IconButton>
+
+      <Menu
+        anchorEl={anchorEl}
+        open={Boolean(anchorEl)}
+        onClose={() => setAnchorEl(null)}
+      >
+        <MenuItem disabled>
+          <Box>
+            <Typography variant="subtitle2">{user.name}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {user.email}
+            </Typography>
+          </Box>
+        </MenuItem>
+        <MenuItem onClick={handleLogout}>
+          <LogoutIcon fontSize="small" sx={{ mr: 1 }} />
+          Logout
+        </MenuItem>
+      </Menu>
+    </>
+  );
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      {/* Top Bar */}
       <AppBar position="static" elevation={2}>
-        <Toolbar>
-          <Typography variant="h6" component="div" noWrap>
-            {managerMode === 'db' ? 'Multi-Cloud DB Manager'
-              : managerMode === 'redis' ? 'Redis Manager'
-              : managerMode === 'batch' ? 'Batch Query Manager'
-              : managerMode === 'clickhouse' ? 'Clickhouse Manager'
-              : managerMode === 'shudhi' ? 'Shudhi — In-Memory Cache Manager'
-              : managerMode === 'configreplicate' ? 'Config Replicate'
-              : managerMode === 'systemConfigs' ? 'System Configs'
-              : managerMode === 'requests' ? 'Query Requests'
-              : 'DB Migration Verifier'}
-          </Typography>
-
-          <Box sx={{ flexGrow: 1 }} />
-
-          {/* Smooth pill toggle — auto-width based on content */}
-          <PillToggle managerMode={managerMode} setManagerMode={setManagerMode} userRole={user.role} pendingApprovals={pendingApprovals} />
-
-          <Box sx={{ flexGrow: 1 }} />
-
-          <Stack direction="row" spacing={2} alignItems="center">
-            {user.role === 'ADMIN' && (
-              <Button
-                color="inherit"
-                startIcon={<PeopleIcon />}
-                onClick={() => navigate('/users')}
-              >
-                Users
-              </Button>
-            )}
-
-            {HISTORY_MODES.includes(managerMode) && (
-              <Button
-                color="inherit"
-                startIcon={<HistoryIcon />}
-                onClick={() => setShowHistory(!showHistory)}
-              >
-                History
-              </Button>
-            )}
-
-            <Button
-              color="inherit"
-              startIcon={<RefreshIcon />}
-              onClick={handleRefreshConfig}
-              disabled={refreshingConfig}
-            >
-              {refreshingConfig ? 'Refreshing...' : 'Refresh'}
-            </Button>
-
-            <IconButton
-              onClick={(e) => setAnchorEl(e.currentTarget)}
-              sx={{ p: 0 }}
-            >
-              <Avatar
-                alt={user.name}
-                src={user.picture}
-                sx={{ width: 32, height: 32 }}
-              />
-            </IconButton>
-
-            <Menu
-              anchorEl={anchorEl}
-              open={Boolean(anchorEl)}
-              onClose={() => setAnchorEl(null)}
-            >
-              <MenuItem disabled>
-                <Box>
-                  <Typography variant="subtitle2">{user.name}</Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {user.email}
-                  </Typography>
-                </Box>
-              </MenuItem>
-              <MenuItem onClick={handleLogout}>
-                <LogoutIcon fontSize="small" sx={{ mr: 1 }} />
-                Logout
-              </MenuItem>
-            </Menu>
-          </Stack>
-        </Toolbar>
+        <ConsoleNav
+          role={user.role}
+          managerMode={managerMode}
+          onSelect={setManagerMode}
+          pendingApprovals={pendingApprovals}
+          brand="Multi-Cloud DB Manager"
+          actions={headerActions}
+        />
       </AppBar>
 
       {/* Main Content */}
@@ -648,28 +450,19 @@ const ConsolePage = () => {
                 p: managerMode === 'db' ? 0 : 2,
               }}
             >
-              <Grid container spacing={2} sx={{ flexGrow: 1, overflow: 'hidden' }}>
-                <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  <Box sx={{ overflowY: 'auto', flex: 1 }}>
-                    <Stack spacing={2} sx={{ p: 1 }}>
-                      <DatabaseSelector onExecute={handleQueryExecute} />
-                      <Box sx={{ height: '400px' }}>
-                        <SQLEditor />
-                      </Box>
-                      {currentResult && (
-                        <Box ref={resultsPanelRef}>
-                          <ResultsPanel result={currentResult} />
-                        </Box>
-                      )}
-                    </Stack>
+              <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={2} sx={{ p: 1 }}>
+                  <DatabaseSelector onExecute={handleQueryExecute} />
+                  <Box sx={{ height: '400px' }}>
+                    <SQLEditor />
                   </Box>
-                </Grid>
-                {showHistory && (
-                  <Grid item xs={12} md={4} sx={{ height: '100%' }}>
-                    <QueryHistory />
-                  </Grid>
-                )}
-              </Grid>
+                  {currentResult && (
+                    <Box ref={resultsPanelRef}>
+                      <ResultsPanel result={currentResult} />
+                    </Box>
+                  )}
+                </Stack>
+              </Box>
             </Box>
 
             {/* Redis Manager View — always mounted (CSS-hidden when not allowed) */}
@@ -688,26 +481,17 @@ const ConsolePage = () => {
                 p: managerMode === 'redis' ? 0 : 2,
               }}
             >
-              <Grid container spacing={2} sx={{ flexGrow: 1, overflow: 'hidden' }}>
-                <Grid item xs={12} md={showHistory ? 8 : 12} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  <Box sx={{ overflowY: 'auto', flex: 1 }}>
-                    <Stack spacing={2} sx={{ p: 1 }}>
-                      <RedisCommandForm onResult={handleRedisResult} />
-                      {redisResult && (
-                        <Box ref={redisResultsPanelRef}>
-                          <RedisResultsPanel result={redisResult} />
-                        </Box>
-                      )}
-                      {visitedModes.has('redis') && <Suspense fallback={panelLoader}><RedisCacheClearer /></Suspense>}
-                    </Stack>
-                  </Box>
-                </Grid>
-                {showHistory && (
-                  <Grid item xs={12} md={4} sx={{ height: '100%' }}>
-                    <RedisHistory />
-                  </Grid>
-                )}
-              </Grid>
+              <Box sx={{ overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={2} sx={{ p: 1 }}>
+                  <RedisCommandForm onResult={handleRedisResult} />
+                  {redisResult && (
+                    <Box ref={redisResultsPanelRef}>
+                      <RedisResultsPanel result={redisResult} />
+                    </Box>
+                  )}
+                  {visitedModes.has('redis') && <Suspense fallback={panelLoader}><RedisCacheClearer /></Suspense>}
+                </Stack>
+              </Box>
             </Box>
 
             {/* Batch Query Manager View — always mounted */}
@@ -901,6 +685,48 @@ const ConsolePage = () => {
               {visitedModes.has('requests') && (
                 <Suspense fallback={panelLoader}>
                   <QueryRequestsPanel active={managerMode === 'requests'} onReviewed={refreshPendingCount} />
+                </Suspense>
+              )}
+            </Box>
+
+            {/* Admin → Users View — always mounted */}
+            <Box
+              key="users-view"
+              sx={{
+                position: managerMode === 'users' ? 'relative' : 'absolute',
+                inset: managerMode === 'users' ? undefined : 0,
+                opacity: managerMode === 'users' ? 1 : 0,
+                pointerEvents: managerMode === 'users' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'users' ? 1 : undefined,
+                display: canSee('users') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'users' ? 0 : 2,
+              }}
+            >
+              {visitedModes.has('users') && <Suspense fallback={panelLoader}><UsersPanel /></Suspense>}
+            </Box>
+
+            {/* Admin → History View — always mounted */}
+            <Box
+              key="history-view"
+              sx={{
+                position: managerMode === 'history' ? 'relative' : 'absolute',
+                inset: managerMode === 'history' ? undefined : 0,
+                opacity: managerMode === 'history' ? 1 : 0,
+                pointerEvents: managerMode === 'history' ? 'auto' : 'none',
+                transition: 'opacity 0.3s ease',
+                flexGrow: managerMode === 'history' ? 1 : undefined,
+                display: canSee('history') ? 'flex' : 'none',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                p: managerMode === 'history' ? 0 : 2,
+              }}
+            >
+              {visitedModes.has('history') && (
+                <Suspense fallback={panelLoader}>
+                  <HistoryPage role={user.role} active={managerMode === 'history'} />
                 </Suspense>
               )}
             </Box>

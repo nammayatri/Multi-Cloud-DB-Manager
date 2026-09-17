@@ -6,6 +6,7 @@ import {
   deleteGroup,
   getGroup,
   getRun,
+  introspectForeignKeys,
   introspectTable,
   introspectTables,
   listGroups,
@@ -18,6 +19,7 @@ import {
   configReplicateAnalyzeSchema,
   configReplicateApplySchema,
   configReplicateGroupSchema,
+  configReplicateIntrospectForeignKeysSchema,
   configReplicateIntrospectTableSchema,
   configReplicateIntrospectTablesSchema,
 } from '../middleware/validation.middleware';
@@ -48,6 +50,13 @@ router.post(
   requireConfigReplicate,
   validate(configReplicateIntrospectTableSchema),
   introspectTable
+);
+
+router.post(
+  '/introspect/foreign-keys',
+  requireConfigReplicate,
+  validate(configReplicateIntrospectForeignKeysSchema),
+  introspectForeignKeys
 );
 
 router.post('/analyze', requireConfigReplicate, validate(configReplicateAnalyzeSchema), analyze);

@@ -9,14 +9,18 @@ const router = Router();
 // All routes require authentication
 router.use(isAuthenticated);
 
-// Anyone with Redis access. CKH_MANAGER is denied (no Redis access by spec).
+// Anyone with Redis access. CKH_MANAGER and REQUESTOR are denied (no Redis
+// access by spec). This allowlist guards every route including /execute and
+// /scan: validateRedisPermissions narrows what an allowed role may run, but it
+// branches per role and so falls *open* for a role it doesn't know about —
+// the gate that fails closed has to be this one.
 const requireRedisAccess = requireRoles(Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER);
 
 // Execute a Redis command
-router.post('/execute', validate(redisCommandSchema), validateRedisPermissions, executeRedisCommand);
+router.post('/execute', requireRedisAccess, validate(redisCommandSchema), validateRedisPermissions, executeRedisCommand);
 
 // Start a SCAN operation
-router.post('/scan', validate(redisScanSchema), validateRedisPermissions, scanKeys);
+router.post('/scan', requireRedisAccess, validate(redisScanSchema), validateRedisPermissions, scanKeys);
 
 // Cancel a running SCAN
 router.post('/scan/:id/cancel', requireRedisAccess, cancelScan);

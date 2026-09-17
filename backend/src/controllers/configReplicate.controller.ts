@@ -120,6 +120,25 @@ export const introspectTables = async (req: Request, res: Response, next: NextFu
   }
 };
 
+export const introspectForeignKeys = async (req: Request, res: Response, next: NextFunction) => {
+  const { database, cloud, tables } = req.body;
+  let client;
+  try {
+    const pool = resolveTargetPool(cloud, database);
+    client = await pool.connect();
+    const qualified = (tables as Array<{ schema: string; table: string }>).map(
+      t => `${t.schema}.${t.table}`
+    );
+    const foreignKeys = await introspection.getForeignKeys(client, qualified);
+    res.json({ foreignKeys });
+  } catch (error: any) {
+    if (error.statusCode === 400) return res.status(400).json({ error: error.message });
+    next(error);
+  } finally {
+    client?.release();
+  }
+};
+
 export const introspectTable = async (req: Request, res: Response, next: NextFunction) => {
   const { database, cloud, schema, table, dimensionColumns } = req.body;
   let client;

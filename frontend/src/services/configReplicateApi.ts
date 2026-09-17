@@ -5,6 +5,7 @@ import type {
   ConfigGroup,
   ConfigGroupSummary,
   DiffSelection,
+  ForeignKeyInfo,
   GroupInput,
   RunSummaryRecord,
   TableMeta,
@@ -50,6 +51,15 @@ export const configReplicateAPI = {
   }): Promise<Array<{ schema: string; table: string; dimensionColumns: string[] }>> => {
     const response = await api.post('/api/config-replicate/introspect/tables', params);
     return response.data.tables;
+  },
+
+  getForeignKeys: async (params: {
+    database: string;
+    cloud: string;
+    tables: Array<{ schema: string; table: string }>;
+  }): Promise<ForeignKeyInfo[]> => {
+    const response = await api.post('/api/config-replicate/introspect/foreign-keys', params);
+    return response.data.foreignKeys;
   },
 
   getTableMeta: async (params: {

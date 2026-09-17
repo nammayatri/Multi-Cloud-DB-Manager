@@ -45,13 +45,16 @@ interface UserOption {
 interface QueryHistoryProps {
   /** When set, locks the database filter and hides the dropdown. */
   database?: string;
+  /** Whether the page showing this panel is open; reopening it refetches. */
+  active?: boolean;
 }
 
-const QueryHistory = ({ database }: QueryHistoryProps = {}) => {
+const QueryHistory = ({ database, active }: QueryHistoryProps = {}) => {
   const user = useAppStore(s => s.user);
   const queryHistory = useAppStore(s => s.queryHistory);
   const setQueryHistory = useAppStore(s => s.setQueryHistory);
   const setCurrentQuery = useAppStore(s => s.setCurrentQuery);
+  const setManagerMode = useAppStore(s => s.setManagerMode);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
@@ -169,6 +172,15 @@ const QueryHistory = ({ database }: QueryHistoryProps = {}) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, filter, statusFilter, userFilter]);
 
+  // Reopening the History page refetches, so queries run since the last visit
+  // show up. The first activation is covered by the load above.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) loadHistory();
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
   // Separate effect - reset to page 1 when filters change
   const prevFilter = useRef(filter);
   const prevStatusFilter = useRef(statusFilter);
@@ -200,6 +212,7 @@ const QueryHistory = ({ database }: QueryHistoryProps = {}) => {
 
   const handleLoadQuery = (query: string) => {
     setCurrentQuery(query);
+    setManagerMode('db');
     toast.success('Query loaded into editor');
   };
 

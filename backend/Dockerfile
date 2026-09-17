@@ -1,10 +1,10 @@
-# Node 24 here, not 18 — Node 18's bundled npm (10.x) fails `npm ci` on this
-# lockfile with a spurious "Missing: X from lock file" error (same known npm
-# 10.x lockfile-validation bug already documented in frontend/Dockerfile; npm
-# 11+ installs this exact lockfile cleanly). Safe to differ from the Node 18
-# production stage below — this stage only compiles TypeScript to dist/, and
-# the backend has zero native/compiled npm dependencies (see the production
-# stage's own comment), so nothing here is glibc/Node-version sensitive.
+# Node 24 here — Node 18's bundled npm (10.x) fails `npm ci` on this lockfile
+# with a spurious "Missing: X from lock file" error (same known npm 10.x
+# lockfile-validation bug already documented in frontend/Dockerfile; npm 11+
+# installs this exact lockfile cleanly), and main's node:22-alpine bump still
+# ships npm 10.x so it doesn't clear the bug either. Kept on bookworm-slim
+# (not alpine) to match the production stage below, since this stage's own
+# `npm ci` is otherwise not glibc/Node-version sensitive.
 FROM node:24-bookworm-slim AS builder
 
 WORKDIR /app
@@ -23,15 +23,18 @@ RUN npm run build
 
 # Production stage
 #
-# Switched from node:18-alpine to node:18-bookworm-slim to support the Config
-# Sync feature: psycopg2-binary has no musl/Alpine wheel, and the vendored
-# passetto-server binary needs a glibc dynamic linker Alpine doesn't ship at
-# all. Audited before switching: this backend has ZERO native/compiled npm
-# dependencies (bcryptjs is pure-JS despite the name; pg/ioredis/redis are
-# pure-JS too) — so there is no native-module ABI risk from the musl->glibc
-# change, only a larger image size. The only Alpine-specific line (`apk add
-# git`) has a direct apt-get equivalent below.
-FROM node:18-bookworm-slim
+# Switched from node:*-alpine to node:24-bookworm-slim (glibc, not musl) to
+# support the Config Sync feature: psycopg2-binary has no musl/Alpine wheel,
+# and the vendored passetto-server binary needs a glibc dynamic linker Alpine
+# doesn't ship at all. Audited before switching: this backend has ZERO
+# native/compiled npm dependencies (bcryptjs is pure-JS despite the name;
+# pg/ioredis/redis are pure-JS too) — so there is no native-module ABI risk
+# from the musl->glibc change, only a larger image size. The only
+# Alpine-specific line (`apk add git`) has a direct apt-get equivalent below.
+# Node pinned to 24 (not main's 22) because this stage's own
+# `npm ci --only=production` hits the same npm 10.x lockfile bug described in
+# the builder stage above, and 22 still ships npm 10.x.
+FROM node:24-bookworm-slim
 
 # git: migration verification feature (pre-existing).
 # python3/pip3 + the library list below: Config Sync feature — this exact

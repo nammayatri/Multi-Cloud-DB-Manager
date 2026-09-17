@@ -36,6 +36,7 @@ import shudhiRoutes from './routes/shudhi.routes';
 import configReplicateRoutes from './routes/configReplicate.routes';
 import configSyncRoutes from './routes/configSync.routes';
 import systemConfigsRoutes from './routes/systemConfigs.routes';
+import { createMcpRouter } from './mcp/http';
 import RedisManagerPools from './config/redis-pools';
 import ClickHouseClientManager from './config/clickhouse';
 
@@ -155,6 +156,8 @@ app.use('/api/config-sync', configSyncRoutes);
 console.log('[STARTUP] ✓ /api/config-sync routes mounted');
 app.use('/api/system-configs', systemConfigsRoutes);
 console.log('[STARTUP] ✓ /api/system-configs routes mounted');
+app.use('/api/mcp', createMcpRouter());
+console.log('[STARTUP] ✓ /api/mcp (MCP Streamable HTTP) mounted');
 
 // 404 handler
 app.use(notFoundHandler);

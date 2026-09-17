@@ -14,6 +14,12 @@ export const Role = {
   // read-only for Postgres and for direct Redis write commands (including DEL):
   // key removal must go through the pattern-scoped, audited SCAN flow.
   CACHE_CLEARER: 'CACHE_CLEARER',
+  // REQUESTOR: no execution rights of its own, anywhere — not Postgres (not
+  // even SELECT), not Redis, not Shudhi, not ClickHouse. It composes queries
+  // and submits them for approval; whoever approves runs them under their own
+  // role. Deliberately distinct from READER, which can already read directly
+  // and request the rest — a REQUESTOR's every query goes through review.
+  REQUESTOR: 'REQUESTOR',
 } as const;
 
 export type Role = typeof Role[keyof typeof Role];
@@ -26,6 +32,7 @@ export const ALL_ROLES: Role[] = [
   Role.CKH_MANAGER,
   Role.RELEASE_MANAGER,
   Role.CACHE_CLEARER,
+  Role.REQUESTOR,
 ];
 
 /**
