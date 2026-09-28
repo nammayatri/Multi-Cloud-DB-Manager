@@ -86,10 +86,25 @@ interface ConsoleNavProps {
   brand: string;
   /** Right end of the top row. */
   actions: ReactNode;
+  /**
+   * Transient pages currently open — shown in the header only while they are.
+   * Pass a stable array; it keys the section memo.
+   */
+  openTransient?: ManagerMode[];
 }
 
-const ConsoleNav = ({ role, managerMode, onSelect, pendingApprovals, brand, actions }: ConsoleNavProps) => {
-  const sections = useMemo(() => sectionsForRole(role), [role]);
+const EMPTY_TRANSIENT: ManagerMode[] = [];
+
+const ConsoleNav = ({
+  role,
+  managerMode,
+  onSelect,
+  pendingApprovals,
+  brand,
+  actions,
+  openTransient = EMPTY_TRANSIENT,
+}: ConsoleNavProps) => {
+  const sections = useMemo(() => sectionsForRole(role, openTransient), [role, openTransient]);
   const activeId = sectionOf(managerMode);
   const activeSection = sections.find((s) => s.id === activeId);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);

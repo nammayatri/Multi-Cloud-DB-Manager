@@ -49,6 +49,11 @@ export const CONFIG_SYNC_ROLES: Role[] = [Role.MASTER, Role.ADMIN];
 // so it has nothing to do here.
 export const REQUEST_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER, Role.READER, Role.RELEASE_MANAGER, Role.CACHE_CLEARER, Role.REQUESTOR];
 
+// Pending approvals — everyone in REQUEST_ROLES except REQUESTOR, whose role
+// permits no statement at all: its queue is empty by construction, so the page
+// would only ever say "nothing waiting on you". It lands on My requests instead.
+export const REQUEST_APPROVAL_ROLES: Role[] = REQUEST_ROLES.filter((r) => r !== Role.REQUESTOR);
+
 // User management — ADMIN only, same as `requireAdmin` on the auth routes.
 export const USERS_ROLES: Role[] = [Role.ADMIN];
 
@@ -61,6 +66,12 @@ export interface ConsoleTab {
   mode: ManagerMode;
   label: string;
   visibleTo: Role[];
+  /**
+   * A page that only exists while something has opened it — never a default
+   * destination, and absent from the header until it is asked for. Callers
+   * name the transient pages currently open; the rest stay hidden.
+   */
+  transient?: boolean;
 }
 
 export const TAB_CONFIG: ConsoleTab[] = [
@@ -73,7 +84,12 @@ export const TAB_CONFIG: ConsoleTab[] = [
   { mode: 'systemConfigs', label: 'System Configs', visibleTo: SYSTEM_CONFIGS_ROLES },
   { mode: 'configreplicate', label: 'Config Replicate', visibleTo: CONFIG_REPLICATE_ROLES },
   { mode: 'configsync', label: 'Config Sync', visibleTo: CONFIG_SYNC_ROLES },
-  { mode: 'requests', label: 'Requests', visibleTo: REQUEST_ROLES },
+  { mode: 'requests', label: 'Pending approvals', visibleTo: REQUEST_APPROVAL_ROLES },
+  { mode: 'requestsMine', label: 'My requests', visibleTo: REQUEST_ROLES },
+  { mode: 'requestsReviewed', label: 'Reviewed', visibleTo: REQUEST_ROLES },
+  // Only while a link is being followed. It holds the one request that link
+  // points at, so the three lists above are left exactly as they were.
+  { mode: 'requestsLinked', label: 'Shared', visibleTo: REQUEST_ROLES, transient: true },
   { mode: 'users', label: 'Users', visibleTo: USERS_ROLES },
   { mode: 'history', label: 'History', visibleTo: HISTORY_ROLES },
 ];
@@ -92,28 +108,54 @@ export const SECTIONS: ConsoleSection[] = [
   { id: 'cache', label: 'Cache', modes: ['redis', 'shudhi'] },
   { id: 'clickhouse', label: 'Clickhouse', modes: ['clickhouse'] },
   { id: 'configs', label: 'Configs', modes: ['systemConfigs', 'configreplicate', 'configsync'] },
-  { id: 'requests', label: 'Requests', modes: ['requests'] },
+  {
+    id: 'requests',
+    label: 'Requests',
+    modes: ['requests', 'requestsMine', 'requestsReviewed', 'requestsLinked'],
+  },
   { id: 'admin', label: 'Admin', modes: ['users', 'history'] },
 ];
+
+/**
+ * A page that only exists while something has opened it. Nothing should treat
+ * one as a destination — not the header's default, and not the remembered page
+ * a reload restores.
+ */
+export const isTransientMode = (mode: ManagerMode): boolean =>
+  !!TAB_CONFIG.find((t) => t.mode === mode)?.transient;
 
 export const canSeeMode = (role: Role | undefined, mode: ManagerMode): boolean =>
   !!role && (TAB_CONFIG.find((t) => t.mode === mode)?.visibleTo.includes(role) ?? false);
 
-/** Pages this role may open, in header order (section by section). */
+/**
+ * Pages this role may open of its own accord, in header order.
+ *
+ * Transient pages are left out: they are somewhere you are taken, not
+ * somewhere you go, so landing on one by default would mean opening a page
+ * with nothing in it.
+ */
 export const tabsForRole = (role: Role | undefined): ConsoleTab[] =>
   SECTIONS.flatMap((s) => s.modes)
     .map((mode) => TAB_CONFIG.find((t) => t.mode === mode)!)
-    .filter((t) => canSeeMode(role, t.mode));
+    .filter((t) => !t.transient && canSeeMode(role, t.mode));
 
 export interface VisibleSection extends ConsoleSection {
   tabs: ConsoleTab[];
 }
 
-/** Sections with at least one page this role may open, each with only those pages. */
-export const sectionsForRole = (role: Role | undefined): VisibleSection[] =>
+/**
+ * Sections with at least one page this role may open, each with only those
+ * pages — plus whichever transient pages are named as currently open.
+ */
+export const sectionsForRole = (
+  role: Role | undefined,
+  openTransient: ManagerMode[] = []
+): VisibleSection[] =>
   SECTIONS.map((s) => ({
     ...s,
-    tabs: s.modes.filter((m) => canSeeMode(role, m)).map((m) => TAB_CONFIG.find((t) => t.mode === m)!),
+    tabs: s.modes
+      .map((m) => TAB_CONFIG.find((t) => t.mode === m)!)
+      .filter((t) => canSeeMode(role, t.mode) && (!t.transient || openTransient.includes(t.mode))),
   })).filter((s) => s.tabs.length > 0);
 
 export const sectionOf = (mode: ManagerMode): SectionId =>

@@ -14,6 +14,7 @@ import {
 import SaveIcon from '@mui/icons-material/Save';
 import toast from 'react-hot-toast';
 import { queryRequestsAPI, toastNonApiError } from '../../services/api';
+import SQLEditor from '../Editor/SQLEditor';
 import type { QueryRequestRecord } from '../../types';
 
 interface EditRequestDialogProps {
@@ -91,17 +92,7 @@ const EditRequestDialog = ({ open, onClose, record, onSubmitted }: EditRequestDi
             )}
           </Stack>
 
-          <TextField
-            label="Query"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            multiline
-            minRows={6}
-            maxRows={14}
-            fullWidth
-            required
-            InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.8rem' } }}
-          />
+          <SQLEditor value={query} onChange={setQuery} height={320} />
 
           {/* Read-only here: the reason belongs to the request, not this one
               query, so it's edited from the request itself. */}

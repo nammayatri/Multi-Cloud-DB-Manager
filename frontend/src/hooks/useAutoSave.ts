@@ -14,7 +14,14 @@ interface AutoSaveData {
   timestamp: number;
 }
 
-export const useAutoSave = () => {
+/**
+ * Draft autosave for the console's shared query.
+ *
+ * `enabled` is false for editors that aren't the console's — the composer's,
+ * say — since those edit their own text: restoring a draft there would
+ * overwrite the console's query, and saving one would overwrite the draft.
+ */
+export const useAutoSave = (enabled = true) => {
   const {
     currentQuery,
     selectedDatabase,
@@ -33,7 +40,7 @@ export const useAutoSave = () => {
 
   // Restore saved query on mount
   useEffect(() => {
-    if (hasRestoredRef.current) return;
+    if (!enabled || hasRestoredRef.current) return;
     hasRestoredRef.current = true;
 
     try {
@@ -61,7 +68,7 @@ export const useAutoSave = () => {
     } catch (error) {
       console.error('Failed to restore saved query:', error);
     }
-  }, [setCurrentQuery, setSelectedDatabase, setSelectedPgSchema, setSelectedMode]);
+  }, [enabled, setCurrentQuery, setSelectedDatabase, setSelectedPgSchema, setSelectedMode]);
 
   // Auto-save query when it changes
   useEffect(() => {
@@ -71,7 +78,7 @@ export const useAutoSave = () => {
     }
 
     // Don't save if query is empty
-    if (!currentQuery.trim()) {
+    if (!enabled || !currentQuery.trim()) {
       return;
     }
 
@@ -103,7 +110,7 @@ export const useAutoSave = () => {
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [currentQuery, selectedDatabase, selectedPgSchema, selectedMode]);
+  }, [enabled, currentQuery, selectedDatabase, selectedPgSchema, selectedMode]);
 
   // Clear saved draft
   const clearDraft = () => {

@@ -26,7 +26,39 @@ import { QueryRequestRecord } from '../types';
 
 /** How long the approving pod watches its execution before giving up. */
 const WATCH_TIMEOUT_MS = 6 * 60 * 1000;
-const WATCH_INTERVAL_MS = 2000;
+
+/*
+ * The watch starts tight and backs off.
+ *
+ * Most approved queries are a single UPDATE that finishes in milliseconds, and
+ * this loop is what decides when the request row settles — and, in a sequential
+ * group run, when the NEXT query starts. A flat 2s poll that slept before its
+ * first look therefore cost every query a guaranteed two seconds of nothing,
+ * which read in the UI as a result sitting there while the run appeared stuck.
+ */
+const WATCH_INTERVAL_START_MS = 150;
+const WATCH_INTERVAL_MAX_MS = 2000;
+
+/**
+ * May this viewer action this row right now?
+ *
+ * `canApprove` answers the role-and-SQL half of the question, and `canView`
+ * deliberately wants only that half. This adds the two conditions that make a
+ * row actionable in a list: it is still waiting, and it isn't your own request.
+ * Every endpoint that annotates rows for the UI uses this, because the UI can't
+ * work it out for itself — approval depends on the SQL.
+ */
+const canApproveNow = (user: Express.User, record: QueryRequestRecord): boolean =>
+  record.status === 'PENDING' &&
+  record.requester_id !== user.id &&
+  canApprove(user.role, record);
+
+/** Rows annotated with whether this viewer may action each one. */
+const annotateApprovable = (
+  user: Express.User,
+  records: QueryRequestRecord[]
+): Array<QueryRequestRecord & { can_approve: boolean }> =>
+  records.map(record => ({ ...record, can_approve: canApproveNow(user, record) }));
 
 /**
  * Can this user approve this request?
@@ -61,17 +93,25 @@ const awaitExecutionOutcome = async (
   executionId: string
 ): Promise<boolean> => {
   const startedAt = Date.now();
+  let interval = WATCH_INTERVAL_START_MS;
+
+  /** Wait before looking again, so a long query isn't hammered at 150ms. */
+  const waitBeforeRetry = async () => {
+    await sleep(interval);
+    interval = Math.min(interval * 2, WATCH_INTERVAL_MAX_MS);
+  };
 
   for (;;) {
-    await sleep(WATCH_INTERVAL_MS);
-
     try {
+      // Look first, sleep second: a query that is already done is recorded now
+      // rather than one interval from now.
       const status = await queryService.getExecutionStatus(executionId);
 
       // Record gone (TTL) before we saw a terminal state — the sweep will close
       // it out rather than us guessing an outcome.
       if (!status) {
         if (Date.now() - startedAt > WATCH_TIMEOUT_MS) return false;
+        await waitBeforeRetry();
         continue;
       }
 
@@ -83,6 +123,7 @@ const awaitExecutionOutcome = async (
           });
           return false;
         }
+        await waitBeforeRetry();
         continue;
       }
 
@@ -242,9 +283,15 @@ export const getGroup = async (req: Request, res: Response, next: NextFunction) 
       throw new AppError('You do not have access to this group', 403);
     }
 
+    // Annotated like the pending queue's rows, and by the same function: a
+    // caller showing a whole request needs to know which of its queries this
+    // viewer may still action, and offered Approve on ones that had already run
+    // before this was added.
+    const annotated = annotateApprovable(user, visible);
+
     res.json({
       groupId: req.params.groupId,
-      requests: visible,
+      requests: annotated,
       // Flagged so the UI can say "2 of 5 shown" rather than silently hiding
       // the members this viewer's role can't approve.
       totalInGroup: members.length,
@@ -410,13 +457,7 @@ export const listPendingApprovals = async (req: Request, res: Response, next: Ne
 
     const requests: Array<QueryRequestRecord & { can_approve: boolean }> = [];
     for (const members of byGroup.values()) {
-      const annotated = members.map(member => ({
-        ...member,
-        can_approve:
-          member.status === 'PENDING' &&
-          member.requester_id !== user.id &&
-          canApprove(user.role, member),
-      }));
+      const annotated = annotateApprovable(user, members);
 
       if (annotated.some(m => m.can_approve)) {
         requests.push(...annotated);

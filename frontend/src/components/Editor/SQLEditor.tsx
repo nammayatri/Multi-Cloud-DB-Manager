@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Editor } from '@monaco-editor/react';
 import { Box, Paper, Button, Stack, Typography, IconButton, Tooltip } from '@mui/material';
 import FormatAlignLeftIcon from '@mui/icons-material/FormatAlignLeft';
@@ -12,14 +12,39 @@ import toast from 'react-hot-toast';
 import { useAutoSave } from '../../hooks/useAutoSave';
 import { formatDistanceToNow } from 'date-fns';
 
-const SQLEditor = () => {
-  const currentQuery = useAppStore(s => s.currentQuery);
-  const setCurrentQuery = useAppStore(s => s.setCurrentQuery);
+interface SQLEditorProps {
+  /**
+   * Controlled mode — pass both to edit some other query (a request being
+   * composed, say) rather than the console's shared one. A controlled editor
+   * is standalone: it doesn't claim the global editor slot, autosave a draft
+   * or take the execute shortcut, since none of those belong to it.
+   */
+  value?: string;
+  onChange?: (value: string) => void;
+  /** Controlled editors sit in a dialog, so they need a height of their own. */
+  height?: number | string;
+}
+
+const SQLEditor = ({ value, onChange, height = '100%' }: SQLEditorProps = {}) => {
+  const controlled = onChange !== undefined;
+
+  const storeQuery = useAppStore(s => s.currentQuery);
+  const setStoreQuery = useAppStore(s => s.setCurrentQuery);
   const setEditorInstance = useAppStore(s => s.setEditorInstance);
   const executeRef = useAppStore(s => s.executeRef);
-  const { lastSaved, isSaving, clearDraft } = useAutoSave();
+  const { lastSaved, isSaving, clearDraft } = useAutoSave(!controlled);
+
+  const currentQuery = controlled ? value ?? '' : storeQuery;
+  const setCurrentQuery = controlled ? onChange : setStoreQuery;
+
+  // This editor, whichever mode it's in — the store's slot holds whichever
+  // editor the user last focused, which isn't necessarily this one.
+  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
 
   const handleEditorDidMount = (editorInstance: editor.IStandaloneCodeEditor) => {
+    editorRef.current = editorInstance;
+    if (controlled) return;
+
     setEditorInstance(editorInstance);
 
     // Multiple <SQLEditor> instances can be mounted at once (e.g. one in the
@@ -45,7 +70,7 @@ const SQLEditor = () => {
   };
 
   const handleGenerateUUID = () => {
-    const editorInstance = useAppStore.getState().editorInstance;
+    const editorInstance = editorRef.current;
     const uuid = crypto.randomUUID();
     if (editorInstance) {
       const position = editorInstance.getPosition();
@@ -100,7 +125,11 @@ const SQLEditor = () => {
   };
 
   return (
-    <Paper elevation={2} sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <Paper
+      elevation={controlled ? 0 : 2}
+      variant={controlled ? 'outlined' : 'elevation'}
+      sx={{ height, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+    >
       <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 1, borderBottom: 1, borderColor: 'divider' }}>
         <Button
           variant="outlined"
@@ -145,7 +174,7 @@ const SQLEditor = () => {
           height="100%"
           defaultLanguage="sql"
           value={currentQuery}
-          onChange={(value) => setCurrentQuery(value || '')}
+          onChange={(next) => setCurrentQuery(next || '')}
           onMount={handleEditorDidMount}
           theme="vs-dark"
           options={{

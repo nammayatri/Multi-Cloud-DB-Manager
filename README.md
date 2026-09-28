@@ -139,7 +139,11 @@ Managing PostgreSQL across AWS, GCP, or any cloud means juggling connections, cr
 | **Bulk actions** | Approve all in order, reject all with one note, or withdraw all — scoped to the whole request |
 | **Revisions, not edits** | Changing a pending query's SQL adds a revision and marks the previous version replaced, keeping its place in the run order. The original stays visible so approvers can see what changed |
 | **Reason is request‑scoped** | Edited separately from the SQL and applied to every still‑pending query. Anything already approved keeps the reason it was approved under |
-| **Watch it run** | Approving opens the result immediately and follows the execution — per‑statement progress, then per‑cloud results as each one lands |
+| **One click to approve** | A query the SQL editor would run without comment is approved and run on a single click. The same check the editor puts on Execute decides: anything it would warn about — `DROP`, `TRUNCATE`, `DELETE`, `UPDATE` without `WHERE`, `GRANT`/`REVOKE` — is flagged **on the row**, before the button, rather than behind a dialog after it |
+| **Password in place** | An `ALTER`/`DROP`‑class query grows a password field beside its Approve button, which stays disabled until it's filled. That is the only thing that interrupts an approval |
+| **Watch it run** | Approving opens the result under the query itself and follows the execution — per‑statement progress, then per‑cloud results as each one lands. In an ordered run it moves down to the next query as the run advances |
+| **Status at a glance** | Every query carries a coloured rail and chip — green succeeded, red failed, amber pending — so a part‑run request says where it stopped without being read line by line. A request holds its place in the list while you act on it |
+| **Shareable links** | Copy a link to any request and send it. It opens that one request on a **Shared** page of its own, leaving the three lists untouched, and survives the login form if the recipient isn't signed in. Who may open it is the backend's decision, not the link's — a link grants nothing |
 | **Resubmit** | A failed, rejected, expired, or withdrawn query can be reopened as a new request, prefilled and editable. The original stays in the audit trail |
 | **No self‑approval** | Enforced by a `CHECK` constraint, for every role including MASTER/ADMIN |
 | **Audit trail** | Reason, requester, approver, note, and outcome kept permanently — including for approved `SELECT`s, which query history skips |
@@ -734,7 +738,7 @@ kubectl apply -f k8s/
 | `POST` | `/api/query-requests/:id/approve` | User | Approve **and run**, as you (password required for ALTER/DROP) |
 | `POST` | `/api/query-requests/:id/reject` | User | Reject with a mandatory note |
 | `POST` | `/api/query-requests/:id/cancel` | User | Withdraw your own pending query |
-| `GET` | `/api/query-requests/groups/:groupId` | User | Every query in a request that you can see |
+| `GET` | `/api/query-requests/groups/:groupId` | User | Every query in a request that you can see, each annotated with whether **you** may action it right now |
 | `PATCH` | `/api/query-requests/groups/:groupId/reason` | User | Change the reason — applies to every still‑pending query in the request |
 | `POST` | `/api/query-requests/groups/:groupId/approve` | User | Approve every pending query and run them **in order** |
 | `POST` | `/api/query-requests/groups/:groupId/reject` | User | Reject every pending query you can review, with one note |
@@ -864,6 +868,7 @@ kubectl apply -f k8s/
 | `npm run build` | Type‑check + production build |
 | `npm run preview` | Preview production build locally |
 | `npm run lint` | Lint with ESLint |
+| `npm test` | Run tests with Vitest |
 
 ### Project structure
 
@@ -891,16 +896,24 @@ dual-db-manager/
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
+│   │   │   ├── Clickhouse/         ── ClickHouse toolbar and results
 │   │   │   ├── ConfigReplicate/    ── Config Replicate (wizard, diff review, action bar)
+│   │   │   ├── CsvBatch/           ── Batch Query (CSV‑parametrized SQL)
 │   │   │   ├── Dialog/             ── Warning / confirmation dialogs
-│   │   │   ├── Editor/             ── Monaco SQL editor
+│   │   │   ├── Editor/             ── Monaco SQL editor, SQL tokenizer / highlighter
 │   │   │   ├── History/            ── Query history sidebar
 │   │   │   ├── Migrations/         ── Migration verifier (results, toolbar, summary, action bar)
+│   │   │   ├── Navigation/         ── Two‑level console header (sections → pages)
+│   │   │   ├── QueryRequests/      ── Request & approve (composer, queue, results, share links)
+│   │   │   ├── Redis/              ── Redis Manager (command form, results, cache clearer)
 │   │   │   ├── Results/            ── Multi‑cloud results panel
-│   │   │   └── Selector/           ── Database / schema / mode selector
+│   │   │   ├── Selector/           ── Database / schema / mode selector
+│   │   │   ├── Shudhi/             ── In‑memory cache management
+│   │   │   ├── SystemConfigs/      ── Feature‑flag rows
+│   │   │   └── Users/              ── User management (Admin → Users)
 │   │   ├── hooks/                  ── Auto‑save hook
-│   │   ├── pages/                  ── Login, Console, Users
-│   │   ├── services/               ── API client, query validation
+│   │   ├── pages/                  ── Login, Console, Migrations
+│   │   ├── services/               ── API client, query validation, post‑login redirect
 │   │   ├── store/                  ── Zustand state management
 │   │   └── types/                  ── TypeScript interfaces
 │   ├── nginx.conf                  ── Production Nginx config
