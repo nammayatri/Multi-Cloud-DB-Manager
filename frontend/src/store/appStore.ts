@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { User, QueryExecution } from '../types';
 import type { editor } from 'monaco-editor';
+import { isTransientMode } from '../components/Navigation/consoleSections';
 
 /** Migrations tab faces: the analyze-and-check verifier, or the compare-URL runner. */
 export type MigrationView = 'verifier' | 'lite';
@@ -14,7 +15,14 @@ export type ManagerMode =
   | 'clickhouse'
   | 'shudhi'
   | 'systemConfigs'
+  // The Requests section's pages. 'requests' is the pending queue, kept under
+  // its original name so a stored managerMode still resolves.
   | 'requests'
+  | 'requestsMine'
+  | 'requestsReviewed'
+  // Opened by a link, and only while one is being followed — see the
+  // `transient` tabs in components/Navigation/consoleSections.
+  | 'requestsLinked'
   | 'configreplicate'
   | 'configsync'
   | 'users'
@@ -72,6 +80,18 @@ interface AppState {
   user: User | null;
   setUser: (user: User | null) => void;
 
+  /**
+   * The group id from a `?request=` link, waiting for the Query Requests panel
+   * to pick it up. Held here rather than passed down because the page that
+   * reads the URL (ConsolePage) has to open the Requests section before the
+   * panel that acts on it is even mounted.
+   *
+   * Deliberately not persisted: a link is a one-off instruction, not a
+   * preference, and a stale one would re-focus a request on every reload.
+   */
+  linkedRequestGroupId: string | null;
+  setLinkedRequestGroupId: (groupId: string | null) => void;
+
   // Query state
   currentQuery: string;
   setCurrentQuery: (query: string) => void;
@@ -115,7 +135,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Manager mode
   managerMode: (sessionStorage.getItem('managerMode') as ManagerMode) || 'db',
   setManagerMode: (mode) => {
-    sessionStorage.setItem('managerMode', mode);
+    // A transient page isn't somewhere to come back to: what opened it doesn't
+    // survive a reload, so remembering it would restore a page with nothing on
+    // it. The last real page stays remembered instead, which is where a reload
+    // from a transient one lands.
+    if (!isTransientMode(mode)) sessionStorage.setItem('managerMode', mode);
     set({ managerMode: mode });
   },
 
@@ -128,6 +152,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   // User
   user: null,
   setUser: (user) => set({ user }),
+
+  linkedRequestGroupId: null,
+  setLinkedRequestGroupId: (groupId) => set({ linkedRequestGroupId: groupId }),
 
   // Query
   currentQuery: '',

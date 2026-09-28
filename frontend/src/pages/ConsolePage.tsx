@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Box,
   AppBar,
@@ -15,6 +15,8 @@ import {
 import LogoutIcon from '@mui/icons-material/Logout';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { authAPI, schemaAPI, queryRequestsAPI, toastNonApiError } from '../services/api';
+import { loginPathFor } from '../services/returnTo';
+import { readRequestLink, searchWithoutRequestLink } from '../components/QueryRequests/requestLink';
 import { useAppStore, type ManagerMode } from '../store/appStore';
 import toast from 'react-hot-toast';
 import SQLEditor from '../components/Editor/SQLEditor';
@@ -27,7 +29,8 @@ import MigrationSummaryBar from '../components/Migrations/MigrationSummaryBar';
 import MigrationResultsView from '../components/Migrations/MigrationResultsView';
 import MigrationActionBar from '../components/Migrations/MigrationActionBar';
 import ConsoleNav from '../components/Navigation/ConsoleNav';
-import { canSeeMode, tabsForRole } from '../components/Navigation/consoleSections';
+import { canSeeMode, sectionOf, tabsForRole } from '../components/Navigation/consoleSections';
+
 import { useMigrationsStore } from '../store/migrationsStore';
 import type { QueryResponse, RedisCommandResponse } from '../types';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -209,8 +212,19 @@ const MigrationsContent = () => {
 
 const ConsolePage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const user = useAppStore(s => s.user);
   const setUser = useAppStore(s => s.setUser);
+  const setLinkedRequestGroupId = useAppStore(s => s.setLinkedRequestGroupId);
+  // A `?request=` link. Stripped from the URL once followed (see the effect
+  // below), so a later reload doesn't drag you back to it.
+  const linkedRequest = useMemo(() => readRequestLink(location.search), [location.search]);
+  // The link's own page exists only while a link is being followed.
+  const linkedRequestGroupId = useAppStore(s => s.linkedRequestGroupId);
+  const openTransientTabs = useMemo<ManagerMode[]>(
+    () => (linkedRequestGroupId ? ['requestsLinked'] : []),
+    [linkedRequestGroupId]
+  );
   const setCurrentQuery = useAppStore(s => s.setCurrentQuery);
   const managerMode = useAppStore(s => s.managerMode);
   const setManagerMode = useAppStore(s => s.setManagerMode);
@@ -247,7 +261,9 @@ const ConsolePage = () => {
         }
         setUser(currentUser);
       } catch (error) {
-        navigate('/login');
+        // Carry the URL through the login form, so a request link someone was
+        // sent still opens its request once they've signed in.
+        navigate(loginPathFor(`${location.pathname}${location.search}`), { replace: true });
       }
     };
 
@@ -255,13 +271,44 @@ const ConsolePage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /*
+   * Hand a `?request=` link to the Query Requests panel.
+   *
+   * Runs on `user` rather than on mount: the role decides whether there's
+   * anywhere to send the link at all, and the snap above would otherwise
+   * overwrite the page we chose. It opens a page of its own — the three lists
+   * are left exactly as they were, and there is no question of which of them
+   * the request "belongs" to while you are reading it.
+   */
+  useEffect(() => {
+    if (!user || !linkedRequest) return;
+
+    if (!canSeeMode(user.role, 'requestsLinked')) {
+      toast.error('Your role has no access to query requests.');
+      return;
+    }
+
+    setManagerMode('requestsLinked');
+    setLinkedRequestGroupId(linkedRequest);
+
+    // Followed, so spent: out of the address bar it goes, or every reload from
+    // here on would drag you back to this one request no matter where you had
+    // got to. The page keeps it open; the URL stops insisting on it.
+    navigate(
+      { pathname: location.pathname, search: searchWithoutRequestLink(location.search) },
+      { replace: true }
+    );
+  }, [user, linkedRequest, setManagerMode, setLinkedRequestGroupId, navigate, location.pathname, location.search]);
+
   // Safety net: if the active tab ever becomes hidden for the current role
   // (e.g. devtools-edited sessionStorage), snap to the first allowed tab.
+  // Tested with canSeeMode rather than against tabsForRole, which deliberately
+  // omits transient pages — a link's page is allowed, just not a destination.
   useEffect(() => {
     if (!user) return;
     const allowed = tabsForRole(user.role);
     if (allowed.length === 0) return;
-    if (!allowed.some((t) => t.mode === managerMode)) {
+    if (!canSeeMode(user.role, managerMode)) {
       setManagerMode(allowed[0].mode);
     }
   }, [user, managerMode, setManagerMode]);
@@ -275,7 +322,7 @@ const ConsolePage = () => {
   // the tab is opened, and when the user approves/rejects something (the panel
   // calls back) — rather than on a timer.
   const refreshPendingCount = useCallback(async () => {
-    if (!user || !tabsForRole(user.role).some((t) => t.mode === 'requests')) return;
+    if (!user || !canSeeMode(user.role, 'requests')) return;
     try {
       const { count } = await queryRequestsAPI.pendingCount();
       setPendingApprovals(count);
@@ -285,6 +332,8 @@ const ConsolePage = () => {
   }, [user]);
 
   useEffect(() => {
+    // Only the queue itself; moving between the Requests pages can't change
+    // the count, and the panel calls back when an approval actually does.
     if (managerMode === 'requests') refreshPendingCount();
   }, [managerMode, refreshPendingCount]);
 
@@ -366,6 +415,13 @@ const ConsolePage = () => {
   // the existing opacity-driven tab transitions preserve their internal state.
   const canSee = (mode: ManagerMode) => canSeeMode(user.role, mode);
 
+  // The Requests section's pages share one panel, so its mount and visibility
+  // key off the section rather than a single mode.
+  const requestsOpen = sectionOf(managerMode) === 'requests';
+  // Which pages the one Query Requests panel serves is consoleSections' to say,
+  // so a page added there doesn't silently fail to mount here.
+  const requestsVisited = [...visitedModes].some((m) => sectionOf(m) === 'requests');
+
   const headerActions = (
     <>
       <Tooltip title="Reload database configuration">
@@ -425,6 +481,7 @@ const ConsolePage = () => {
           pendingApprovals={pendingApprovals}
           brand="Multi-Cloud DB Manager"
           actions={headerActions}
+          openTransient={openTransientTabs}
         />
       </AppBar>
 
@@ -667,25 +724,29 @@ const ConsolePage = () => {
               </Box>
             </Box>
 
-            {/* Query Requests View — always mounted */}
+            {/* Query Requests View — always mounted.
+                Its three pages (pending / mine / reviewed) are header tabs
+                rather than tabs inside the panel, so all three are this one
+                view: switching between them must not remount it, or every
+                switch would refetch all three lists. */}
             <Box
               key="requests-view"
               sx={{
-                position: managerMode === 'requests' ? 'relative' : 'absolute',
-                inset: managerMode === 'requests' ? undefined : 0,
-                opacity: managerMode === 'requests' ? 1 : 0,
-                pointerEvents: managerMode === 'requests' ? 'auto' : 'none',
+                position: requestsOpen ? 'relative' : 'absolute',
+                inset: requestsOpen ? undefined : 0,
+                opacity: requestsOpen ? 1 : 0,
+                pointerEvents: requestsOpen ? 'auto' : 'none',
                 transition: 'opacity 0.3s ease',
-                flexGrow: managerMode === 'requests' ? 1 : undefined,
-                display: canSee('requests') ? 'flex' : 'none',
+                flexGrow: requestsOpen ? 1 : undefined,
+                display: canSee('requestsMine') ? 'flex' : 'none',
                 flexDirection: 'column',
                 overflow: 'hidden',
-                p: managerMode === 'requests' ? 0 : 2,
+                p: requestsOpen ? 0 : 2,
               }}
             >
-              {visitedModes.has('requests') && (
+              {requestsVisited && (
                 <Suspense fallback={panelLoader}>
-                  <QueryRequestsPanel active={managerMode === 'requests'} onReviewed={refreshPendingCount} />
+                  <QueryRequestsPanel active={requestsOpen} onReviewed={refreshPendingCount} />
                 </Suspense>
               )}
             </Box>

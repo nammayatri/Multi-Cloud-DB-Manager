@@ -15,6 +15,7 @@ describe('consoleSections', () => {
 
   it('maps each page back to its section', () => {
     expect(sectionOf('batch')).toBe('database');
+    expect(sectionOf('requestsReviewed')).toBe('requests');
     expect(sectionOf('shudhi')).toBe('cache');
     expect(sectionOf('configreplicate')).toBe('configs');
     expect(sectionOf('history')).toBe('admin');
@@ -25,29 +26,29 @@ describe('consoleSections', () => {
   it.each<[Role, Record<string, string[]>]>([
     [Role.MASTER, {
       database: ['db', 'batch', 'migrations'], cache: ['redis', 'shudhi'], clickhouse: ['clickhouse'],
-      configs: ['systemConfigs', 'configreplicate'], requests: ['requests'], admin: ['history'],
+      configs: ['systemConfigs', 'configreplicate', 'configsync'], requests: ['requests', 'requestsMine', 'requestsReviewed'], admin: ['history'],
     }],
     [Role.ADMIN, {
       database: ['db', 'batch', 'migrations'], cache: ['redis', 'shudhi'], clickhouse: ['clickhouse'],
-      configs: ['systemConfigs', 'configreplicate'], requests: ['requests'], admin: ['users', 'history'],
+      configs: ['systemConfigs', 'configreplicate', 'configsync'], requests: ['requests', 'requestsMine', 'requestsReviewed'], admin: ['users', 'history'],
     }],
     [Role.USER, {
       database: ['db', 'batch', 'migrations'], cache: ['redis', 'shudhi'],
-      configs: ['systemConfigs'], requests: ['requests'], admin: ['history'],
+      configs: ['systemConfigs'], requests: ['requests', 'requestsMine', 'requestsReviewed'], admin: ['history'],
     }],
     [Role.READER, {
       database: ['db', 'migrations'], cache: ['redis', 'shudhi'],
-      configs: ['systemConfigs'], requests: ['requests'], admin: ['history'],
+      configs: ['systemConfigs'], requests: ['requests', 'requestsMine', 'requestsReviewed'], admin: ['history'],
     }],
     [Role.RELEASE_MANAGER, {
       database: ['db', 'migrations'], cache: ['redis', 'shudhi'],
-      configs: ['systemConfigs'], requests: ['requests'], admin: ['history'],
+      configs: ['systemConfigs'], requests: ['requests', 'requestsMine', 'requestsReviewed'], admin: ['history'],
     }],
     [Role.CACHE_CLEARER, {
-      database: ['db', 'migrations'], cache: ['redis', 'shudhi'], requests: ['requests'], admin: ['history'],
+      database: ['db', 'migrations'], cache: ['redis', 'shudhi'], requests: ['requests', 'requestsMine', 'requestsReviewed'], admin: ['history'],
     }],
     [Role.CKH_MANAGER, { clickhouse: ['clickhouse'] }],
-    [Role.REQUESTOR, { database: ['db'], requests: ['requests'], admin: ['history'] }],
+    [Role.REQUESTOR, { database: ['db'], requests: ['requestsMine', 'requestsReviewed'], admin: ['history'] }],
   ])('%s sees the expected sections and pages', (role, expected) => {
     expect(layoutFor(role)).toEqual(expected);
   });
@@ -66,5 +67,15 @@ describe('consoleSections', () => {
   it('lists tabs in header order, so the default page is the first one shown', () => {
     expect(tabsForRole(Role.CKH_MANAGER)[0].mode).toBe('clickhouse');
     expect(tabsForRole(Role.READER)[0].mode).toBe('db');
+  });
+
+  // REQUESTOR can approve nothing, so opening Requests must land it on its own
+  // requests rather than on an empty queue.
+  it('hides the pending queue from REQUESTOR only', () => {
+    expect(canSeeMode(Role.REQUESTOR, 'requests')).toBe(false);
+    expect(canSeeMode(Role.REQUESTOR, 'requestsMine')).toBe(true);
+    expect(canSeeMode(Role.READER, 'requests')).toBe(true);
+    expect(sectionsForRole(Role.REQUESTOR).find((s) => s.id === 'requests')!.tabs[0].mode)
+      .toBe('requestsMine');
   });
 });

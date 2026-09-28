@@ -2,6 +2,7 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import type { User, QueryRequest, QueryResponse, QueryExecution, HistoryFilter, DatabaseConfiguration, QueryRequestRecord, QueryRequestInput } from '../types';
 import type { Role } from '../constants/roles';
+import { currentReturnTo, loginPathFor } from './returnTo';
 
 // @ts-ignore - runtime config loaded from /config.js
 const backendUrl = window.__APP_CONFIG__?.BACKEND_URL;
@@ -18,6 +19,19 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+/**
+ * Per-request options the interceptor below understands, carried on the axios
+ * config. `silentError` suppresses its toast for a caller that renders the
+ * failure itself — a dialog saying why a link wouldn't open, say.
+ */
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    silentError?: boolean;
+  }
+}
+
+type RequestOptions = { silentError?: boolean };
 
 // Response interceptor for error handling
 let isRedirecting = false;
@@ -38,13 +52,18 @@ api.interceptors.response.use(
     // in a dialog, so a generic "Forbidden" toast on top of it is just noise.
     const isRoleRejection = error.response?.data?.code === 'ROLE_NOT_PERMITTED';
 
+    // Same reasoning, asked for per call: a caller that shows the failure in
+    // its own UI doesn't want it repeated in a toast behind that UI.
+    const isSilenced = (error.config as RequestOptions | undefined)?.silentError === true;
+
     if (error.response?.status === 401 && !isAuthForm) {
-      // Expired session — redirect to login (deduplicated)
+      // Expired session — redirect to login (deduplicated), carrying where we
+      // were so a shared link still lands on its target after signing in.
       if (!isRedirecting) {
         isRedirecting = true;
-        window.location.href = '/login';
+        window.location.href = loginPathFor(currentReturnTo());
       }
-    } else if (!isAuthForm && !isRoleRejection) {
+    } else if (!isAuthForm && !isRoleRejection && !isSilenced) {
       // Show one toast per failed API call. Server messages are crafted to be
       // user-facing, but guard the UX: truncate long ones, and never surface a
       // raw 5xx body (could be an unsanitized internal error).
@@ -176,9 +195,10 @@ export const queryRequestsAPI = {
   },
 
   getGroup: async (
-    groupId: string
+    groupId: string,
+    options?: RequestOptions
   ): Promise<{ groupId: string; requests: QueryRequestRecord[]; totalInGroup: number }> => {
-    const response = await api.get(`/api/query-requests/groups/${groupId}`);
+    const response = await api.get(`/api/query-requests/groups/${groupId}`, options);
     return response.data;
   },
 

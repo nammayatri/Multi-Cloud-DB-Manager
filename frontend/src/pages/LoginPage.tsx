@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -16,11 +16,16 @@ import {
 } from '@mui/material';
 import { Visibility, VisibilityOff } from '@mui/icons-material';
 import { authAPI } from '../services/api';
+import { readReturnTo } from '../services/returnTo';
 import { useAppStore } from '../store/appStore';
 import toast from 'react-hot-toast';
 
 const LoginPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  // Where we were sent from — a shared request link, say. Anything that isn't a
+  // same-origin path is dropped by readReturnTo, so this is safe to navigate to.
+  const returnTo = readReturnTo(location.search) ?? '/';
   const { setUser } = useAppStore();
   const [tab, setTab] = useState<'login' | 'register'>('login');
   const [loading, setLoading] = useState(false);
@@ -38,7 +43,7 @@ const LoginPage = () => {
         if (cancelled) return;
         // Already authenticated — skip the form and go straight to the app.
         setUser(user);
-        navigate('/', { replace: true });
+        navigate(returnTo, { replace: true });
       })
       .catch(() => {
         // 401 / network — no valid session; show the login form.
@@ -47,7 +52,7 @@ const LoginPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [navigate, setUser]);
+  }, [navigate, setUser, returnTo]);
 
   // Form fields
   const [username, setUsername] = useState('');
@@ -65,7 +70,7 @@ const LoginPage = () => {
       const response = await authAPI.login(username, password);
       setUser(response.user);
       toast.success('Login successful!');
-      navigate('/');
+      navigate(returnTo);
     } catch (err: any) {
       const status = err.response?.status;
       const msg = err.response?.data?.error || err.response?.data?.message;

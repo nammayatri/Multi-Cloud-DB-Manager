@@ -55,6 +55,7 @@ interface DatabaseOption {
 const POLL_INTERVAL = 1000; // 1 second polling
 
 const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps) => {
+  const setManagerMode = useAppStore(s => s.setManagerMode);
   const selectedDatabase = useAppStore(s => s.selectedDatabase);
   const setSelectedDatabase = useAppStore(s => s.setSelectedDatabase);
   const selectedPgSchema = useAppStore(s => s.selectedPgSchema);
@@ -569,6 +570,10 @@ const DatabaseSelector = ({ onExecute, compact = false }: DatabaseSelectorProps)
         <RequestComposerDialog
           open
           onClose={() => setApprovalRequest(null)}
+          // Raising a request from here used to leave you on the editor with
+          // nothing to show for it. My requests lists newest first, so the one
+          // just raised is waiting at the top.
+          onSubmitted={() => setManagerMode('requestsMine')}
           deniedReason={approvalRequest.deniedReason}
           initialItems={[
             {
