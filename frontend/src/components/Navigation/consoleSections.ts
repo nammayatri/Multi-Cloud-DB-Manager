@@ -1,4 +1,4 @@
-import { Role } from '../../constants/roles';
+import { Role, ALL_ROLES } from '../../constants/roles';
 import type { ManagerMode } from '../../store/appStore';
 
 // Batch Query (CSV) — destructive arbitrary parametrized SQL that only writers
@@ -39,9 +39,7 @@ export const SYSTEM_CONFIGS_ROLES: Role[] = [Role.MASTER, Role.ADMIN, Role.USER,
 // routes enforce server-side.
 export const CONFIG_REPLICATE_ROLES: Role[] = [Role.MASTER, Role.ADMIN];
 
-// Config Sync pushes config assets across environments — MASTER/ADMIN tier,
-// same gate the config-sync routes enforce server-side.
-export const CONFIG_SYNC_ROLES: Role[] = [Role.MASTER, Role.ADMIN];
+export const CONFIG_SYNC_ROLES: Role[] = ALL_ROLES;
 
 // Query Requests — every role with Postgres access: the lower tiers raise
 // requests, the higher tiers approve them, and most roles do both depending on
