@@ -9,16 +9,13 @@ import { isAuthenticated, requireRoles } from '../middleware/auth.middleware';
 import {
   validate, configSyncExportAndPatchSchema, configSyncAssetUpdateSchema, configSyncVersionStatusSchema,
 } from '../middleware/validation.middleware';
-import { Role } from '../constants/roles';
+import { ALL_ROLES } from '../constants/roles';
 
 const router = Router();
 
 router.use(isAuthenticated);
 
-// export dumps raw secrets (private keys, API tokens) to disk/S3 — gated the
-// same as Config Replicate, deliberately NOT left open like the ungated
-// Migration Verifier.
-const requireConfigSync = requireRoles(Role.MASTER, Role.ADMIN);
+const requireConfigSync = requireRoles(...ALL_ROLES);
 // Single combined flow — the only way to trigger a run. No fromEnv/toEnv in
 // the body: which environment this means is resolved entirely server-side
 // from CONFIG_SYNC_ALLOWED_ENVS, never exposed to the client.
