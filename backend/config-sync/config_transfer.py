@@ -29,8 +29,10 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import os
+import random
 import re
 import shutil
 import sys
@@ -966,23 +968,89 @@ _encrypt_cache = {}
 # instance against the `test_dashboard` DB; otherwise defaults to the
 # mobility-stack passetto (which uses local dev keys). The default honors
 # the nix-shell PASSETTO_SERVICE_PORT so it tracks per-user port remapping.
+# Only used as a fallback when PASSETTO_KEYS isn't set (see _load_passetto_keys).
 _PASSETTO_URL = os.environ.get(
     "PASSETTO_SERVICE_URL",
     f"http://localhost:{os.environ.get('PASSETTO_SERVICE_PORT', '8079')}",
 )
 
+# Sentinel vs None: None means "not checked yet", False means "checked, not set".
+_PASSETTO_KEYS_CACHE = None
+
+
+def _load_passetto_keys():
+    """Load keypairs from PASSETTO_KEYS (same env var / JSON shape as the real
+    app's passetto-lib: {"keys":[{"id":N,"secretKey":"<base64>","publicKey":"<base64>"}, ...]}).
+
+    When set, this replaces the whole passetto-server-binary + Postgres
+    `test_dashboard_<env>` dance entirely: encryption happens locally via
+    PyNaCl's sealed box (the same libsodium construction passetto-lib uses
+    via Saltine), with keys read straight from the secret. No DB, no
+    MASTER_PASSWORD, no subprocess.
+
+    Returns a list of (SecretKey, PublicKey) PyNaCl objects sorted by `id`
+    (array position = the index embedded in ciphertext tokens, matching
+    passetto-lib's own indexing), or False if PASSETTO_KEYS isn't set.
+    """
+    global _PASSETTO_KEYS_CACHE
+    if _PASSETTO_KEYS_CACHE is not None:
+        return _PASSETTO_KEYS_CACHE
+
+    raw = os.environ.get("PASSETTO_KEYS")
+    if not raw:
+        _PASSETTO_KEYS_CACHE = False
+        return False
+
+    import nacl.public
+    cfg = json.loads(raw)
+    entries = sorted(cfg["keys"], key=lambda k: k["id"])
+    if not entries:
+        raise ValueError("PASSETTO_KEYS contains no keys")
+    keys = []
+    for e in entries:
+        sk = nacl.public.PrivateKey(base64.b64decode(e["secretKey"]))
+        pk = nacl.public.PublicKey(base64.b64decode(e["publicKey"]))
+        keys.append((sk, pk))
+    _PASSETTO_KEYS_CACHE = keys
+    return keys
+
+
+def _tagged_plaintext(plaintext):
+    """Matches passetto-lib's Lib.hs taggedPlaintext for a plain string value:
+    'S' followed by the JSON-encoded (quoted, escaped) string."""
+    return "S" + json.dumps(plaintext)
+
+
+def _encrypt_via_local_keys(plaintext, keys):
+    import nacl.public
+    idx = random.randrange(len(keys))
+    _, pk = keys[idx]
+    ciphertext = nacl.public.SealedBox(pk).encrypt(_tagged_plaintext(plaintext).encode())
+    return f"0.1.0|{idx}|{base64.b64encode(ciphertext).decode()}"
+
+
 def _encrypt_via_obj(plaintext):
-    """Encrypt using passetto /encrypt with S"value" format.
+    """Encrypt a value the same way the real app would, for the target env.
 
-    Passetto expects S-prefix for string values: S"actual-value"
-    This matches how the seed geninis tool and the app encrypt data.
+    Prefers PASSETTO_KEYS (local PyNaCl crypto, no server/DB needed — see
+    _load_passetto_keys). Falls back to the old passetto-server HTTP API
+    (_PASSETTO_URL) when PASSETTO_KEYS isn't set, for deployments still on
+    the Postgres `test_dashboard_<env>` setup.
 
-    Uses keyId=1 to force the first deterministic init key (derived from
-    master password). Rotated keys (keyId 4+) are random and lost on
-    Passetto restart, so encrypted values using them become invalid.
+    Uses keyId=1 in the HTTP fallback to force the first deterministic init
+    key (derived from master password). Rotated keys (keyId 4+) are random
+    and lost on Passetto restart, so encrypted values using them become
+    invalid.
     """
     if plaintext in _encrypt_cache:
         return _encrypt_cache[plaintext]
+
+    keys = _load_passetto_keys()
+    if keys:
+        val = _encrypt_via_local_keys(plaintext, keys)
+        _encrypt_cache[plaintext] = val
+        return val
+
     import requests
     try:
         s_val = f'S"{plaintext}"'
@@ -1507,14 +1575,26 @@ def cmd_patch(args):
     Reads from: assets/data/<from_env>/
     Writes to:  assets/data/<from>_to_<to>/
     Applies: global replacements, re-encryption via passetto /encrypt/obj, merge_json.
-    Spawns a temp passetto-server against <from_env>.test_dashboard_<to_env>
-    so re-encryption uses the target env's keys; tears it down on exit.
+
+    Re-encryption key source — checked in this order:
+      1. PASSETTO_KEYS env var: local PyNaCl crypto, no DB/subprocess needed
+         (see _load_passetto_keys). Preferred; this is what real app
+         deployments already use via passetto-lib.
+      2. Fallback: spawns a temp passetto-server against
+         <from_env>.test_dashboard_<to_env> so re-encryption uses the
+         target env's keys; tears it down on exit. Only still needed for
+         deployments that haven't set PASSETTO_KEYS.
     """
     from_env = args.source_env
     to_env = args.target_env
     direction = f"{from_env}_to_{to_env}"
 
     print(f"Patching: {from_env} -> {to_env}\n")
+
+    if _load_passetto_keys():
+        print("  Using PASSETTO_KEYS for re-encryption (no temp passetto-server needed)")
+        _cmd_patch_inner(args, from_env, to_env, direction)
+        return
 
     env_config = load_environments()
     _start_temp_passetto(from_env, to_env, env_config)
