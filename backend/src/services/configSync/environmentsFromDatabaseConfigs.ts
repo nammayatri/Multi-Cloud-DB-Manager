@@ -26,6 +26,16 @@ const REAL_ENV_NAMES = ['master', 'prod', 'prod_international'] as const;
 const DASHBOARD_DB_SCHEMA = process.env.CONFIG_SYNC_DASHBOARD_DB_SCHEMA || 'atlas_dashboard';
 const REGISTRY_DATABASE = process.env.CONFIG_SYNC_REGISTRY_DATABASE || 'atlas_mock_registry_v2';
 const REGISTRY_DB_SCHEMA = process.env.CONFIG_SYNC_REGISTRY_DB_SCHEMA || 'atlas_mock_registry';
+// atlas_registry isn't declared under any schema in DATABASE_CONFIGS (see
+// comment below), so unlike every other schema its host can't be derived —
+// it defaults to inheriting `default`'s connection (same as before), but on
+// a deployment where the registry DB lives on a different host than the
+// default schema (e.g. prod, where BAP/BPP/registry can each be on separate
+// clusters), set these explicitly.
+const REGISTRY_HOST = process.env.CONFIG_SYNC_REGISTRY_HOST;
+const REGISTRY_PORT = process.env.CONFIG_SYNC_REGISTRY_PORT ? Number(process.env.CONFIG_SYNC_REGISTRY_PORT) : undefined;
+const REGISTRY_USER = process.env.CONFIG_SYNC_REGISTRY_USER;
+const REGISTRY_PASSWORD = process.env.CONFIG_SYNC_REGISTRY_PASSWORD;
 
 // Only set on deployments where the DB isn't directly reachable and
 // config_transfer.py needs to go through `kubectl exec <pod> -- psql ...`
@@ -93,9 +103,15 @@ export function buildEnvironmentsJsonFromDatabaseConfigs(): Record<string, any> 
   const defaultConn = schemaMap.get('atlas_app');
   if (!defaultConn) return null;
 
+  // Full connection per schema, not just the database name — different
+  // schemas can live on genuinely different Postgres hosts (e.g. BPP/driver
+  // vs BAP/rider are separate clusters in prod). get_db_config() in
+  // config_transfer.py merges this onto `default`, so host/port/user/
+  // password here correctly override the default connection whenever a
+  // schema's real host differs from it.
   const schemas: Record<string, any> = {};
   for (const [schema, conn] of schemaMap.entries()) {
-    schemas[schema] = { database: conn.database };
+    schemas[schema] = { database: conn.database, host: conn.host, port: conn.port, user: conn.user, password: conn.password };
   }
   // atlas_bap_dashboard / atlas_bpp_dashboard: config.json's registry names
   // for what's often one combined database — alias both onto whichever
@@ -104,14 +120,22 @@ export function buildEnvironmentsJsonFromDatabaseConfigs(): Record<string, any> 
   // name applied via db_schema since it differs from the registry key.
   const dashboardConn = schemaMap.get(DASHBOARD_DB_SCHEMA);
   if (dashboardConn) {
-    schemas['atlas_bap_dashboard'] = { database: dashboardConn.database, db_schema: DASHBOARD_DB_SCHEMA };
-    schemas['atlas_bpp_dashboard'] = { database: dashboardConn.database, db_schema: DASHBOARD_DB_SCHEMA };
+    const dashboardBase = { database: dashboardConn.database, db_schema: DASHBOARD_DB_SCHEMA, host: dashboardConn.host, port: dashboardConn.port, user: dashboardConn.user, password: dashboardConn.password };
+    schemas['atlas_bap_dashboard'] = dashboardBase;
+    schemas['atlas_bpp_dashboard'] = dashboardBase;
   }
   // atlas_registry (mock-registry's `subscriber` table): not present in
-  // DATABASE_CONFIGS under any schema name — shares the same host/user/
-  // password as everything else on this Postgres server, just a database
-  // name that isn't separately registered there.
-  schemas['atlas_registry'] = { database: REGISTRY_DATABASE, db_schema: REGISTRY_DB_SCHEMA };
+  // DATABASE_CONFIGS under any schema name, so its real host can't be
+  // derived like every other schema above — falls back to `default`'s
+  // connection unless CONFIG_SYNC_REGISTRY_HOST/etc are set explicitly
+  // (see their declaration above for when that's needed).
+  schemas['atlas_registry'] = {
+    database: REGISTRY_DATABASE, db_schema: REGISTRY_DB_SCHEMA,
+    ...(REGISTRY_HOST ? { host: REGISTRY_HOST } : {}),
+    ...(REGISTRY_PORT ? { port: REGISTRY_PORT } : {}),
+    ...(REGISTRY_USER ? { user: REGISTRY_USER } : {}),
+    ...(REGISTRY_PASSWORD ? { password: REGISTRY_PASSWORD } : {}),
+  };
 
   const execPod = EXEC_POD_NAME
     ? { pod: EXEC_POD_NAME, namespace: EXEC_POD_NAMESPACE || 'atlas', context: '' }
