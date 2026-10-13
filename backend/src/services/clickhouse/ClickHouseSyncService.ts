@@ -3,7 +3,7 @@ import logger from '../../utils/logger';
 import ClickHouseClientManager from '../../config/clickhouse';
 import { ClickHouseKafkaConfig } from '../../config/clickhouse-config-loader';
 import ClickHouseTypeMapper from './ClickHouseTypeMapper';
-import ClickHouseDDLBuilder, { CHColumn, CH_SENTINEL_COLUMN, ExtractedKafkaConfig } from './ClickHouseDDLBuilder';
+import ClickHouseDDLBuilder, { CHColumn, CH_SENTINEL_COLUMN, CH_SENTINEL_COLUMN_ALT, ExtractedKafkaConfig } from './ClickHouseDDLBuilder';
 import { ClickHouseUserError } from '../../utils/clickhouse-errors';
 
 // ──────────────────────────────────────────────
@@ -203,7 +203,8 @@ function mapColumns(
 /**
  * Fetch the current column list from ClickHouse system.columns.
  * Used to rebuild queue + MV DDL from scratch after an ALTER ADD COLUMN.
- * The `date` sentinel column is excluded (it's managed separately in the main table).
+ * The sentinel column is excluded (it's managed separately in the main table): `date`,
+ * or `clickhouse_date` for tables whose PG schema has its own `date` column.
  */
 async function chCurrentColumns(
     chManager: ClickHouseClientManager,
@@ -216,9 +217,12 @@ async function chCurrentColumns(
      WHERE database = '${db}' AND table = '${table}'
      ORDER BY position`,
     );
+    const sentinel = rows.some(r => r.name === CH_SENTINEL_COLUMN_ALT)
+        ? CH_SENTINEL_COLUMN_ALT
+        : CH_SENTINEL_COLUMN;
     // Exclude the sentinel version column — it only belongs on the main table, not queue/MV
     return rows
-        .filter(r => r.name !== CH_SENTINEL_COLUMN)
+        .filter(r => r.name !== sentinel)
         .map(r => ({ name: r.name, chType: r.type }));
 }
 

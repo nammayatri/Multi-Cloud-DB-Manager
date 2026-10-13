@@ -20,6 +20,11 @@ export interface CHColumn {
 export const CH_SENTINEL_COLUMN = 'date';
 
 /**
+ * Sentinel name used instead when the PG table already has its own `date` column.
+ */
+export const CH_SENTINEL_COLUMN_ALT = 'clickhouse_date';
+
+/**
  * Index column names that get bloom_filter indexes (if present in the table).
  * Per spec: always on `id`; also on `merchant_operating_city_id` and `merchant_id`
  * if they are present and non-nullable.
@@ -190,8 +195,11 @@ export class ClickHouseDDLBuilder {
         const indexLines = this.buildIndexLines(columns, dateTimeCol);
 
         const colLines = columns.map(c => this.colLine(c));
-        // Always add the `date` sentinel column
-        colLines.push("  `date` DateTime DEFAULT now()");
+        // Always add the sentinel version column — `clickhouse_date` if PG already has a `date` column
+        const sentinel = columns.some(c => c.name === CH_SENTINEL_COLUMN)
+            ? CH_SENTINEL_COLUMN_ALT
+            : CH_SENTINEL_COLUMN;
+        colLines.push(`  \`${sentinel}\` DateTime DEFAULT now()`);
 
         const allDefLines = [...colLines, ...indexLines];
 
@@ -202,7 +210,7 @@ export class ClickHouseDDLBuilder {
             `(`,
             allDefLines.join(',\n'),
             `)`,
-            `ENGINE = ReplicatedReplacingMergeTree('${enginePath}', '{replica}', date)`,
+            `ENGINE = ReplicatedReplacingMergeTree('${enginePath}', '{replica}', ${sentinel})`,
         ];
 
         if (partitionBy) lines.push(`PARTITION BY ${partitionBy}`);
