@@ -75,6 +75,7 @@ interface QueryTargetSelectsProps {
   value: QueryTarget;
   onChange: (next: QueryTarget) => void;
   size?: 'small' | 'medium';
+  error?: boolean;
 }
 
 export const QueryTargetSelects = ({
@@ -83,13 +84,14 @@ export const QueryTargetSelects = ({
   value,
   onChange,
   size = 'small',
+  error = false,
 }: QueryTargetSelectsProps) => {
   const modes = useMemo(() => buildModesForDb(dbMap[value.database]), [dbMap, value.database]);
   const schemas = dbMap[value.database]?.schemas || [];
 
   return (
     <Stack direction="row" spacing={1.5}>
-      <FormControl sx={{ flex: 1 }} size={size} disabled={loading}>
+      <FormControl sx={{ flex: 1 }} size={size} disabled={loading} error={error && !value.database}>
         <InputLabel>Database</InputLabel>
         <Select
           value={value.database}
@@ -106,7 +108,7 @@ export const QueryTargetSelects = ({
         </Select>
       </FormControl>
 
-      <FormControl sx={{ flex: 1 }} size={size} disabled={loading}>
+      <FormControl sx={{ flex: 1 }} size={size} disabled={loading} error={error && !value.mode}>
         <InputLabel>Execution mode</InputLabel>
         <Select
           value={value.mode}
@@ -121,7 +123,7 @@ export const QueryTargetSelects = ({
         </Select>
       </FormControl>
 
-      <FormControl sx={{ flex: 1 }} size={size} disabled={loading}>
+      <FormControl sx={{ flex: 1 }} size={size} disabled={loading} error={error && !value.pgSchema}>
         <InputLabel>Schema</InputLabel>
         <Select
           value={value.pgSchema}

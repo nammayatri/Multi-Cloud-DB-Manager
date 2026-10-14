@@ -16,7 +16,7 @@ vi.mock('../../services/api', () => ({
 // The target selects fetch the database topology on mount; the composer's
 // confirmation has nothing to do with them.
 vi.mock('./queryTargets', () => ({
-  useDatabaseTopology: () => ({ dbMap: { mydb: {} }, loading: false }),
+  useDatabaseTopology: () => ({ dbMap: { mydb: { schemas: ['public'] } }, loading: false }),
   defaultTargetFor: () => ({ database: 'mydb', mode: 'cloud1', pgSchema: 'public' }),
   firstDatabase: () => 'mydb',
   QueryTargetSelects: () => null,
@@ -38,7 +38,7 @@ const submitARequest = () => {
     target: { value: 'Ticket NY-4821' },
   });
   fireEvent.change(screen.getByLabelText('SQL'), {
-    target: { value: 'SELECT 1' },
+    target: { value: 'SELECT * FROM public.t2' },
   });
   fireEvent.click(screen.getByRole('button', { name: /submit request/i }));
 };
