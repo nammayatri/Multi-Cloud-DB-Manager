@@ -222,7 +222,7 @@ class ConfigTransferService {
     const exportStep = this.buildExportStep({ fromEnv, schemas: params.schemas, tables: params.tables, parallel: params.parallel });
     const patchStep = await this.buildPatchStep({
       fromEnv, toEnv, schemas: params.schemas, s3: params.s3, versionDescription: params.versionDescription,
-      uploadedBy: userId, uploadedByUsername: username,
+      uploadedBy: userId, uploadedByUsername: username, parallel: params.parallel,
     });
     return this.runSteps([exportStep, patchStep], userId);
   }
@@ -270,7 +270,7 @@ class ConfigTransferService {
   private async buildPatchStep(params: {
     fromEnv: string; toEnv: string; schemas?: string[];
     s3?: boolean; versionDescription?: string;
-    uploadedBy?: string; uploadedByUsername?: string;
+    uploadedBy?: string; uploadedByUsername?: string; parallel?: number;
   }): Promise<JobStep> {
     assertValidEnv(params.fromEnv);
     assertValidEnv(params.toEnv);
@@ -280,8 +280,9 @@ class ConfigTransferService {
     if (!ALLOWED_PATCH_TRANSFERS.some(([f, t]) => f === params.fromEnv && t === params.toEnv)) {
       throw new Error(`Transfer ${params.fromEnv} -> ${params.toEnv} is not allowed.`);
     }
+    const parallel = Math.min(Math.max(params.parallel ?? 4, 1), 16);
 
-    const argv = ['patch', '--from', params.fromEnv, '--to', params.toEnv];
+    const argv = ['patch', '--from', params.fromEnv, '--to', params.toEnv, '--parallel', String(parallel)];
     for (const s of params.schemas || []) argv.push('--schema', s);
 
     let s3Info: JobStep['s3'];
@@ -350,6 +351,22 @@ class ConfigTransferService {
     const allArgv: string[] = [];
     const auditWarnings: string[] = [];
 
+    // updateProgress() (called between steps, below) is also what refreshes
+    // this execution's Redis TTL (REDIS_EXECUTION_TTL_SECONDS, shared with
+    // regular query executions — see ExecutionManager). A single export or
+    // patch step on a large env can easily run longer than that TTL on its
+    // own with nothing in between to renew it, so the status record expires
+    // mid-run and getStatus() starts 404ing a job that's still very much
+    // alive (confirmed on prod: a 71-table/9M-row export alone took ~3min,
+    // well into a 5min default TTL, before patch even started). Track the
+    // current step here and piggyback a throttled re-touch onto appendLine
+    // (fires on every subprocess output line, so always running during a
+    // live step) rather than bump the shared TTL default for every caller
+    // of ExecutionManager just to work around one long-running feature.
+    let currentStepIndex = 0;
+    let lastTtlRefresh = Date.now();
+    const TTL_REFRESH_INTERVAL_MS = 30_000;
+
     // The single append path for every log line — stage banners and raw
     // subprocess output alike — so the buffer and the trim bookkeeping can
     // never drift apart. Readers pick lines up from here via getLogTail().
@@ -359,6 +376,13 @@ class ConfigTransferService {
         logLines.shift();
         const handle = activeJobs.get(executionId);
         if (handle) handle.dropped += 1;
+      }
+      const now = Date.now();
+      if (now - lastTtlRefresh >= TTL_REFRESH_INTERVAL_MS) {
+        lastTtlRefresh = now;
+        // Fire-and-forget: a missed refresh just means the TTL lapses a bit
+        // sooner, not a reason to block log output on a Redis round trip.
+        void this.executionManager.updateProgress(executionId, currentStepIndex, steps.length);
       }
     };
 
@@ -385,6 +409,7 @@ class ConfigTransferService {
         let cancelled = false;
 
         for (let i = 0; i < steps.length; i++) {
+          currentStepIndex = i;
           const step = steps[i];
           allArgv.push(...step.argv);
           cancelled = await this.executionManager.isCancelled(executionId);
