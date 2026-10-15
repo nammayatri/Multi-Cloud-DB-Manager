@@ -36,6 +36,7 @@ import random
 import re
 import shutil
 import sys
+import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timezone
@@ -943,6 +944,7 @@ def _resolve_value(val, row):
 
 
 _reencrypt_cache = {}
+_reencrypt_cache_lock = threading.Lock()
 
 def _reencrypt_foreign_values(text):
     """Replace all 0.1.0|N|... encrypted tokens with locally-encrypted dummy values.
@@ -950,18 +952,24 @@ def _reencrypt_foreign_values(text):
     Master and local Passetto use different keys, so master-encrypted values
     can't be decrypted locally. For local testing, re-encrypt a dummy placeholder
     so the app can decrypt without errors. Mock services don't check real credentials.
+
+    Patch now runs tables in parallel threads, so the cache is guarded by a
+    lock — without it, two threads can both miss on the same token and each
+    pay for a redundant encryption.
     """
     def _replace(m):
         orig = m.group(0)
-        if orig in _reencrypt_cache:
-            return _reencrypt_cache[orig]
-        replacement = _encrypt_via_obj("test-dummy-key")
-        _reencrypt_cache[orig] = replacement
-        return replacement
+        with _reencrypt_cache_lock:
+            if orig in _reencrypt_cache:
+                return _reencrypt_cache[orig]
+            replacement = _encrypt_via_obj("test-dummy-key")
+            _reencrypt_cache[orig] = replacement
+            return replacement
     return _RE_ENCRYPT.sub(_replace, text)
 
 
 _encrypt_cache = {}
+_encrypt_cache_lock = threading.Lock()
 
 # Points to the passetto-server the patch step should talk to.
 # Set by _start_temp_passetto() when the patch command spawns a throwaway
@@ -1042,13 +1050,15 @@ def _encrypt_via_obj(plaintext):
     and lost on Passetto restart, so encrypted values using them become
     invalid.
     """
-    if plaintext in _encrypt_cache:
-        return _encrypt_cache[plaintext]
+    with _encrypt_cache_lock:
+        if plaintext in _encrypt_cache:
+            return _encrypt_cache[plaintext]
 
     keys = _load_passetto_keys()
     if keys:
         val = _encrypt_via_local_keys(plaintext, keys)
-        _encrypt_cache[plaintext] = val
+        with _encrypt_cache_lock:
+            _encrypt_cache[plaintext] = val
         return val
 
     import requests
@@ -1056,7 +1066,8 @@ def _encrypt_via_obj(plaintext):
         s_val = f'S"{plaintext}"'
         resp = requests.post(f"{_PASSETTO_URL}/encrypt", json={"value": s_val, "keyId": 1}, timeout=5)
         val = resp.json()["value"]
-        _encrypt_cache[plaintext] = val
+        with _encrypt_cache_lock:
+            _encrypt_cache[plaintext] = val
         return val
     except Exception:
         return f"UNENCRYPTED:{plaintext}"
@@ -1636,89 +1647,82 @@ def _cmd_patch_inner(args, from_env, to_env, direction):
         print(f"{schema} ({len(available)} tables)")
         print(f"{'=' * 60}")
 
-        # If there are any global or schema-level find/replace rules, every table
-        # needs patching — the 10-row sample can miss rows that contain the target string.
-        has_global_reps = bool([r for r in patch_config.get("global_replacements", [])
-                                if "find" in r]
-                               + [r for r in patch_config.get("schema_replacements", {}).get(schema, [])
-                                  if "find" in r])
+        def _patch_one_table(table):
+            """Single pass over the table's exported batches: apply patches to
+            every batch and write it straight out (always — a table with zero
+            matching patches just writes back unchanged data, which is exactly
+            what the old "copy as-is" fast path produced anyway). This
+            replaces the previous two-pass approach (one read to sample 10
+            rows per batch and decide needs_patch, a second full re-read to
+            actually apply) with a single read+write per table.
+            """
+            total_rows = 0
+            patch_count = 0
+            batch_idx = 0
+            out_meta = None
 
-        for table in available:
-            try:
-                # First pass: check if this table needs patching at all
-                needs_patch = has_global_reps
-                total_rows = 0
-                for meta, batch_rows in iter_table_rows(src_base, "", schema, table):
-                    total_rows += len(batch_rows)
-                    if not needs_patch:
-                        test_data = {"columns": meta.get("columns", []), "rows": batch_rows[:10]}
-                        _, pc = apply_patches_to_table(table, test_data, schema, patch_config)
-                        if pc > 0:
-                            needs_patch = True
-
-                if total_rows == 0:
-                    print(f"    [skip] {table}: 0 rows")
+            for meta, batch_rows in iter_table_rows(src_base, "", schema, table):
+                total_rows += len(batch_rows)
+                if not batch_rows:
+                    # Only the single-file path can yield an empty batch (a
+                    # 0-row export) — skip writing so an empty table leaves no
+                    # output at all, matching the old skip-entirely behavior.
                     continue
+                batch_data = {"columns": meta.get("columns", []), "rows": batch_rows}
+                batch_data, pc = apply_patches_to_table(table, batch_data, schema, patch_config)
+                patch_count += pc
 
-                if not needs_patch:
-                    # No patches needed — copy raw export as-is
-                    src_table_dir = src_base / schema / table
-                    src_table_file = src_base / schema / f"{table}.json"
-                    dst_schema_dir = table_dir_path(dst_base, "", schema)
-
-                    if src_table_dir.exists():
-                        shutil.copytree(str(src_table_dir), str(dst_schema_dir / table))
-                    elif src_table_file.exists():
-                        shutil.copy2(str(src_table_file), str(dst_schema_dir / f"{table}.json"))
-
-                    print(f"    [copy] {table}: {total_rows} rows (no patches)")
-                    continue
-
-                # Needs patching — process batch by batch
-                patch_count = 0
-                batch_idx = 0
-
-                for meta, batch_rows in iter_table_rows(src_base, "", schema, table):
-                    batch_data = {"columns": meta.get("columns", []), "rows": batch_rows}
-                    batch_data, pc = apply_patches_to_table(table, batch_data, schema, patch_config)
-                    patch_count += pc
-
+                if out_meta is None:
                     out_meta = {k: v for k, v in meta.items() if k != "rows"}
                     out_meta["patched"] = True
                     out_meta["direction"] = direction
 
-                    out_dir = table_dir_path(dst_base, "", schema) / table
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    (out_dir / f"batch_{batch_idx:04d}.json").write_text(
-                        json.dumps(batch_data["rows"], default=json_serializer))
-                    batch_idx += 1
-
-                # Write meta
                 out_dir = table_dir_path(dst_base, "", schema) / table
-                meta_data = {**out_meta, "total_rows": total_rows, "batched": True}
-                (out_dir / "_meta.json").write_text(json.dumps(meta_data, default=json_serializer, indent=2))
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / f"batch_{batch_idx:04d}.json").write_text(
+                    json.dumps(batch_data["rows"], default=json_serializer))
+                batch_idx += 1
 
-                # If single batch, collapse to single file
-                if batch_idx == 1:
-                    batch_file = out_dir / "batch_0000.json"
-                    rows = json.loads(batch_file.read_text())
-                    shutil.rmtree(out_dir)
-                    single = {**meta_data, "rows": rows}
-                    del single["batched"]
-                    del single["total_rows"]
-                    (table_dir_path(dst_base, "", schema) / f"{table}.json").write_text(
-                        json.dumps(single, default=json_serializer, indent=2))
+            if total_rows == 0:
+                return table, 0, 0, "skip"
 
-                print(f"    [ok] {table}: {total_rows} rows, {patch_count} patches")
-            except Exception as _patch_err:
-                # One bad table shouldn't kill the whole patch phase. Capture
-                # the reason, print a one-line marker, and keep going.
-                reason = f"{type(_patch_err).__name__}: {_patch_err}"
-                # Truncate very long messages to keep the log readable
-                if len(reason) > 240:
-                    reason = reason[:237] + "..."
-                print(f"    [FAIL] {table}: {reason}", flush=True)
-                failures.append((schema, table, reason))
+            out_dir = table_dir_path(dst_base, "", schema) / table
+            meta_data = {**out_meta, "total_rows": total_rows, "batched": True}
+            (out_dir / "_meta.json").write_text(json.dumps(meta_data, default=json_serializer, indent=2))
+
+            # If single batch, collapse to single file
+            if batch_idx == 1:
+                batch_file = out_dir / "batch_0000.json"
+                rows = json.loads(batch_file.read_text())
+                shutil.rmtree(out_dir)
+                single = {**meta_data, "rows": rows}
+                del single["batched"]
+                del single["total_rows"]
+                (table_dir_path(dst_base, "", schema) / f"{table}.json").write_text(
+                    json.dumps(single, default=json_serializer, indent=2))
+
+            return table, total_rows, patch_count, "ok"
+
+        patch_workers = getattr(args, "parallel", None) or 4
+        with ThreadPoolExecutor(max_workers=patch_workers) as pool:
+            futures = {pool.submit(_patch_one_table, t): t for t in available}
+            for future in as_completed(futures):
+                table = futures[future]
+                try:
+                    table, total_rows, patch_count, status = future.result()
+                    if status == "skip":
+                        print(f"    [skip] {table}: 0 rows")
+                    else:
+                        print(f"    [ok] {table}: {total_rows} rows, {patch_count} patches")
+                except Exception as _patch_err:
+                    # One bad table shouldn't kill the whole patch phase. Capture
+                    # the reason, print a one-line marker, and keep going.
+                    reason = f"{type(_patch_err).__name__}: {_patch_err}"
+                    # Truncate very long messages to keep the log readable
+                    if len(reason) > 240:
+                        reason = reason[:237] + "..."
+                    print(f"    [FAIL] {table}: {reason}", flush=True)
+                    failures.append((schema, table, reason))
 
         print()
 
@@ -2436,6 +2440,7 @@ Examples:
                        help=f"S3 bucket for --s3 upload (default: $CONFIG_SYNC_S3_BUCKET = {DEFAULT_S3_BUCKET!r})")
     p_pat.add_argument("--s3-prefix", default=None,
                        help=f"S3 key prefix for --s3 upload (default: $CONFIG_SYNC_S3_PREFIX = {DEFAULT_S3_PREFIX!r})")
+    p_pat.add_argument("--parallel", type=int, default=4, help="Number of tables to patch concurrently")
 
     p_imp = sub.add_parser("import", help="Import patched config into target DB")
     p_imp.add_argument("--from", dest="source_env", required=True, choices=VALID_ENVS)
