@@ -112,7 +112,7 @@ class QueryRequestsService {
         group_position INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMP,
-        expires_at TIMESTAMP NOT NULL DEFAULT NOW() + INTERVAL '24 hours',
+        expires_at TIMESTAMP NOT NULL DEFAULT NOW() + INTERVAL '3 days',
         CONSTRAINT query_requests_status_check CHECK (
           status IN ('PENDING', 'APPROVED', 'RUNNING', 'SUCCEEDED', 'FAILED',
                      'REJECTED', 'CANCELLED', 'EXPIRED', 'SUPERSEDED')
@@ -223,8 +223,8 @@ class QueryRequestsService {
           `INSERT INTO dual_db_manager.query_requests (
              requester_id, query, query_hash, reason, database_name, execution_mode,
              pg_schema, continue_on_error, requires_password,
-             group_id, group_position
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+             group_id, group_position, expires_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW() + INTERVAL '3 days')`,
           [
             input.requesterId,
             item.query,
@@ -347,7 +347,7 @@ class QueryRequestsService {
           record.group_id,
           record.group_position,
           // The original's absolute deadline, not a fresh window. Granting a
-          // new 24h on every revision would let a requester keep a request
+          // new 3 days on every revision would let a requester keep a request
           // alive indefinitely by re-editing it, which is exactly what the
           // expiry exists to prevent. Resubmit is one click if more time is
           // genuinely needed, and that starts an honest new clock.

@@ -641,6 +641,30 @@ const QueryResultView = ({
 };
 
 /**
+ * Where a query runs, and what that costs to approve.
+ *
+ * The same row of chips whether the request holds one query or several: the
+ * grouped rows used to squash it to "db · cloud" and drop the schema entirely,
+ * so the same query read differently depending on what it was submitted
+ * alongside.
+ */
+const TargetChips = ({ record }: { record: QueryRequestRecord }) => (
+  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+    <Chip size="small" variant="outlined" label={`DB: ${record.database_name}`} />
+    <Chip size="small" variant="outlined" label={`Target: ${record.execution_mode}`} />
+    {record.pg_schema && (
+      <Chip size="small" variant="outlined" label={`Schema: ${record.pg_schema}`} />
+    )}
+    {record.continue_on_error && (
+      <Chip size="small" color="warning" variant="outlined" label="Continue on error" />
+    )}
+    {record.requires_password && (
+      <Chip size="small" color="error" variant="outlined" label="Password required" />
+    )}
+  </Stack>
+);
+
+/**
  * How a query ended: who decided it, and what happened when it ran.
  *
  * Shared by the row and the single-query card, which were rendering the same
@@ -820,10 +844,6 @@ const QueryRow = ({
           color={STATUS_COLOR[status]}
           label={status === 'SUPERSEDED' ? 'REPLACED' : status}
         />
-        <Chip size="small" variant="outlined" label={`${record.database_name} · ${record.execution_mode}`} />
-        {record.requires_password && (
-          <Chip size="small" color="error" variant="outlined" label="Password" />
-        )}
         {/* On the header line, so a request of several says at a glance which
             of its queries is the one that will interrupt. */}
         {warning && (
@@ -842,10 +862,11 @@ const QueryRow = ({
         <Box sx={{ flexGrow: 1 }} />
       </Stack>
 
-      <Box sx={{ pl: 3.5, pt: 1 }}>
+      <Stack spacing={1} sx={{ pl: 3.5, pt: 1 }}>
+        <TargetChips record={record} />
         <SqlBlock sql={record.query} maxHeight={280} />
         {warning && <ApprovalWarning warning={warning} />}
-      </Box>
+      </Stack>
 
       <Box sx={{ pl: 3.5 }}>
         <RevisionHistory history={history} />
@@ -1087,19 +1108,7 @@ const RequestCard = ({
 
       <Collapse in={open} unmountOnExit>
         <Stack spacing={1.5}>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Chip size="small" variant="outlined" label={`DB: ${record.database_name}`} />
-            <Chip size="small" variant="outlined" label={`Target: ${record.execution_mode}`} />
-            {record.pg_schema && (
-              <Chip size="small" variant="outlined" label={`Schema: ${record.pg_schema}`} />
-            )}
-            {record.continue_on_error && (
-              <Chip size="small" color="warning" variant="outlined" label="Continue on error" />
-            )}
-            {record.requires_password && (
-              <Chip size="small" color="error" variant="outlined" label="Password required" />
-            )}
-          </Stack>
+          <TargetChips record={record} />
 
           <SqlBlock sql={record.query} />
 
@@ -2067,7 +2076,14 @@ const QueryRequestsPanel = ({ onReviewed, active = true }: { onReviewed?: () => 
   const renderSections = (
     records: QueryRequestRecord[],
     options: {
-      actionsFor?: (record: QueryRequestRecord) => React.ReactNode;
+      /**
+       * `groupRunOffered` says the request header is already offering to run
+       * the whole request, so a per-query action is the secondary choice.
+       */
+      actionsFor?: (
+        record: QueryRequestRecord,
+        context?: { groupRunOffered: boolean }
+      ) => React.ReactNode;
       /** Rendered on the request header — only when the viewer can action every query in it. */
       groupActionsFor?: (section: ListSection) => React.ReactNode;
       /** Rows that are context rather than content: shown, but not actionable. */
@@ -2244,6 +2260,11 @@ const QueryRequestsPanel = ({ onReviewed, active = true }: { onReviewed?: () => 
               .filter(r => r.status === 'PENDING' && r.can_approve === false),
           ];
 
+          // Running the request in order requires being able to action every
+          // query in it, so there's nothing on offer when some are invisible
+          // to this viewer — the backend refuses that case anyway.
+          const groupActions = notPermitted.length === 0 ? groupActionsFor?.(section) : null;
+
           // One toggle for the whole request, not one per query: the queries in
           // a request are read together, and a chevron on each turned opening a
           // request of four into four clicks. Closed by default, like a
@@ -2347,13 +2368,9 @@ const QueryRequestsPanel = ({ onReviewed, active = true }: { onReviewed?: () => 
                     as a list rather than as pages. */}
                 <Collapse in={groupOpen} unmountOnExit>
                   <Stack spacing={1.25}>
-                    {/* Running the request in order requires being able to
-                        action every query in it, so this is hidden when some
-                        are invisible to this viewer — the backend refuses that
-                        case anyway. */}
-                    {notPermitted.length === 0 && groupActionsFor && (
+                    {groupActions && (
                       <Stack direction="row" spacing={1} justifyContent="flex-end">
-                        {groupActionsFor(section)}
+                        {groupActions}
                       </Stack>
                     )}
 
@@ -2385,7 +2402,11 @@ const QueryRequestsPanel = ({ onReviewed, active = true }: { onReviewed?: () => 
                           history={history}
                           position={position}
                           warning={warningFor(record)}
-                          actions={actionable ? actionsFor?.(record) : undefined}
+                          actions={
+                            actionable
+                              ? actionsFor?.(record, { groupRunOffered: groupActions != null })
+                              : undefined
+                          }
                           result={resultFor(record)}
                           onToggleResult={
                             record.execution_id ? () => toggleResult(record) : undefined
@@ -2501,11 +2522,16 @@ const QueryRequestsPanel = ({ onReviewed, active = true }: { onReviewed?: () => 
     },
     // No number in the label — the row's marker already says which query this
     // is, and repeating it just added noise.
-    actionsFor: (record: QueryRequestRecord) => {
+    actionsFor: (record: QueryRequestRecord, context?: { groupRunOffered: boolean }) => {
       // A single-query request renders as a card, which takes its actions
       // directly without consulting contextFor — so the invariant is restated
       // here: there is nothing to approve or reject on a query that has run.
       if (record.status !== 'PENDING') return null;
+
+      // When the header offers "Approve all in order", that's the usual way
+      // through a request; running one query on its own is still there, just
+      // not the button that draws the eye.
+      const secondary = context?.groupRunOffered ?? false;
 
       return (
         <>
@@ -2526,7 +2552,7 @@ const QueryRequestsPanel = ({ onReviewed, active = true }: { onReviewed?: () => 
           </Button>
           <Button
             size="small"
-            variant="contained"
+            variant={secondary ? 'outlined' : 'contained'}
             startIcon={<CheckCircleIcon />}
             onClick={() => approveFromRow(record)}
             disabled={actioning || (record.requires_password && !passwordFor(record.id))}

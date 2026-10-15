@@ -34,6 +34,8 @@ import {
   QueryTargetSelects,
 } from './queryTargets';
 import type { QueryTarget } from './queryTargets';
+import { detectTargetFromSql } from './detectTarget';
+import type { DbMap } from '../Selector/databaseTopology';
 
 const MAX_REASON_LENGTH = 1000;
 const MAX_ITEMS = 25;
@@ -42,6 +44,8 @@ interface ComposerItem extends QueryTarget {
   /** Local-only key so removing a row doesn't remount the others. */
   key: string;
   query: string;
+  targetPinned?: boolean;
+  detectedFrom?: string[];
 }
 
 export interface ComposerPrefillItem extends Partial<QueryTarget> {
@@ -82,6 +86,39 @@ const prepareQueries = (query: string): string[] => {
   return statements.length > 1 ? statements : [query];
 };
 
+/** No target at all — what a row has until the SQL or the requester names one. */
+const NO_TARGET: QueryTarget = { database: '', mode: '', pgSchema: '' };
+
+/**
+ * Point a row whose target nobody has chosen at the database its SQL names
+ * (`atlas_app.booking` → whichever database has `atlas_app`).
+ *
+ * SQL that doesn't settle it — no schema prefix, or schemas from two databases —
+ * leaves the row with no target, so the requester has to pick one rather than
+ * have a query quietly go to whatever database happened to be selected. Rows
+ * whose target was picked by hand come back as they were.
+ */
+const withDetectedTarget = (item: ComposerItem, dbMap: DbMap): ComposerItem => {
+  if (item.targetPinned) return item;
+
+  const detected = detectTargetFromSql(item.query, dbMap);
+  if (!detected) return { ...item, ...NO_TARGET, detectedFrom: undefined };
+
+  // Same database: keep the mode already chosen. A different one has to
+  // re-derive it, since its clouds may differ.
+  const base =
+    detected.database === item.database
+      ? { database: item.database, mode: item.mode, pgSchema: item.pgSchema }
+      : defaultTargetFor(dbMap, detected.database);
+
+  return {
+    ...item,
+    ...base,
+    pgSchema: detected.pgSchema || base.pgSchema,
+    detectedFrom: detected.schemas,
+  };
+};
+
 /** Turn what was prefilled into composer rows, split but not rewritten. */
 const buildRows = (
   prefill: ComposerPrefillItem[],
@@ -97,11 +134,9 @@ const buildRows = (
       pgSchema: item.pgSchema || base.pgSchema,
     };
 
-    return prepareQueries(item.query).map((query) => ({
-      key: nextKey(),
-      query,
-      ...target,
-    }));
+    return prepareQueries(item.query).map((query) =>
+      withDetectedTarget({ key: nextKey(), query, ...target }, dbMap)
+    );
   });
 
 /**
@@ -169,17 +204,15 @@ const RequestComposerDialog = ({
   const updateItem = (key: string, patch: Partial<ComposerItem>) =>
     setItems((current) => current.map((it) => (it.key === key ? { ...it, ...patch } : it)));
 
-  const addItem = () =>
-    setItems((current) => {
-      // Copy the last row's target — consecutive queries usually hit the same
-      // database, and when they don't it's one dropdown to change.
-      const last = current[current.length - 1];
-      const target = last
-        ? { database: last.database, mode: last.mode, pgSchema: last.pgSchema }
-        : defaultTargetFor(dbMap, firstDatabase(dbMap));
+  const updateQuery = (key: string, query: string) =>
+    setItems((current) =>
+      current.map((it) => (it.key === key ? withDetectedTarget({ ...it, query }, dbMap) : it))
+    );
 
-      return [...current, { key: nextKey(), query: '', ...target }];
-    });
+  // A new row starts without a target, like any row whose SQL names no schema —
+  // it gets one from the SQL written into it, or from the dropdowns.
+  const addItem = () =>
+    setItems((current) => [...current, { key: nextKey(), query: '', ...NO_TARGET }]);
 
   const removeItem = (key: string) =>
     setItems((current) => current.filter((it) => it.key !== key));
@@ -200,7 +233,8 @@ const RequestComposerDialog = ({
 
       return current.flatMap((it) =>
         it.key === key
-          ? statements.map((query) => ({ ...it, key: nextKey(), query }))
+          ? // Each statement may name a different database once it stands alone.
+            statements.map((query) => withDetectedTarget({ ...it, key: nextKey(), query }, dbMap))
           : [it]
       );
     });
@@ -230,9 +264,9 @@ const RequestComposerDialog = ({
 
   const reasonMissing = attempted && trimmedReasonLength === 0;
 
-  /** A row is only marked once submitting has been attempted — not while typing. */
-  const rowProblem = (item: ComposerItem) =>
-    !attempted ? null : !item.query.trim() ? 'write the SQL for this query' : !item.database || !item.mode ? 'pick a database and target for this query' : null;
+  // A row is only marked once submitting has been attempted — not while typing.
+  const targetMissing = (item: ComposerItem) => attempted && (!item.database || !item.mode);
+  const queryMissing = (item: ComposerItem) => attempted && !item.query.trim();
 
   const handleSubmit = async () => {
     if (submitting) return;
@@ -396,7 +430,7 @@ const RequestComposerDialog = ({
             // the dialog opened gets the same treatment.
             const statementCount = splitCounts[index] ?? 1;
             const canSplit = statementCount > 1;
-            const problem = rowProblem(item);
+            const noTarget = targetMissing(item);
 
             return (
               <Paper
@@ -431,25 +465,46 @@ const RequestComposerDialog = ({
                     </Stack>
                   )}
 
+                  {/* Above the dropdowns, like the reason's own message. */}
+                  {noTarget && (
+                    <Typography variant="caption" color="error" sx={{ fontWeight: 500 }}>
+                      Required — pick the database, execution mode and schema this query
+                      runs on.
+                      {item.query.trim() &&
+                        " It couldn't be worked out from the SQL — prefix the tables with their schema (like atlas_app.booking) or pick it here."}
+                    </Typography>
+                  )}
+
                   <QueryTargetSelects
                     dbMap={dbMap}
                     loading={loadingConfig}
+                    error={noTarget}
                     value={{ database: item.database, mode: item.mode, pgSchema: item.pgSchema }}
-                    onChange={(next) => updateItem(item.key, next)}
+                    // Picking by hand wins over anything the SQL suggests.
+                    onChange={(next) =>
+                      updateItem(item.key, { ...next, targetPinned: true, detectedFrom: undefined })
+                    }
                   />
+
+                  {item.detectedFrom && (
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }}>
+                      Target picked from the query ({item.detectedFrom.join(', ')}) — change it
+                      above if that's wrong.
+                    </Typography>
+                  )}
 
                   {/* The console's own editor — same highlighting, same Format
                       SQL button. A request is read by whoever approves it, so it
                       deserves the same treatment as a query you run yourself. */}
                   <SQLEditor
                     value={item.query}
-                    onChange={(query) => updateItem(item.key, { query })}
+                    onChange={(query) => updateQuery(item.key, query)}
                     height={multiple ? 220 : 300}
                   />
 
-                  {problem && (
+                  {queryMissing(item) && (
                     <Typography variant="caption" color="error">
-                      Required — {problem}
+                      Required — write the SQL for this query
                     </Typography>
                   )}
                 </Stack>
