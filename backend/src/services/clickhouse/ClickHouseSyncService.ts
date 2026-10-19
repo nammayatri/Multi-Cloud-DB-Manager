@@ -226,6 +226,29 @@ async function chCurrentColumns(
         .map(r => ({ name: r.name, chType: r.type }));
 }
 
+// If PG has a `date` column but CH uses it as a version column, the table must be recreated before syncing PG's `date`.
+export async function hasDateSentinelClash(
+    chManager: ClickHouseClientManager,
+    db: string,
+    table: string,
+    pgColumnNames: string[],
+): Promise<boolean> {
+    if (!pgColumnNames.includes(CH_SENTINEL_COLUMN)) return false;
+    const rows = await chManager.query<{ name: string }>(
+        `SELECT name
+     FROM system.columns
+     WHERE database = '${db}' AND table = '${table}'
+       AND name IN ('${CH_SENTINEL_COLUMN}', '${CH_SENTINEL_COLUMN_ALT}')`,
+    );
+    const names = new Set(rows.map(r => r.name));
+    return names.has(CH_SENTINEL_COLUMN) && !names.has(CH_SENTINEL_COLUMN_ALT);
+}
+
+export function dateSentinelClashMessage(db: string, table: string): string {
+    return `${db}.${table} uses \`date\` as its ClickHouse version column, which clashes with the PG \`date\` column. ` +
+        `Recreate the CH table so it gets \`clickhouse_date\`, then backfill.`;
+}
+
 /**
  * Fetch the column list from the queue table (e.g. {table}_queue).
  * Used to detect whether the queue uses Pattern A (JSONEachRow, multiple columns)
@@ -627,6 +650,13 @@ export class ClickHouseSyncService {
                 details: `Table ${schema}.${table} not found in PG information_schema`,
                 error: 'Table not found in PG',
             };
+        }
+
+        //Refuse if PG `date` clashes with the CH `date`
+        if (await hasDateSentinelClash(ch, chDb, table, pgRows.map(r => r.column_name))) {
+            const message = dateSentinelClashMessage(chDb, table);
+            logger.warn(`CH sync: ${message}`);
+            return { success: false, action: 'altered', table, details: message, error: message };
         }
 
         // 1b. Fetch ALL columns from CH (main table)

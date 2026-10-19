@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import ClickHouseClientManager from '../config/clickhouse';
-import clickHouseSyncService from '../services/clickhouse/ClickHouseSyncService';
+import clickHouseSyncService, { hasDateSentinelClash, dateSentinelClashMessage } from '../services/clickhouse/ClickHouseSyncService';
 import clickHouseBackfillService from '../services/clickhouse/ClickHouseBackfillService';
 import historyService from '../services/history.service';
 import DatabasePools from '../config/database';
@@ -360,6 +360,9 @@ export async function checkTableSync(req: Request, res: Response): Promise<void>
 
         // Real gap: PG columns absent from CH by name.
         const missingColumns = pgColumnNames.filter(c => !chColSet.has(c));
+        if (inCH && await hasDateSentinelClash(ch, chDatabase, table, pgColumnNames)) {
+            missingColumns.push('date');
+        }
         // Informational only — CH-only columns (`date` sentinel, `sign`, custom additions, etc).
         const extraChColumns = chColumnNames.filter(c => !pgColSet.has(c));
 
@@ -515,6 +518,23 @@ export async function startBackfill(req: Request, res: Response): Promise<void> 
     const ch = ClickHouseClientManager.getInstance();
     if (!ch) {
         res.status(503).json({ error: 'ClickHouse not configured' });
+        return;
+    }
+
+    // backfill wont be allowed untill the 'date' col clash is resolved
+    try {
+        const { rows: pgCols } = await pool.query(
+            `SELECT column_name FROM information_schema.columns
+             WHERE table_schema = $1 AND table_name = $2`,
+            [pgSchema, table],
+        );
+        if (await hasDateSentinelClash(ch, chDatabase, table, pgCols.map((r: any) => r.column_name))) {
+            res.status(409).json({ error: dateSentinelClashMessage(chDatabase, table) });
+            return;
+        }
+    } catch (err: any) {
+        logger.error('Backfill clash check failed', { error: err.message, table });
+        res.status(500).json({ error: err.message });
         return;
     }
 
