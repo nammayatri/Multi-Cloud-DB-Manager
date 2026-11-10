@@ -2,15 +2,16 @@
   "name": "dual-db-manager-backend",
   "version": "2.0.61",
   "description": "High-reliability dual database management backend",
-  "main": "dist/server.js",
+  "main": "dist/bootstrap.js",
   "scripts": {
-    "dev": "nodemon --exec tsx src/server.ts",
+    "dev": "nodemon --exec tsx src/bootstrap.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node dist/bootstrap.js",
     "lint": "eslint . --ext .ts",
     "test": "vitest"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "^3.1162.0",
     "@aws-sdk/client-s3": "^3.1121.0",
     "@clickhouse/client": "^1.17.0",
     "@kubernetes/client-node": "^1.4.0",

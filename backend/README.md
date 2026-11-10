@@ -328,7 +328,7 @@ docker build --platform linux/amd64 -t multi-cloud-db-backend .
 docker run -p 3000:3000 --env-file .env multi-cloud-db-backend
 ```
 
-Multi-stage build: compiles TypeScript in builder stage, runs `node dist/server.js` in production stage with only production dependencies.
+Multi-stage build: compiles TypeScript in builder stage, runs `node dist/bootstrap.js` in production stage with only production dependencies.
 
 Built-in health check: `GET /health` every 30s.
 
