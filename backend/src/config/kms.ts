@@ -3,6 +3,31 @@ import { KMSClient, DecryptCommand } from '@aws-sdk/client-kms';
 
 const KMS_PREFIX = 'kms:';
 
+// A JSON env value can hold hundreds of kms: strings. Sending them all at once stalls the
+// egress proxy for ~60s (longer than the liveness probe allows), so decrypts run a few at a time.
+const MAX_CONCURRENT_DECRYPTS = 8;
+let activeDecrypts = 0;
+const waitingDecrypts: Array<() => void> = [];
+
+async function withDecryptSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeDecrypts < MAX_CONCURRENT_DECRYPTS) {
+    activeDecrypts++;
+  } else {
+    // The slot is handed over by the finishing call below, so the count stays the same.
+    await new Promise<void>((resolve) => waitingDecrypts.push(resolve));
+  }
+  try {
+    return await fn();
+  } finally {
+    const next = waitingDecrypts.shift();
+    if (next) {
+      next();
+    } else {
+      activeDecrypts--;
+    }
+  }
+}
+
 let client: KMSClient | undefined;
 
 function kmsClient(): KMSClient {
@@ -22,7 +47,7 @@ export async function decryptKmsValue(value: string): Promise<string> {
   }
   const ciphertext = Buffer.from(value.slice(KMS_PREFIX.length).replace(/\s+/g, ''), 'base64');
   try {
-    const out = await kmsClient().send(new DecryptCommand({ CiphertextBlob: ciphertext }));
+    const out = await withDecryptSlot(() => kmsClient().send(new DecryptCommand({ CiphertextBlob: ciphertext })));
     if (!out.Plaintext) {
       throw new Error('empty plaintext');
     }
