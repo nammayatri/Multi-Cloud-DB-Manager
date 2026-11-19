@@ -110,6 +110,14 @@ class ClickHouseClientManager {
     }
 
     /**
+     * Insert rows as one JSONEachRow block (values are sent as data, never spliced into SQL).
+     */
+    public async insert(table: string, rows: Array<Record<string, unknown>>): Promise<void> {
+        logger.debug('CH insert:', { table, rows: rows.length });
+        await this.client.insert({ table, values: rows, format: 'JSONEachRow' });
+    }
+
+    /**
      * Run a SELECT and return rows + column metadata.
      * Used by the user-facing query endpoint where the UI needs column names/types.
      */

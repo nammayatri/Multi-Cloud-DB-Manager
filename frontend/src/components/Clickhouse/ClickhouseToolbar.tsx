@@ -16,16 +16,19 @@ import CircleIcon from '@mui/icons-material/Circle';
 import SyncIcon from '@mui/icons-material/Sync';
 import BackupIcon from '@mui/icons-material/Backup';
 import CodeIcon from '@mui/icons-material/Code';
+import ViewColumnIcon from '@mui/icons-material/ViewColumn';
 import { useAppStore } from '../../store/appStore';
 import { clickhouseAPI } from '../../services/api';
+import { cosmosColumnsAPI } from '../../services/cosmosColumnsApi';
 import toast from 'react-hot-toast';
 import type { QueryResponse } from '../../types';
 
 // Heavy panels: loaded lazily so they don't block the initial render
 const ColumnSyncPanel = lazy(() => import('./ColumnSyncPanel'));
 const BackfillPanel = lazy(() => import('./BackfillPanel'));
+const CosmosColumnsPanel = lazy(() => import('./CosmosColumnsPanel'));
 
-type ChTab = 'query' | 'sync' | 'backfill';
+type ChTab = 'query' | 'sync' | 'backfill' | 'cosmos';
 type ChStatus = 'unknown' | 'ok' | 'error' | 'disabled';
 
 const statusColor: Record<ChStatus, 'default' | 'success' | 'error' | 'warning'> = {
@@ -57,6 +60,8 @@ const ClickhouseToolbar = ({ onExecute, queryEditor }: ClickhouseToolbarProps) =
   const [statusDetail, setStatusDetail] = useState<string>('');
   const [activeTab, setActiveTab] = useState<ChTab>('query');
   const [visitedTabs, setVisitedTabs] = useState<Set<ChTab>>(new Set(['query']));
+  // Cosmos Columns is shown only to COSMOS_COLUMNS_REVIEWERS (the backend decides).
+  const [cosmosAllowed, setCosmosAllowed] = useState(false);
 
   // ── CH health check ──
 
@@ -74,6 +79,15 @@ const ClickhouseToolbar = ({ onExecute, queryEditor }: ClickhouseToolbarProps) =
       .catch(() => {
         if (!cancelled) setStatus('error');
       });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    cosmosColumnsAPI
+      .access()
+      .then(a => { if (!cancelled) setCosmosAllowed(a.allowed); })
+      .catch(() => { if (!cancelled) setCosmosAllowed(false); });
     return () => { cancelled = true; };
   }, []);
 
@@ -182,6 +196,16 @@ const ClickhouseToolbar = ({ onExecute, queryEditor }: ClickhouseToolbarProps) =
               sx={{ minHeight: 36, py: 0.5, fontSize: 13 }}
               disabled={status === 'disabled'}
             />
+            {cosmosAllowed && (
+              <Tab
+                value="cosmos"
+                label="Cosmos Sync"
+                icon={<ViewColumnIcon sx={{ fontSize: 16 }} />}
+                iconPosition="start"
+                sx={{ minHeight: 36, py: 0.5, fontSize: 13 }}
+                disabled={status === 'disabled'}
+              />
+            )}
           </Tabs>
 
           <Box flexGrow={1} />
@@ -222,6 +246,13 @@ const ClickhouseToolbar = ({ onExecute, queryEditor }: ClickhouseToolbarProps) =
         {activeTab === 'backfill' && visitedTabs.has('backfill') && (
           <Suspense fallback={panelLoader}>
             <BackfillPanel />
+          </Suspense>
+        )}
+
+        {/* Cosmos Sync tab */}
+        {activeTab === 'cosmos' && visitedTabs.has('cosmos') && (
+          <Suspense fallback={panelLoader}>
+            <CosmosColumnsPanel />
           </Suspense>
         )}
       </Box>
